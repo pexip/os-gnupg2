@@ -1,0 +1,39 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Fri, 5 May 2017 22:37:23 -0400
+Subject: gpg: Avoid spurious warnings about trust packets.
+
+* g10/keydb.c (parse_keyblock_image): Do not emit a warning when
+skipping a trust packet.
+
+--
+
+2.1.20 and later store trust packets in the keybox.  If an older
+version (like 2.1.18) ends up accessing a keybox that 2.1.20 or later
+has used, it produces many spurious warnings like:
+
+    gpg: skipped packet of type 12 in keybox
+
+This is a temporary cleanup to avoid these specific warnings; it can
+be dropped when moving to 2.1.20 or later.
+
+Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+---
+ g10/keydb.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/g10/keydb.c b/g10/keydb.c
+index aab90e3..81dd32e 100644
+--- a/g10/keydb.c
++++ b/g10/keydb.c
+@@ -1205,8 +1205,9 @@ parse_keyblock_image (iobuf_t iobuf, int pk_no, int uid_no,
+         default:
+           /* Note that can't allow ring trust packets here and some of
+              the other GPG specific packets don't make sense either.  */
+-          log_error ("skipped packet of type %d in keybox\n",
+-                     (int)pkt->pkttype);
++          if (pkt->pkttype != PKT_RING_TRUST)
++            log_error ("skipped packet of type %d in keybox\n",
++                       (int)pkt->pkttype);
+           free_packet(pkt);
+           init_packet(pkt);
+           continue;

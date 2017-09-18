@@ -1,0 +1,37 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Mon, 13 Mar 2017 17:42:08 +0100
+Subject: gpg: Flush stdout before printing stats with --check-sigs.
+
+* g10/keylist.c (print_signature_stats): Flush stdout.
+(list_keyblock_colon): Use es_flush instead of fflush.
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 9a77b3b6e41f97b1209ad61c04b3dd33242ecae8)
+---
+ g10/keylist.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/g10/keylist.c b/g10/keylist.c
+index abdcb9f..4078053 100644
+--- a/g10/keylist.c
++++ b/g10/keylist.c
+@@ -465,6 +465,10 @@ print_signature_stats (struct keylist_context *s)
+   if (!s->check_sigs)
+     return;  /* Signature checking was not requested.  */
+ 
++  /* Better flush stdout so that the stats are always printed after
++   * the output.  */
++  es_fflush (es_stdout);
++
+   if (s->good_sigs)
+     log_info (ngettext("%d good signature\n",
+                        "%d good signatures\n", s->good_sigs), s->good_sigs);
+@@ -1447,7 +1451,7 @@ list_keyblock_colon (ctrl_t ctrl, kbnode_t keyblock,
+ 	    {
+ 	      PKT_public_key *signer_pk = NULL;
+ 
+-	      fflush (stdout);
++	      es_fflush (es_stdout);
+ 	      if (opt.no_sig_cache)
+ 		signer_pk = xmalloc_clear (sizeof (PKT_public_key));
+ 

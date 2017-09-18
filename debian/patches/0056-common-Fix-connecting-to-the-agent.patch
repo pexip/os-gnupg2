@@ -1,0 +1,34 @@
+From: Justus Winter <justus@g10code.com>
+Date: Mon, 27 Mar 2017 16:14:20 +0200
+Subject: common: Fix connecting to the agent.
+
+* common/homedir.c (_gnupg_socketdir_internal): Fix error handling.
+--
+
+Prior to 26086b36 the non-existance of the socket directory was
+considered an error if a non-default home directory is used.  Since
+26086b36 we now create the directory on demand, but the function still
+returned the fallback path.  This made the agent bind the socket in
+the socket directory, and the client trying to connect to the socket
+in the home directory.
+
+Fixes-commit: 26086b362ff47d21b1abefaf674a6464bf0a8921
+Signed-off-by: Justus Winter <justus@g10code.com>
+(cherry picked from commit caf00915532e6e8e509738962964edcd14fb0654)
+---
+ common/homedir.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/common/homedir.c b/common/homedir.c
+index c41cbdc..4571aac 100644
+--- a/common/homedir.c
++++ b/common/homedir.c
+@@ -586,6 +586,8 @@ _gnupg_socketdir_internal (int skip_checks, unsigned *r_info)
+                   else
+                     *r_info |= 64; /* Subdir does not exist.  */
+                 }
++              else
++                goto leave; /* Success!  */
+             }
+           else
+             *r_info |= 64; /* Subdir does not exist.  */

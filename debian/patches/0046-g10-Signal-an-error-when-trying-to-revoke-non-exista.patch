@@ -1,0 +1,53 @@
+From: Justus Winter <justus@g10code.com>
+Date: Thu, 2 Mar 2017 11:39:00 +0100
+Subject: g10: Signal an error when trying to revoke non-existant UID.
+
+* g10/keyedit.c (keyedit_quick_revuid): Signal an error when trying to
+revoke non-existant UID.
+* tests/openpgp/quick-key-manipulation.scm: Test that.
+
+GnuPG-bug-id: 2962
+Signed-off-by: Justus Winter <justus@g10code.com>
+(cherry picked from commit 62d21a4ab4029b32ea129f1cf3a0e1f22e2fb7b0)
+---
+ g10/keyedit.c                            | 2 ++
+ tests/openpgp/quick-key-manipulation.scm | 6 ++++++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/g10/keyedit.c b/g10/keyedit.c
+index 1456d28..a477e92 100644
+--- a/g10/keyedit.c
++++ b/g10/keyedit.c
+@@ -3053,6 +3053,8 @@ keyedit_quick_revuid (ctrl_t ctrl, const char *username, const char *uidtorev)
+         }
+     }
+ 
++  log_error (_("User ID revocation failed: %s\n"), gpg_strerror (GPG_ERR_NOT_FOUND));
++
+  leave:
+   release_kbnode (keyblock);
+   keydb_release (kdbhd);
+diff --git a/tests/openpgp/quick-key-manipulation.scm b/tests/openpgp/quick-key-manipulation.scm
+index d43f7b5..ae1d0b9 100755
+--- a/tests/openpgp/quick-key-manipulation.scm
++++ b/tests/openpgp/quick-key-manipulation.scm
+@@ -36,6 +36,7 @@
+ 
+ (define alpha "Alpha <alpha@invalid.example.net>")
+ (define bravo "Bravo <bravo@invalid.example.net>")
++(define charlie "Charlie <charlie@invalid.example.net>")
+ 
+ (define (key-data key)
+   (filter (lambda (x) (or (string=? (car x) "pub")
+@@ -78,6 +79,11 @@
+ (info "Checking that we can revoke a user ID...")
+ (call-check `(,@GPG --quick-revoke-uid ,(exact bravo) ,alpha))
+ 
++(info "Checking that we get an error revoking a non-existant user ID.")
++(catch '()
++       (call-check `(,@GPG --quick-revoke-uid ,(exact bravo) ,charlie))
++       (error "Expected an error, but get none."))
++
+ (assert (= 1 (count-uids-of-secret-key bravo)))
+ 
+ (info "Checking that we can change the expiration time.")

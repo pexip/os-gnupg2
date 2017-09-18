@@ -1,0 +1,31 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Mon, 3 Apr 2017 08:51:52 +0200
+Subject: gpg: Handle critical marked 'Reason for Revocation'.
+
+* g10/parse-packet.c (can_handle_critical): Add
+SIGSUBPKT_REVOC_REASON.
+--
+
+Some software seems to mark that subpacket as criticial.  Although gpg
+has no special treatment for a revocation reasons (except for
+--list-packets) we can accept a criticial marked anyway.  There are no
+mandatary rules specified on how to handle a revocation reason.
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 3f6d949011f485613bb4bd3e06a2643be79cce40)
+---
+ g10/parse-packet.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/g10/parse-packet.c b/g10/parse-packet.c
+index 7f44ce5..bbb784a 100644
+--- a/g10/parse-packet.c
++++ b/g10/parse-packet.c
+@@ -1572,6 +1572,7 @@ can_handle_critical (const byte * buffer, size_t n, int type)
+       /* Is it enough to show the policy or keyserver? */
+     case SIGSUBPKT_POLICY:
+     case SIGSUBPKT_PREF_KS:
++    case SIGSUBPKT_REVOC_REASON: /* At least we know about it.  */
+       return 1;
+ 
+     default:

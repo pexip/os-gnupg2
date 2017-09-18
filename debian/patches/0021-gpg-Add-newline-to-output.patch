@@ -1,0 +1,25 @@
+From: "Neal H. Walfield" <neal@g10code.com>
+Date: Thu, 2 Feb 2017 11:00:51 +0100
+Subject: gpg: Add newline to output.
+
+* g10/tofu.c (ask_about_binding): Add newline to output.
+
+Signed-off-by: Neal H. Walfield <neal@g10code.com>
+(cherry picked from commit 74268180e5a3acc827f3a369f1fe5971f3bbe285)
+---
+ g10/tofu.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/g10/tofu.c b/g10/tofu.c
+index 149a18545..9f5f40694 100644
+--- a/g10/tofu.c
++++ b/g10/tofu.c
+@@ -1969,7 +1969,7 @@ ask_about_binding (ctrl_t ctrl,
+       else if (!response[0])
+         /* Default to unknown.  Don't save it.  */
+         {
+-          tty_printf (_("Defaulting to unknown."));
++          tty_printf (_("Defaulting to unknown.\n"));
+           *policy = TOFU_POLICY_UNKNOWN;
+           break;
+         }

@@ -1,0 +1,4 @@
+# there is actually a function for interacting with the smartcard
+# called "writen" that writes n octets; it is in the binary because it
+# can be emitted in debug output:
+scdaemon: spelling-error-in-binary usr/lib/gnupg/scdaemon writen written

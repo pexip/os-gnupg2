@@ -1,0 +1,204 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Wed, 1 Mar 2017 13:36:01 +0100
+Subject: gpg: Allow creating keys using an existing ECC key.
+
+* common/sexputil.c (get_pk_algo_from_canon_sexp): Remove arg R_ALGO.
+Change to return the algo id.  Reimplement using get_pk_algo_from_key.
+* g10/keygen.c (check_keygrip): Adjust for change.
+* sm/certreqgen-ui.c (check_keygrip): Ditto.
+--
+
+GnuPG-bug-id: 2976
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 2bbdeb8ee87a6c7ec211be16391a11b7c6030bed)
+---
+ common/sexputil.c  | 65 +++++++++++++++---------------------------------------
+ common/util.h      |  6 ++---
+ g10/keygen.c       | 22 +++---------------
+ sm/certreqgen-ui.c | 24 +++++++++-----------
+ 4 files changed, 34 insertions(+), 83 deletions(-)
+
+diff --git a/common/sexputil.c b/common/sexputil.c
+index 0c5c730..a8dc1a5 100644
+--- a/common/sexputil.c
++++ b/common/sexputil.c
+@@ -512,53 +512,6 @@ get_rsa_pk_from_canon_sexp (const unsigned char *keydata, size_t keydatalen,
+ }
+ 
+ 
+-/* Return the algo of a public RSA expressed as an canonical encoded
+-   S-expression.  The return value is a statically allocated
+-   string.  On error that string is set to NULL. */
+-gpg_error_t
+-get_pk_algo_from_canon_sexp (const unsigned char *keydata, size_t keydatalen,
+-                             const char **r_algo)
+-{
+-  gpg_error_t err;
+-  const unsigned char *buf, *tok;
+-  size_t buflen, toklen;
+-  int depth;
+-
+-  *r_algo = NULL;
+-
+-  buf = keydata;
+-  buflen = keydatalen;
+-  depth = 0;
+-  if ((err = parse_sexp (&buf, &buflen, &depth, &tok, &toklen)))
+-    return err;
+-  if ((err = parse_sexp (&buf, &buflen, &depth, &tok, &toklen)))
+-    return err;
+-  if (!tok || toklen != 10 || memcmp ("public-key", tok, toklen))
+-    return gpg_error (GPG_ERR_BAD_PUBKEY);
+-  if ((err = parse_sexp (&buf, &buflen, &depth, &tok, &toklen)))
+-    return err;
+-  if ((err = parse_sexp (&buf, &buflen, &depth, &tok, &toklen)))
+-    return err;
+-  if (!tok)
+-    return gpg_error (GPG_ERR_BAD_PUBKEY);
+-
+-  if (toklen == 3 && !memcmp ("rsa", tok, toklen))
+-    *r_algo = "rsa";
+-  else if (toklen == 3 && !memcmp ("dsa", tok, toklen))
+-    *r_algo = "dsa";
+-  else if (toklen == 3 && !memcmp ("elg", tok, toklen))
+-    *r_algo = "elg";
+-  else if (toklen == 5 && !memcmp ("ecdsa", tok, toklen))
+-    *r_algo = "ecdsa";
+-  else if (toklen == 5 && !memcmp ("eddsa", tok, toklen))
+-    *r_algo = "eddsa";
+-  else
+-    return gpg_error (GPG_ERR_PUBKEY_ALGO);
+-
+-  return 0;
+-}
+-
+-
+ /* Return the algo of a public KEY of SEXP. */
+ int
+ get_pk_algo_from_key (gcry_sexp_t key)
+@@ -606,3 +559,21 @@ get_pk_algo_from_key (gcry_sexp_t key)
+ 
+   return algo;
+ }
++
++
++/* This is a variant of get_pk_algo_from_key but takes an canonical
++ * encoded S-expression as input.  Returns a GCRYPT public key
++ * identiier or 0 on error.  */
++int
++get_pk_algo_from_canon_sexp (const unsigned char *keydata, size_t keydatalen)
++{
++  gcry_sexp_t sexp;
++  int algo;
++
++  if (gcry_sexp_sscan (&sexp, NULL, keydata, keydatalen))
++    return 0;
++
++  algo = get_pk_algo_from_key (sexp);
++  gcry_sexp_release (sexp);
++  return algo;
++}
+diff --git a/common/util.h b/common/util.h
+index f7a53e1..b6d7156 100644
+--- a/common/util.h
++++ b/common/util.h
+@@ -195,10 +195,10 @@ gpg_error_t get_rsa_pk_from_canon_sexp (const unsigned char *keydata,
+                                         size_t *r_nlen,
+                                         unsigned char const **r_e,
+                                         size_t *r_elen);
+-gpg_error_t get_pk_algo_from_canon_sexp (const unsigned char *keydata,
+-                                         size_t keydatalen,
+-                                         const char **r_algo);
++
+ int get_pk_algo_from_key (gcry_sexp_t key);
++int get_pk_algo_from_canon_sexp (const unsigned char *keydata,
++                                 size_t keydatalen);
+ 
+ /*-- convert.c --*/
+ int hex2bin (const char *string, void *buffer, size_t length);
+diff --git a/g10/keygen.c b/g10/keygen.c
+index 98ef29e..0180581 100644
+--- a/g10/keygen.c
++++ b/g10/keygen.c
+@@ -1838,7 +1838,7 @@ check_keygrip (ctrl_t ctrl, const char *hexgrip)
+   gpg_error_t err;
+   unsigned char *public;
+   size_t publiclen;
+-  const char *algostr;
++  int algo;
+ 
+   if (hexgrip[0] == '&')
+     hexgrip++;
+@@ -1848,26 +1848,10 @@ check_keygrip (ctrl_t ctrl, const char *hexgrip)
+     return 0;
+   publiclen = gcry_sexp_canon_len (public, 0, NULL, NULL);
+ 
+-  get_pk_algo_from_canon_sexp (public, publiclen, &algostr);
++  algo = get_pk_algo_from_canon_sexp (public, publiclen);
+   xfree (public);
+ 
+-  /* FIXME: Mapping of ECC algorithms is probably not correct. */
+-  if (!algostr)
+-    return 0;
+-  else if (!strcmp (algostr, "rsa"))
+-    return PUBKEY_ALGO_RSA;
+-  else if (!strcmp (algostr, "dsa"))
+-    return PUBKEY_ALGO_DSA;
+-  else if (!strcmp (algostr, "elg"))
+-    return PUBKEY_ALGO_ELGAMAL_E;
+-  else if (!strcmp (algostr, "ecc"))
+-    return PUBKEY_ALGO_ECDH;
+-  else if (!strcmp (algostr, "ecdsa"))
+-    return PUBKEY_ALGO_ECDSA;
+-  else if (!strcmp (algostr, "eddsa"))
+-    return PUBKEY_ALGO_EDDSA;
+-  else
+-    return 0;
++  return map_pk_gcry_to_openpgp (algo);
+ }
+ 
+ 
+diff --git a/sm/certreqgen-ui.c b/sm/certreqgen-ui.c
+index ece8668..b50d338 100644
+--- a/sm/certreqgen-ui.c
++++ b/sm/certreqgen-ui.c
+@@ -95,7 +95,7 @@ check_keygrip (ctrl_t ctrl, const char *hexgrip)
+   gpg_error_t err;
+   ksba_sexp_t public;
+   size_t publiclen;
+-  const char *algostr;
++  int algo;
+ 
+   if (hexgrip[0] == '&')
+     hexgrip++;
+@@ -105,21 +105,17 @@ check_keygrip (ctrl_t ctrl, const char *hexgrip)
+     return NULL;
+   publiclen = gcry_sexp_canon_len (public, 0, NULL, NULL);
+ 
+-  get_pk_algo_from_canon_sexp (public, publiclen, &algostr);
++  algo = get_pk_algo_from_canon_sexp (public, publiclen);
+   xfree (public);
+ 
+-  if (!algostr)
+-    return NULL;
+-  else if (!strcmp (algostr, "rsa"))
+-    return "RSA";
+-  else if (!strcmp (algostr, "dsa"))
+-    return "DSA";
+-  else if (!strcmp (algostr, "elg"))
+-    return "ELG";
+-  else if (!strcmp (algostr, "ecdsa"))
+-    return "ECDSA";
+-  else
+-    return NULL;
++  switch (algo)
++    {
++    case GCRY_PK_RSA:   return "RSA";
++    case GCRY_PK_DSA:   return "DSA";
++    case GCRY_PK_ELG:   return "ELG";
++    case GCRY_PK_EDDSA: return "ECDSA";
++    default: return NULL;
++    }
+ }
+ 
+ 

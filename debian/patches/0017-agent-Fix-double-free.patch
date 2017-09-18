@@ -1,0 +1,49 @@
+From: Justus Winter <justus@g10code.com>
+Date: Wed, 25 Jan 2017 13:51:57 +0100
+Subject: agent: Fix double free.
+
+* agent/cache.c (agent_store_cache_hit): Make sure the update is
+atomic.
+--
+Previously, the function freed the last key, and duplicated the new
+key after doing that.  There is a chance, however, that calling the
+allocator surrenders control to a different thread, causing a double
+free if a different thread also calls this function.
+
+To make sure the update is atomic under the non-preemptive thread
+model, we must make sure not to surrender control to a different
+thread.  Therefore, we avoid calling the allocator during the
+update.
+
+Signed-off-by: Justus Winter <justus@g10code.com>
+(cherry picked from commit e175152ef7515921635bf1e00383e812668d13fc)
+---
+ agent/cache.c | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/agent/cache.c b/agent/cache.c
+index f58eaeaaa..248368277 100644
+--- a/agent/cache.c
++++ b/agent/cache.c
+@@ -475,6 +475,19 @@ agent_get_cache (const char *key, cache_mode_t cache_mode)
+ void
+ agent_store_cache_hit (const char *key)
+ {
+-  xfree (last_stored_cache_key);
+-  last_stored_cache_key = key? xtrystrdup (key) : NULL;
++  char *new;
++  char *old;
++
++  /* To make sure the update is atomic under the non-preemptive thread
++   * model, we must make sure not to surrender control to a different
++   * thread.  Therefore, we avoid calling the allocator during the
++   * update.  */
++  new = key ? xtrystrdup (key) : NULL;
++
++  /* Atomic update.  */
++  old = last_stored_cache_key;
++  last_stored_cache_key = new;
++  /* Done.  */
++
++  xfree (old);
+ }

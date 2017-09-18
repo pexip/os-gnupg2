@@ -1,0 +1,32 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Mon, 13 Feb 2017 13:09:51 +0100
+Subject: gpg: Print a warning if no command has been given.
+
+* g10/gpg.c (main): Print in the default case.
+--
+
+GnuPG-bug-id: 2943
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 810adfd47801fc01e45fb71af9f05c91f7890cdb)
+---
+ g10/gpg.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/g10/gpg.c b/g10/gpg.c
+index 66a2055..0c5a167 100644
+--- a/g10/gpg.c
++++ b/g10/gpg.c
+@@ -4894,8 +4894,12 @@ main (int argc, char **argv)
+ #endif /*USE_TOFU*/
+ 	break;
+ 
+-      case aListPackets:
+       default:
++        if (!opt.quiet)
++          log_info (_("WARNING: no command supplied."
++                      "  Trying to guess what you mean ...\n"));
++        /*FALLTHU*/
++      case aListPackets:
+ 	if( argc > 1 )
+ 	    wrong_args("[filename]");
+ 	/* Issue some output for the unix newbie */

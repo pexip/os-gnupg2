@@ -1,0 +1,66 @@
+From: NIIBE Yutaka <gniibe@fsij.org>
+Date: Mon, 17 Apr 2017 09:15:13 +0900
+Subject: g10: Minor fixes.
+
+* g10/export.c (cleartext_secret_key_to_openpgp): No initialization.
+(do_export_one_keyblock): Initialize with GPG_ERR_NOT_FOUND.
+* g10/getkey.c (get_best_pubkey_byname): Add non-null check.
+* g10/tofu.c (tofu_set_policy): ERR initialize to 0.
+
+Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
+(cherry picked from commit 0dec0cc281dfa26db89f8cc5ee002dea5c2b2e81)
+---
+ g10/export.c | 4 ++--
+ g10/getkey.c | 3 ++-
+ g10/tofu.c   | 2 +-
+ 3 files changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/g10/export.c b/g10/export.c
+index 207f994..ea9ffb4 100644
+--- a/g10/export.c
++++ b/g10/export.c
+@@ -580,7 +580,7 @@ canon_pk_algo (enum gcry_pk_algos algo)
+ static gpg_error_t
+ cleartext_secret_key_to_openpgp (gcry_sexp_t s_key, PKT_public_key *pk)
+ {
+-  gpg_error_t err = gpg_error (GPG_ERR_NOT_IMPLEMENTED);
++  gpg_error_t err;
+   gcry_sexp_t top_list;
+   gcry_sexp_t key = NULL;
+   char *key_type = NULL;
+@@ -1524,7 +1524,7 @@ do_export_one_keyblock (ctrl_t ctrl, kbnode_t keyblock, u32 *keyid,
+                         KEYDB_SEARCH_DESC *desc, size_t ndesc,
+                         size_t descindex, gcry_cipher_hd_t cipherhd)
+ {
+-  gpg_error_t err;
++  gpg_error_t err = gpg_error (GPG_ERR_NOT_FOUND);
+   char *cache_nonce = NULL;
+   subkey_list_t subkey_list = NULL;  /* Track already processed subkeys. */
+   int skip_until_subkey = 0;
+diff --git a/g10/getkey.c b/g10/getkey.c
+index 21dcf08..961d7de 100644
+--- a/g10/getkey.c
++++ b/g10/getkey.c
+@@ -1640,7 +1640,8 @@ get_best_pubkey_byname (ctrl_t ctrl, GETKEY_CTX *retctx, PKT_public_key *pk,
+                   if (! ctx->kr_handle)
+                     {
+                       xfree (ctx);
+-                      *retctx = NULL;
++                      if (retctx)
++                        *retctx = NULL;
+                       rc = gpg_error_from_syserror ();
+                     }
+                   else
+diff --git a/g10/tofu.c b/g10/tofu.c
+index 39457a5..c3a4988 100644
+--- a/g10/tofu.c
++++ b/g10/tofu.c
+@@ -3857,7 +3857,7 @@ tofu_get_validity (ctrl_t ctrl, PKT_public_key *pk, strlist_t user_id_list,
+ gpg_error_t
+ tofu_set_policy (ctrl_t ctrl, kbnode_t kb, enum tofu_policy policy)
+ {
+-  gpg_error_t err;
++  gpg_error_t err = 0;
+   time_t now = gnupg_get_time ();
+   tofu_dbs_t dbs;
+   PKT_public_key *pk;

@@ -1,0 +1,440 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Mon, 17 Apr 2017 10:51:55 -0400
+Subject: g10: remove skeleton options files
+
+* build-aux/speed/w32/inst.nsi: stop installing skeleton files.
+* doc/gpg.texi: stop documenting skeleton files.
+* g10/Makefile.am: stop installing skeleton files.
+* g10/openfile.c (copy_options_file): Remove.
+(try_make_homedir): do not call copy_options_file()
+
+The defaults for gpg and dirmngr are good.  Both programs should work
+fine for the simple case without any config file.  The skeleton config
+files were being copied at first use (when the defaults are fine).
+But when the user needs to fiddle with them (after they've become
+sophisticated users), they're likely out of date because gpg has been
+upgraded since then.  So they're used for documentation, but they're
+stale documentation, which is probably worse than a clean empty file.
+
+--
+
+GnuPG-bug-id: 3086
+Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+---
+ build-aux/speedo/w32/inst.nsi |   2 -
+ doc/gpg.texi                  |   4 --
+ g10/Makefile.am               |   8 +--
+ g10/dirmngr-conf.skel         |  69 ---------------------
+ g10/openfile.c                | 102 -------------------------------
+ g10/options.skel              | 139 ------------------------------------------
+ 6 files changed, 1 insertion(+), 323 deletions(-)
+ delete mode 100644 g10/dirmngr-conf.skel
+ delete mode 100644 g10/options.skel
+
+diff --git a/build-aux/speedo/w32/inst.nsi b/build-aux/speedo/w32/inst.nsi
+index 164e26b..779c759 100644
+--- a/build-aux/speedo/w32/inst.nsi
++++ b/build-aux/speedo/w32/inst.nsi
+@@ -607,8 +607,6 @@ Section "GnuPG" SEC_gnupg
+       Rename /REBOOTOK scdaemon.exe.tmp scdaemon.exe
+ 
+   SetOutPath "$INSTDIR\share\gnupg"
+-  File "share/gnupg/gpg-conf.skel"
+-  File "share/gnupg/dirmngr-conf.skel"
+   File "share/gnupg/distsigkey.gpg"
+ 
+   SetOutPath "$INSTDIR\share\locale\ca\LC_MESSAGES"
+diff --git a/doc/gpg.texi b/doc/gpg.texi
+index c591049..a7d78c4 100644
+--- a/doc/gpg.texi
++++ b/doc/gpg.texi
+@@ -3452,10 +3452,6 @@ files; They all live in in the current home directory (@pxref{option
+   You should backup all files in this directory and take care to keep
+   this backup closed away.
+ 
+-  @item @value{DATADIR}/options.skel
+-  @efindex options.skel
+-  The skeleton options file.
+-
+ @end table
+ 
+ Operation is further controlled by a few environment variables:
+diff --git a/g10/Makefile.am b/g10/Makefile.am
+index 604be93..19c5c78 100644
+--- a/g10/Makefile.am
++++ b/g10/Makefile.am
+@@ -18,7 +18,7 @@
+ 
+ ## Process this file with automake to produce Makefile.in
+ 
+-EXTRA_DIST = options.skel dirmngr-conf.skel distsigkey.gpg \
++EXTRA_DIST = distsigkey.gpg \
+ 	     ChangeLog-2011 gpg-w32info.rc \
+ 	     gpg.w32-manifest.in test.c t-keydb-keyring.kbx \
+ 	     t-keydb-get-keyblock.gpg t-stutter-data.asc
+@@ -238,18 +238,12 @@ install-exec-hook:
+ 
+ install-data-local:
+ 	$(mkinstalldirs) $(DESTDIR)$(pkgdatadir)
+-	$(INSTALL_DATA) $(srcdir)/options.skel \
+-				$(DESTDIR)$(pkgdatadir)/gpg-conf.skel
+-	$(INSTALL_DATA) $(srcdir)/dirmngr-conf.skel \
+-				$(DESTDIR)$(pkgdatadir)/dirmngr-conf.skel
+ 	$(INSTALL_DATA) $(srcdir)/distsigkey.gpg \
+ 				$(DESTDIR)$(pkgdatadir)/distsigkey.gpg
+ 
+ # NB: For uninstalling gpg and gpgv we use -local because there is
+ # no need for a specific order the targets need to be run.
+ uninstall-local:
+-	-@rm $(DESTDIR)$(pkgdatadir)/gpg-conf.skel
+-	-@rm $(DESTDIR)$(pkgdatadir)/dirmngr-conf.skel
+ 	-@rm $(DESTDIR)$(pkgdatadir)/distsigkey.gpg
+ 	-@files=`for p in $(gpg2_hack_uninst); do echo "$$p"; done | \
+ 	  sed -e 'h;s,^.*/,,;s/$(EXEEXT)$$//;$(transform)' \
+diff --git a/g10/dirmngr-conf.skel b/g10/dirmngr-conf.skel
+deleted file mode 100644
+index fbb730b..0000000
+--- a/g10/dirmngr-conf.skel
++++ /dev/null
+@@ -1,69 +0,0 @@
+-# dirmngr-conf.skel - Skeleton to create dirmngr.conf.
+-# (Note that the first three lines are not copied.)
+-#
+-# dirmngr.conf - Options for Dirmngr
+-# Written in 2015 by The GnuPG Project <https://gnupg.org>
+-#
+-# To the extent possible under law, the authors have dedicated all
+-# copyright and related and neighboring rights to this file to the
+-# public domain worldwide.  This file is distributed without any
+-# warranty.  You should have received a copy of the CC0 Public Domain
+-# Dedication along with this file. If not, see
+-# <http://creativecommons.org/publicdomain/zero/1.0/>.
+-#
+-#
+-# Unless you specify which option file to use (with the command line
+-# option "--options filename"), the file ~/.gnupg/dirmngr.conf is used
+-# by dirmngr.  The file can contain any long options which are valid
+-# for Dirmngr.  If the first non white space character of a line is a
+-# '#', the line is ignored.  Empty lines are also ignored.  See the
+-# dirmngr man page or the manual for a list of options.
+-#
+-
+-# --keyserver URI
+-#
+-# GPG can send and receive keys to and from a keyserver.  These
+-# servers can be HKP, Email, or LDAP (if GnuPG is built with LDAP
+-# support).
+-#
+-# Example HKP keyservers:
+-#      hkp://keys.gnupg.net
+-#
+-# Example HKP keyserver using a Tor OnionBalance service
+-#      hkp://jirk5u4osbsr34t5.onion
+-#
+-# Example HKPS keyservers (see --hkp-cacert below):
+-#       hkps://hkps.pool.sks-keyservers.net
+-#
+-# Example LDAP keyservers:
+-#      ldap://pgp.surfnet.nl:11370
+-#
+-# Regular URL syntax applies, and you can set an alternate port
+-# through the usual method:
+-#      hkp://keyserver.example.net:22742
+-#
+-# Most users just set the name and type of their preferred keyserver.
+-# Note that most servers (with the notable exception of
+-# ldap://keyserver.pgp.com) synchronize changes with each other.  Note
+-# also that a single server name may actually point to multiple
+-# servers via DNS round-robin.  hkp://keys.gnupg.net is an example of
+-# such a "server", which spreads the load over a number of physical
+-# servers.
+-#
+-# If exactly two keyservers are configured and only one is a Tor hidden
+-# service, Dirmngr selects the keyserver to use depending on whether
+-# Tor is locally running or not (on a per session base).
+-
+-keyserver hkp://jirk5u4osbsr34t5.onion
+-keyserver hkp://keys.gnupg.net
+-
+-# --hkp-cacert FILENAME
+-#
+-# For the "hkps" scheme (keyserver access over TLS), Dirmngr needs to
+-# know the root certificates for verification of the TLS certificates
+-# used for the connection.  Enter the full name of a file with the
+-# root certificates here.  If that file is in PEM format a ".pem"
+-# suffix is expected.  This option may be given multiple times to add
+-# more root certificates.  Tilde expansion is supported.
+-
+-#hkp-cacert /path/to/CA/sks-keyservers.netCA.pem
+diff --git a/g10/openfile.c b/g10/openfile.c
+index f62deec..2e8c102 100644
+--- a/g10/openfile.c
++++ b/g10/openfile.c
+@@ -36,12 +36,6 @@
+ #include "status.h"
+ #include "i18n.h"
+ 
+-#ifdef USE_ONLY_8DOT3
+-#define SKELEXT ".skl"
+-#else
+-#define SKELEXT EXTSEP_S "skel"
+-#endif
+-
+ #ifdef HAVE_W32_SYSTEM
+ #define NAME_OF_DEV_NULL "nul"
+ #else
+@@ -373,93 +367,6 @@ open_sigfile (const char *sigfilename, progress_filter_context_t *pfx)
+ }
+ 
+ 
+-/****************
+- * Copy the option file skeleton for NAME to the given directory.
+- * Returns true if the new option file has any option.
+- */
+-static int
+-copy_options_file (const char *destdir, const char *name)
+-{
+-  const char *datadir = gnupg_datadir ();
+-  char *fname;
+-  FILE *src, *dst;
+-  int linefeeds=0;
+-  int c;
+-  mode_t oldmask;
+-  int esc = 0;
+-  int any_option = 0;
+-
+-  if (opt.dry_run)
+-    return 0;
+-
+-  fname = xstrconcat (datadir, DIRSEP_S, name, "-conf", SKELEXT, NULL);
+-  src = fopen (fname, "r");
+-  if (src && is_secured_file (fileno (src)))
+-    {
+-      fclose (src);
+-      src = NULL;
+-      gpg_err_set_errno (EPERM);
+-    }
+-  if (!src)
+-    {
+-      log_info (_("can't open '%s': %s\n"), fname, strerror(errno));
+-      xfree(fname);
+-      return 0;
+-    }
+-  xfree (fname);
+-  fname = xstrconcat (destdir, DIRSEP_S, name, EXTSEP_S, "conf", NULL);
+-
+-  oldmask = umask (077);
+-  if (is_secured_filename (fname))
+-    {
+-      dst = NULL;
+-      gpg_err_set_errno (EPERM);
+-    }
+-  else
+-    dst = fopen( fname, "w" );
+-  umask (oldmask);
+-
+-  if (!dst)
+-    {
+-      log_info (_("can't create '%s': %s\n"), fname, strerror(errno) );
+-      fclose (src);
+-      xfree (fname);
+-      return 0;
+-    }
+-
+-  while ((c = getc (src)) != EOF)
+-    {
+-      if (linefeeds < 3)
+-        {
+-          if (c == '\n')
+-            linefeeds++;
+-	}
+-      else
+-        {
+-          putc (c, dst);
+-          if (c== '\n')
+-            esc = 1;
+-          else if (esc == 1)
+-            {
+-              if (c == ' ' || c == '\t')
+-                ;
+-              else if (c == '#')
+-                esc = 2;
+-              else
+-                any_option = 1;
+-            }
+-        }
+-    }
+-
+-  fclose (dst);
+-  fclose (src);
+-
+-  log_info (_("new configuration file '%s' created\n"), fname);
+-  xfree (fname);
+-  return any_option;
+-}
+-
+-
+ void
+ try_make_homedir (const char *fname)
+ {
+@@ -489,15 +396,6 @@ try_make_homedir (const char *fname)
+                     fname, strerror(errno) );
+       else if (!opt.quiet )
+         log_info ( _("directory '%s' created\n"), fname );
+-
+-      /* Note that we also copy a dirmngr.conf file here.  This is
+-         because gpg is likely the first invoked tool and thus creates
+-         the directory.  */
+-      copy_options_file (fname, DIRMNGR_NAME);
+-      if (copy_options_file (fname, GPG_NAME))
+-        log_info (_("WARNING: options in '%s'"
+-                    " are not yet active during this run\n"),
+-                  fname);
+     }
+ }
+ 
+diff --git a/g10/options.skel b/g10/options.skel
+deleted file mode 100644
+index 87fc627..0000000
+--- a/g10/options.skel
++++ /dev/null
+@@ -1,139 +0,0 @@
+-# These first three lines are not copied to the gpg.conf file in
+-# the users home directory.
+-# $Id$
+-# Options for GnuPG
+-# Copyright 1998-2003, 2010 Free Software Foundation, Inc.
+-# Copyright 1998-2003, 2010 Werner Koch
+-#
+-# This file is free software; as a special exception the author gives
+-# unlimited permission to copy and/or distribute it, with or without
+-# modifications, as long as this notice is preserved.
+-#
+-# This file is distributed in the hope that it will be useful, but
+-# WITHOUT ANY WARRANTY, to the extent permitted by law; without even the
+-# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+-#
+-# Unless you specify which option file to use (with the command line
+-# option "--options filename"), GnuPG uses the file ~/.gnupg/gpg.conf
+-# by default.
+-#
+-# An options file can contain any long options which are available in
+-# GnuPG. If the first non white space character of a line is a '#',
+-# this line is ignored.  Empty lines are also ignored.
+-#
+-# See the gpg man page for a list of options.
+-
+-
+-# If you have more than 1 secret key in your keyring, you may want to
+-# uncomment the following option and set your preferred keyid.
+-
+-#default-key 621CC013
+-
+-
+-# If you do not pass a recipient to gpg, it will ask for one.  Using
+-# this option you can encrypt to a default key.  Key validation will
+-# not be done in this case.  The second form uses the default key as
+-# default recipient.
+-
+-#default-recipient some-user-id
+-#default-recipient-self
+-
+-
+-# Group names may be defined like this:
+-#   group mynames = paige 0x12345678 joe patti
+-#
+-# Any time "mynames" is a recipient (-r or --recipient), it will be
+-# expanded to the names "paige", "joe", and "patti", and the key ID
+-# "0x12345678".  Note there is only one level of expansion - you
+-# cannot make an group that points to another group.  Note also that
+-# if there are spaces in the recipient name, this will appear as two
+-# recipients.  In these cases it is better to use the key ID.
+-
+-#group mynames = paige 0x12345678 joe patti
+-
+-
+-# GnuPG can automatically locate and retrieve keys as needed using
+-# this option.  This happens when encrypting to an email address (in
+-# the "user@@example.com" form) and there are no keys matching
+-# "user@example.com" in the local keyring.  This option takes any
+-# number mechanisms which are tried in the given order.  The default
+-# is "--auto-key-locate local" to search for keys only in the local
+-# key database.  Uncomment the next line to locate a missing key using
+-# two DNS based mechanisms.
+-
+-#auto-key-locate local,pka,dane
+-
+-
+-# Common options for keyserver functions:
+-# (Note that the --keyserver option has been moved to dirmngr.conf)
+-#
+-# include-disabled = when searching, include keys marked as "disabled"
+-#                    on the keyserver (not all keyservers support this).
+-#
+-# no-include-revoked = when searching, do not include keys marked as
+-#                      "revoked" on the keyserver.
+-#
+-# verbose = show more information as the keys are fetched.
+-#           Can be used more than once to increase the amount
+-#           of information shown.
+-#
+-# auto-key-retrieve = automatically fetch keys as needed from the keyserver
+-#                     when verifying signatures or when importing keys that
+-#                     have been revoked by a revocation key that is not
+-#                     present on the keyring.
+-#
+-# no-include-attributes = do not include attribute IDs (aka "photo IDs")
+-#                         when sending keys to the keyserver.
+-
+-#keyserver-options auto-key-retrieve
+-
+-
+-# Uncomment this line to display photo user IDs in key listings and
+-# when a signature from a key with a photo is verified.
+-
+-#show-photos
+-
+-
+-# Use this program to display photo user IDs
+-#
+-# %i is expanded to a temporary file that contains the photo.
+-# %I is the same as %i, but the file isn't deleted afterwards by GnuPG.
+-# %k is expanded to the key ID of the key.
+-# %K is expanded to the long OpenPGP key ID of the key.
+-# %t is expanded to the extension of the image (e.g. "jpg").
+-# %T is expanded to the MIME type of the image (e.g. "image/jpeg").
+-# %f is expanded to the fingerprint of the key.
+-# %% is %, of course.
+-#
+-# If %i or %I are not present, then the photo is supplied to the
+-# viewer on standard input.  If your platform supports it, standard
+-# input is the best way to do this as it avoids the time and effort in
+-# generating and then cleaning up a secure temp file.
+-#
+-# The default program is "xloadimage -fork -quiet -title 'KeyID 0x%k' stdin"
+-# On Mac OS X and Windows, the default is to use your regular JPEG image
+-# viewer.
+-#
+-# Some other viewers:
+-# photo-viewer "qiv %i"
+-# photo-viewer "ee %i"
+-# photo-viewer "display -title 'KeyID 0x%k'"
+-#
+-# This one saves a copy of the photo ID in your home directory:
+-# photo-viewer "cat > ~/photoid-for-key-%k.%t"
+-#
+-# Use your MIME handler to view photos:
+-# photo-viewer "metamail -q -d -b -c %T -s 'KeyID 0x%k' -f GnuPG"
+-
+-
+-# Because some mailers change lines starting with "From " to ">From "
+-# it is good to handle such lines in a special way when creating
+-# cleartext signatures; all other PGP versions do it this way too.
+-# To enable full OpenPGP compliance you may want to use this option.
+-
+-#no-escape-from-lines
+-
+-
+-# Uncomment the following option to get rid of the copyright notice
+-
+-#no-greeting

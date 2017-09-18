@@ -1,0 +1,26 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Mon, 3 Apr 2017 20:23:18 +0200
+Subject: dirmngr: Handle EIO which is sometimes returned by cookie functions.
+
+* dirmngr/ks-engine-hkp.c (handle_send_request_error): Handle EIO.
+--
+
+Suggested-by: Andre Heinecke
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit cc32ddbcba8c53d3e2cad952d72f62dc73911042)
+---
+ dirmngr/ks-engine-hkp.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/dirmngr/ks-engine-hkp.c b/dirmngr/ks-engine-hkp.c
+index 32db4bc..66350a7 100644
+--- a/dirmngr/ks-engine-hkp.c
++++ b/dirmngr/ks-engine-hkp.c
+@@ -1245,6 +1245,7 @@ handle_send_request_error (ctrl_t ctrl, gpg_error_t err, const char *request,
+     case GPG_ERR_ENETDOWN:
+     case GPG_ERR_UNKNOWN_HOST:
+     case GPG_ERR_NETWORK:
++    case GPG_ERR_EIO:  /* Sometimes used by estream cookie functions.  */
+       if (mark_host_dead (request) && *tries_left)
+         retry = 1;
+       break;

@@ -1,0 +1,28 @@
+From: Justus Winter <justus@g10code.com>
+Date: Mon, 23 Jan 2017 11:52:30 +0100
+Subject: tools: Fix memory leak.
+
+* tools/gpgconf-comp.c (change_options_file): Fix leak.
+--
+Previously, 'src_filename' and 'orig_filename' leaked if creating the
+backup file failed.
+
+Signed-off-by: Justus Winter <justus@g10code.com>
+(cherry picked from commit 5b28f025085b386e0ec49535d4cd3f875a414eb0)
+---
+ tools/gpgconf-comp.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/tools/gpgconf-comp.c b/tools/gpgconf-comp.c
+index a25b5136e..85eb80ab5 100644
+--- a/tools/gpgconf-comp.c
++++ b/tools/gpgconf-comp.c
+@@ -2641,6 +2641,8 @@ change_options_file (gc_component_t component, gc_backend_t backend,
+   if (res < 0 && errno != ENOENT)
+     {
+       xfree (dest_filename);
++      xfree (src_filename);
++      xfree (orig_filename);
+       return -1;
+     }
+   if (res < 0)

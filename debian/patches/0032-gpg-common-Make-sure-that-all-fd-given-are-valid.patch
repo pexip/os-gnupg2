@@ -1,0 +1,228 @@
+From: Justus Winter <justus@g10code.com>
+Date: Wed, 8 Feb 2017 13:49:41 +0100
+Subject: gpg,common: Make sure that all fd given are valid.
+
+* common/sysutils.c (gnupg_fd_valid): New function.
+* common/sysutils.h (gnupg_fd_valid): New declaration.
+* common/logging.c (log_set_file): Use the new function.
+* g10/cpr.c (set_status_fd): Likewise.
+* g10/gpg.c (main): Likewise.
+* g10/keylist.c (read_sessionkey_from_fd): Likewise.
+* g10/passphrase.c (set_attrib_fd): Likewise.
+* tests/openpgp/Makefile.am (XTESTS): Add the new test.
+* tests/openpgp/issue2941.scm: New file.
+--
+
+Consider a situation where the user passes "--status-fd 3" but file
+descriptor 3 is not open.
+
+During the course of executing the rest of the commands, it's possible
+that gpg itself will open some files, and file descriptor 3 will get
+allocated.
+
+In this situation, the status information will be appended directly to
+whatever file happens to have landed on fd 3 (the trustdb? the
+keyring?).
+
+This is a potential data destruction issue for all writable file
+descriptor options:
+
+   --status-fd
+   --attribute-fd
+   --logger-fd
+
+It's also a potential issue for readable file descriptor options, but
+the risk is merely weird behavior, and not data corruption:
+
+   --override-session-key-fd
+   --passphrase-fd
+   --command-fd
+
+Fixes this by checking whether the fd is valid early on before using
+it.
+
+GnuPG-bug-id: 2941
+Signed-off-by: Justus Winter <justus@g10code.com>
+(cherry picked from commit 6823ed46584e753de3aba48a00ab738ab009a860)
+---
+ common/logging.c            |  3 +++
+ common/sysutils.c           | 11 +++++++++++
+ common/sysutils.h           |  1 +
+ g10/cpr.c                   |  3 +++
+ g10/gpg.c                   |  5 +++++
+ g10/keylist.c               |  3 +++
+ g10/passphrase.c            |  3 +++
+ tests/openpgp/Makefile.am   |  4 ++--
+ tests/openpgp/issue2941.scm | 34 ++++++++++++++++++++++++++++++++++
+ 9 files changed, 65 insertions(+), 2 deletions(-)
+ create mode 100755 tests/openpgp/issue2941.scm
+
+diff --git a/common/logging.c b/common/logging.c
+index 8c70742..ac13053 100644
+--- a/common/logging.c
++++ b/common/logging.c
+@@ -570,6 +570,9 @@ log_set_file (const char *name)
+ void
+ log_set_fd (int fd)
+ {
++  if (! gnupg_fd_valid (fd))
++    log_fatal ("logger-fd is invalid: %s\n", strerror (errno));
++
+   set_file_fd (NULL, fd);
+ }
+ 
+diff --git a/common/sysutils.c b/common/sysutils.c
+index e67420f..a796677 100644
+--- a/common/sysutils.c
++++ b/common/sysutils.c
+@@ -1281,3 +1281,14 @@ gnupg_get_socket_name (int fd)
+   return name;
+ }
+ #endif /*!HAVE_W32_SYSTEM*/
++
++/* Check whether FD is valid.  */
++int
++gnupg_fd_valid (int fd)
++{
++  int d = dup (fd);
++  if (d < 0)
++    return 0;
++  close (d);
++  return 1;
++}
+diff --git a/common/sysutils.h b/common/sysutils.h
+index a9316d7..ecd9f84 100644
+--- a/common/sysutils.h
++++ b/common/sysutils.h
+@@ -72,6 +72,7 @@ int  gnupg_setenv (const char *name, const char *value, int overwrite);
+ int  gnupg_unsetenv (const char *name);
+ char *gnupg_getcwd (void);
+ char *gnupg_get_socket_name (int fd);
++int gnupg_fd_valid (int fd);
+ 
+ gpg_error_t gnupg_inotify_watch_socket (int *r_fd, const char *socket_name);
+ int gnupg_inotify_has_name (int fd, const char *name);
+diff --git a/g10/cpr.c b/g10/cpr.c
+index 0133cad..4984e89 100644
+--- a/g10/cpr.c
++++ b/g10/cpr.c
+@@ -107,6 +107,9 @@ set_status_fd (int fd)
+   if (fd == -1)
+     return;
+ 
++  if (! gnupg_fd_valid (fd))
++    log_fatal ("status-fd is invalid: %s\n", strerror (errno));
++
+   if (fd == 1)
+     statusfp = es_stdout;
+   else if (fd == 2)
+diff --git a/g10/gpg.c b/g10/gpg.c
+index e280c22..66a2055 100644
+--- a/g10/gpg.c
++++ b/g10/gpg.c
+@@ -3079,6 +3079,8 @@ main (int argc, char **argv)
+ 
+ 	  case oCommandFD:
+             opt.command_fd = translate_sys2libc_fd_int (pargs.r.ret_int, 0);
++	    if (! gnupg_fd_valid (opt.command_fd))
++	      log_fatal ("command-fd is invalid: %s\n", strerror (errno));
+             break;
+ 	  case oCommandFile:
+             opt.command_fd = open_info_file (pargs.r.ret_str, 0, 1);
+@@ -5293,6 +5295,9 @@ read_sessionkey_from_fd (int fd)
+   int i, len;
+   char *line;
+ 
++  if (! gnupg_fd_valid (fd))
++    log_fatal ("override-session-key-fd is invalid: %s\n", strerror (errno));
++
+   for (line = NULL, i = len = 100; ; i++ )
+     {
+       if (i >= len-1 )
+diff --git a/g10/keylist.c b/g10/keylist.c
+index 4fe1e40..abdcb9f 100644
+--- a/g10/keylist.c
++++ b/g10/keylist.c
+@@ -1900,6 +1900,9 @@ set_attrib_fd (int fd)
+   if (fd == -1)
+     return;
+ 
++  if (! gnupg_fd_valid (fd))
++    log_fatal ("attribute-fd is invalid: %s\n", strerror (errno));
++
+ #ifdef HAVE_DOSISH_SYSTEM
+   setmode (fd, O_BINARY);
+ #endif
+diff --git a/g10/passphrase.c b/g10/passphrase.c
+index fb4ec4c..37abc0f 100644
+--- a/g10/passphrase.c
++++ b/g10/passphrase.c
+@@ -166,6 +166,9 @@ read_passphrase_from_fd( int fd )
+   int i, len;
+   char *pw;
+ 
++  if (! gnupg_fd_valid (fd))
++    log_fatal ("passphrase-fd is invalid: %s\n", strerror (errno));
++
+   if ( !opt.batch && opt.pinentry_mode != PINENTRY_MODE_LOOPBACK)
+     { /* Not used but we have to do a dummy read, so that it won't end
+          up at the begin of the message if the quite usual trick to
+diff --git a/tests/openpgp/Makefile.am b/tests/openpgp/Makefile.am
+index 05341fb..377a2ed 100644
+--- a/tests/openpgp/Makefile.am
++++ b/tests/openpgp/Makefile.am
+@@ -95,12 +95,12 @@ XTESTS = \
+ 	issue2015.scm \
+ 	issue2346.scm \
+ 	issue2417.scm \
+-	issue2419.scm
++	issue2419.scm \
++	issue2941.scm
+ 
+ # Fixme: gpgconf.scm does not yet work with make distcheck.
+ #	gpgconf.scm
+ 
+-
+ # XXX: Currently, one cannot override automake's 'check' target.  As a
+ # workaround, we avoid defining 'TESTS', thus automake will not emit
+ # the 'check' target.  For extra robustness, we merely define a
+diff --git a/tests/openpgp/issue2941.scm b/tests/openpgp/issue2941.scm
+new file mode 100755
+index 0000000..d7220e0
+--- /dev/null
++++ b/tests/openpgp/issue2941.scm
+@@ -0,0 +1,34 @@
++#!/usr/bin/env gpgscm
++
++;; Copyright (C) 2017 g10 Code GmbH
++;;
++;; This file is part of GnuPG.
++;;
++;; GnuPG is free software; you can redistribute it and/or modify
++;; it under the terms of the GNU General Public License as published by
++;; the Free Software Foundation; either version 3 of the License, or
++;; (at your option) any later version.
++;;
++;; GnuPG is distributed in the hope that it will be useful,
++;; but WITHOUT ANY WARRANTY; without even the implied warranty of
++;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++;; GNU General Public License for more details.
++;;
++;; You should have received a copy of the GNU General Public License
++;; along with this program; if not, see <http://www.gnu.org/licenses/>.
++
++(load (with-path "defs.scm"))
++(setup-legacy-environment)
++
++(define (check-failure options)
++  (let ((command `(,@gpg ,@options)))
++    (catch '()
++	   (call-check command)
++	   (error "Expected an error, but got none when executing" command))))
++
++(for-each-p
++ "Checking invocation with invalid file descriptors (issue2941)."
++ (lambda (option)
++   (check-failure `(,(string-append "--" option "=23") --sign gpg.conf)))
++ '("status-fd" "attribute-fd" "logger-fd"
++   "override-session-key-fd" "passphrase-fd" "command-fd"))

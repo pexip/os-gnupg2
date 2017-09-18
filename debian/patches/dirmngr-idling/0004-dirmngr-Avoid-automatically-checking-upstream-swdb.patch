@@ -1,0 +1,69 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Sun, 20 Nov 2016 23:09:24 -0500
+Subject: dirmngr: Avoid automatically checking upstream swdb.
+
+* dirmngr/dirmngr.c (housekeeping_thread): Avoid automatically
+checking upstream's software database.  In Debian, software updates
+should be handled by the distro mechanism, and additional upstream
+checks only confuse the user.
+* doc/dirmngr.texi: document that --allow-version-check does nothing.
+
+Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+---
+ dirmngr/dirmngr.c | 13 -------------
+ doc/dirmngr.texi  | 11 +++++------
+ 2 files changed, 5 insertions(+), 19 deletions(-)
+
+diff --git a/dirmngr/dirmngr.c b/dirmngr/dirmngr.c
+index a8be56fa4..746f43d10 100644
+--- a/dirmngr/dirmngr.c
++++ b/dirmngr/dirmngr.c
+@@ -1771,7 +1771,6 @@ static void *
+ housekeeping_thread (void *arg)
+ {
+   static int sentinel;
+-  struct server_control_s ctrlbuf;
+ 
+   (void)arg;
+ 
+@@ -1784,18 +1783,6 @@ housekeeping_thread (void *arg)
+   if (opt.verbose > 1)
+     log_info ("starting housekeeping\n");
+ 
+-  memset (&ctrlbuf, 0, sizeof ctrlbuf);
+-  dirmngr_init_default_ctrl (&ctrlbuf);
+-
+-  if (network_activity_seen)
+-    {
+-      network_activity_seen = 0;
+-      if (opt.use_tor || opt.allow_version_check)
+-        dirmngr_load_swdb (&ctrlbuf, 0);
+-    }
+-
+-  dirmngr_deinit_default_ctrl (&ctrlbuf);
+-
+   if (opt.verbose > 1)
+     log_info ("ready with housekeeping\n");
+   sentinel--;
+diff --git a/doc/dirmngr.texi b/doc/dirmngr.texi
+index e27157c00..dd104273d 100644
+--- a/doc/dirmngr.texi
++++ b/doc/dirmngr.texi
+@@ -266,12 +266,11 @@ seconds.
+ @item --allow-version-check
+ @opindex allow-version-check
+ Allow Dirmngr to connect to @code{https://versions.gnupg.org} to get
+-the list of current software versions.  If this option is enabled, or
+-if @option{use-tor} is active, the list is retrieved when the local
+-copy does not exist or is older than 5 to 7 days.  See the option
+-@option{--query-swdb} of the command @command{gpgconf} for more
+-details.  Note, that regardless of this option a version check can
+-always be triggered using this command:
++the list of current software versions.  On debian-packaged versions,
++this option does nothing since software updates should be handled by
++the distribution.  See the option @option{--query-swdb} of the command
++@command{gpgconf} for more details.  Note, that regardless of this
++option a version check can always be triggered using this command:
+ 
+ @example
+        gpg-connect-agent --dirmngr 'loadswdb --force' /bye

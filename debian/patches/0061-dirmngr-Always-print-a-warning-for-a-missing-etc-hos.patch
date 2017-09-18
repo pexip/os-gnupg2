@@ -1,0 +1,49 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Mon, 3 Apr 2017 20:20:27 +0200
+Subject: dirmngr: Always print a warning for a missing /etc/hosts.
+
+* dirmngr/dns-stuff.c (libdns_init): No Windows specific handling of a
+missing /etc/hosts.
+--
+
+My last comment on this was flawed.  Windows seems to always have its
+version of /etc/hosts.  Only the en passant fixed bad escaping led me
+assume that this was the case.  Thanks to Andre for complaining about
+my comment remark.
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 35c843c815306f36d1efbc52f5e2f6bac3f67aec)
+---
+ dirmngr/dns-stuff.c | 11 +----------
+ 1 file changed, 1 insertion(+), 10 deletions(-)
+
+diff --git a/dirmngr/dns-stuff.c b/dirmngr/dns-stuff.c
+index c2d5488..150237e 100644
+--- a/dirmngr/dns-stuff.c
++++ b/dirmngr/dns-stuff.c
+@@ -550,24 +550,15 @@ libdns_init (void)
+ 
+     derr = dns_hosts_loadpath (ld.hosts, hosts_path);
+     xfree (hosts_path);
+-    if (derr)
+-      {
+-        err = libdns_error_to_gpg_error (derr);
+-        /* Most Windows systems don't have a hosts files.  So do not
+-         * report in this case.  */
+-        if (gpg_err_code (err) != GPG_ERR_ENOENT)
+-          log_error ("failed to load hosts file: %s\n", gpg_strerror (err));
+-        err = 0; /* Do not bail out.  */
+-      }
+ #else
+     derr = dns_hosts_loadpath (ld.hosts, "/etc/hosts");
++#endif
+     if (derr)
+       {
+         err = libdns_error_to_gpg_error (derr);
+         log_error ("failed to load hosts file: %s\n", gpg_strerror (err));
+         err = 0; /* Do not bail out - having no /etc/hosts is legal.  */
+       }
+-#endif
+   }
+ 
+   /* dns_hints_local for stub mode, dns_hints_root for recursive.  */

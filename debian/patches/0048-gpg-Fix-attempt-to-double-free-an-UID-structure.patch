@@ -1,0 +1,59 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Sun, 5 Mar 2017 23:24:15 +0100
+Subject: gpg: Fix attempt to double free an UID structure.
+
+* g10/getkey.c (get_best_pubkey_byname): Set released .UID to NULL.
+--
+
+Phil Pennock reported an assertion failure when doing
+
+  % gpg --auto-key-locate dane --locate-keys someone
+  gpg: Ohhhh jeeee: Assertion "uid->ref > 0" in \
+         free_user_id failed (free-packet.c:310)
+
+on his keyring.  This patch is not tested but a good guess.
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 4a130bbc2c2f4be6e8c6357512a943f435ade28f)
+---
+ g10/getkey.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/g10/getkey.c b/g10/getkey.c
+index e39de28..21dcf08 100644
+--- a/g10/getkey.c
++++ b/g10/getkey.c
+@@ -1592,8 +1592,10 @@ get_best_pubkey_byname (ctrl_t ctrl, GETKEY_CTX *retctx, PKT_public_key *pk,
+   if (is_valid_mailbox (name) && ctx)
+     {
+       /* Rank results and return only the most relevant key.  */
+-      struct pubkey_cmp_cookie best = { 0 }, new;
+-      KBNODE new_keyblock;
++      struct pubkey_cmp_cookie best = { 0 };
++      struct pubkey_cmp_cookie new;
++      kbnode_t new_keyblock;
++
+       while (getkey_next (ctx, &new.key, &new_keyblock) == 0)
+         {
+           int diff = pubkey_cmp (ctrl, name, &best, &new, new_keyblock);
+@@ -1610,17 +1612,20 @@ get_best_pubkey_byname (ctrl_t ctrl, GETKEY_CTX *retctx, PKT_public_key *pk,
+               /* Old key is better.  */
+               release_public_key_parts (&new.key);
+               free_user_id (new.uid);
++              new.uid = NULL;
+             }
+           else
+             {
+               /* A tie.  Keep the old key.  */
+               release_public_key_parts (&new.key);
+               free_user_id (new.uid);
++              new.uid = NULL;
+             }
+         }
+       getkey_end (ctx);
+       ctx = NULL;
+       free_user_id (best.uid);
++      best.uid = NULL;
+ 
+       if (best.valid)
+         {

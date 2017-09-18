@@ -1,0 +1,55 @@
+From: NIIBE Yutaka <gniibe@fsij.org>
+Date: Sun, 5 Feb 2017 08:34:08 +0900
+Subject: scd: Backport two fixes from master.
+
+* scd/app.c (app_new_register): Initialize by -1, so that it can detect
+an error correctly when card reader can't power-on the card initially.
+* scd/command.c (open_card_with_request): Release APP before the scan.
+
+--
+The first one-liner patch handles an erroneous card.
+
+The second patch handles the case when we repeatedly do
+signing/decrypting by a single session of scdaemon.
+
+Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
+---
+ scd/app.c     | 1 +
+ scd/command.c | 5 +++++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/scd/app.c b/scd/app.c
+index b10a452d6..989e0c060 100644
+--- a/scd/app.c
++++ b/scd/app.c
+@@ -192,6 +192,7 @@ app_new_register (int slot, ctrl_t ctrl, const char *name)
+     }
+ 
+   app->slot = slot;
++  app->card_status = (unsigned int)-1;
+ 
+   if (npth_mutex_init (&app->lock, NULL))
+     {
+diff --git a/scd/command.c b/scd/command.c
+index 8c7ca20a6..0ae6d29aa 100644
+--- a/scd/command.c
++++ b/scd/command.c
+@@ -217,6 +217,7 @@ open_card_with_request (ctrl_t ctrl, const char *apptype, const char *serialno)
+   gpg_error_t err;
+   unsigned char *serialno_bin = NULL;
+   size_t serialno_bin_len = 0;
++  app_t app = ctrl->app_ctx;
+ 
+   /* If we are already initialized for one specific application we
+      need to check that the client didn't requested a specific
+@@ -224,6 +225,10 @@ open_card_with_request (ctrl_t ctrl, const char *apptype, const char *serialno)
+   if (apptype && ctrl->app_ctx)
+     return check_application_conflict (apptype, ctrl->app_ctx);
+ 
++  /* Re-scan USB devices.  Release APP, before the scan.  */
++  ctrl->app_ctx = NULL;
++  release_application (app);
++
+   if (serialno)
+     serialno_bin = hex_to_buffer (serialno, &serialno_bin_len);
+ 

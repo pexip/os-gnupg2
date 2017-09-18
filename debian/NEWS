@@ -1,0 +1,8 @@
+gnupg2 (2.1.11-7+exp1) experimental; urgency=medium
+
+  The gnupg package now provides the "modern" version of GnuPG.
+
+  Please read /usr/share/doc/gnupg/README.Debian for details about the
+  transition from "classic" to "modern"
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Wed, 30 Mar 2016 09:59:35 -0400

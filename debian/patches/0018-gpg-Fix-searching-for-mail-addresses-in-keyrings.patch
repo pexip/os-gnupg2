@@ -1,0 +1,54 @@
+From: Justus Winter <justus@g10code.com>
+Date: Wed, 25 Jan 2017 16:33:20 +0100
+Subject: gpg: Fix searching for mail addresses in keyrings.
+
+* g10/keyring.c (compare_name): Fix KEYDB_SEARCH_MODE_MAIL* searches
+in keyrings when the UID is a plain addr-spec.
+--
+Previously, 'gpg --list-key "<foo@example.org>"' failed if 1/ the
+keyring format is used and 2/ the key's UID is a plain addr-spec
+(cf. RFC2822 section 4.3), e.g. 'foo@example.org'.
+
+GnuPG-bug-id: 2930
+Signed-off-by: Justus Winter <justus@g10code.com>
+(cherry picked from commit 3f4f20ee6eff052c88647b820d9ecfdbd8df0f40)
+---
+ g10/keyring.c | 22 ++++++++++++++++++----
+ 1 file changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/g10/keyring.c b/g10/keyring.c
+index f1281e98e..328290ed8 100644
+--- a/g10/keyring.c
++++ b/g10/keyring.c
+@@ -928,13 +928,27 @@ compare_name (int mode, const char *name, const char *uid, size_t uidlen)
+     else if (   mode == KEYDB_SEARCH_MODE_MAIL
+              || mode == KEYDB_SEARCH_MODE_MAILSUB
+              || mode == KEYDB_SEARCH_MODE_MAILEND) {
++        int have_angles = 1;
+ 	for (i=0, s= uid; i < uidlen && *s != '<'; s++, i++)
+ 	    ;
++	if (i == uidlen)
++	  {
++	    /* The UID is a plain addr-spec (cf. RFC2822 section 4.3).  */
++	    have_angles = 0;
++	    s = uid;
++	    i = 0;
++	  }
+ 	if (i < uidlen)  {
+-	    /* skip opening delim and one char and look for the closing one*/
+-	    s++; i++;
+-	    for (se=s+1, i++; i < uidlen && *se != '>'; se++, i++)
+-		;
++	    if (have_angles)
++	      {
++		/* skip opening delim and one char and look for the closing one*/
++		s++; i++;
++		for (se=s+1, i++; i < uidlen && *se != '>'; se++, i++)
++		  ;
++	      }
++	    else
++	      se = s + uidlen;
++
+ 	    if (i < uidlen) {
+ 		i = se - s;
+ 		if (mode == KEYDB_SEARCH_MODE_MAIL) {

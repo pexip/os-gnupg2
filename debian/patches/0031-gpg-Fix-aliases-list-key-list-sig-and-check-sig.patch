@@ -1,0 +1,66 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Sat, 4 Feb 2017 01:23:32 -0500
+Subject: gpg: Fix aliases --list-key, --list-sig, and --check-sig.
+
+* g10/gpg.c (opts): Define commands with ARGPARSE_c
+instead of ARGPARSE_s_n.
+
+--
+
+These three entries are commands, but they're being treated as a
+string-based option for some reason.  However, if you try to use them
+concurrently with another command like --clearsign, you'll get "gpg:
+conflicting commands".
+
+Furthermore, because they're marked as options, their flags differ
+from the commands that they alias, they cause ambiguity in
+abbreviation (e.g. try "gpg --list-ke") which should have been fixed
+by 7249ab0f95d1f6cb8ee61eefedc79801bb56398f.
+
+Marking them explicitly as commands for argparse should be more
+accurate and should resolve the abbreviation ambiguity issue.
+
+Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+gpg: fix aliases --list-key, --list-sig, and --check-sig.
+
+* g10/gpg.c: ARGPARSE_OPTS opts[]: define commands with ARGPARSE_c
+instead of ARGPARSE_s_n.
+
+--
+
+These three entries are commands, but they're being treated as a
+string-based option for some reason.  However, if you try to use them
+concurrently with another command like --clearsign, you'll get "gpg:
+conflicting commands".
+
+Furthermore, because they're marked as options, their flags differ
+from the commands that they alias, they cause ambiguity in
+abbreviation (e.g. try "gpg --list-ke") which should have been fixed
+by 7249ab0f95d1f6cb8ee61eefedc79801bb56398f.
+
+Marking them explicitly as commands for argparse should be more
+accurate and should resolve the abbreviation ambiguity issue.
+
+Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+(cherry picked from commit f31120a5aa40b6e4e89d41d1d5d34e0f7da173b4)
+---
+ g10/gpg.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/g10/gpg.c b/g10/gpg.c
+index f9039ae..e280c22 100644
+--- a/g10/gpg.c
++++ b/g10/gpg.c
+@@ -728,9 +728,9 @@ static ARGPARSE_OPTS opts[] = {
+   ARGPARSE_s_n (oWithKeyData,"with-key-data", "@"),
+   ARGPARSE_s_n (oWithSigList,"with-sig-list", "@"),
+   ARGPARSE_s_n (oWithSigCheck,"with-sig-check", "@"),
+-  ARGPARSE_s_n (aListKeys, "list-key", "@"),   /* alias */
+-  ARGPARSE_s_n (aListSigs, "list-sig", "@"),   /* alias */
+-  ARGPARSE_s_n (aCheckKeys, "check-sig", "@"), /* alias */
++  ARGPARSE_c (aListKeys, "list-key", "@"),   /* alias */
++  ARGPARSE_c (aListSigs, "list-sig", "@"),   /* alias */
++  ARGPARSE_c (aCheckKeys, "check-sig", "@"), /* alias */
+   ARGPARSE_s_n (oSkipVerify, "skip-verify", "@"),
+   ARGPARSE_s_n (oSkipHiddenRecipients, "skip-hidden-recipients", "@"),
+   ARGPARSE_s_n (oNoSkipHiddenRecipients, "no-skip-hidden-recipients", "@"),

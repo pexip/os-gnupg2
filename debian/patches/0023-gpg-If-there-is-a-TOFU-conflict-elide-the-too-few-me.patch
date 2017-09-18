@@ -1,0 +1,42 @@
+From: "Neal H. Walfield" <neal@g10code.com>
+Date: Thu, 2 Feb 2017 13:26:17 +0100
+Subject: gpg: If there is a TOFU conflict, elide the too few message warning.
+
+* g10/tofu.c (tofu_get_validity): If there was a conflict, don't also
+print out a warning about too few messages.
+
+Signed-off-by: Neal H. Walfield <neal@g10code.com>
+(cherry picked from commit a08c781739e7561093f32b732c4991f2bd817ec2)
+---
+ g10/tofu.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/g10/tofu.c b/g10/tofu.c
+index fc03c5a7d..41bdd5f30 100644
+--- a/g10/tofu.c
++++ b/g10/tofu.c
+@@ -3694,6 +3694,7 @@ tofu_get_validity (ctrl_t ctrl, PKT_public_key *pk, strlist_t user_id_list,
+   int bindings = 0;
+   int bindings_valid = 0;
+   int need_warning = 0;
++  int had_conflict = 0;
+ 
+   dbs = opendbs (ctrl);
+   if (! dbs)
+@@ -3762,6 +3763,7 @@ tofu_get_validity (ctrl_t ctrl, PKT_public_key *pk, strlist_t user_id_list,
+                * key.  */
+               log_assert (conflict_set);
+ 
++              had_conflict = 1;
+               for (iter = conflict_set; iter; iter = iter->next)
+                 show_statistics (dbs, iter->d, email,
+                                  TOFU_POLICY_ASK, NULL, 1, now);
+@@ -3794,7 +3796,7 @@ tofu_get_validity (ctrl_t ctrl, PKT_public_key *pk, strlist_t user_id_list,
+       xfree (email);
+     }
+ 
+-  if (need_warning)
++  if (need_warning && ! had_conflict)
+     show_warning (fingerprint, user_id_list);
+ 
+  die:

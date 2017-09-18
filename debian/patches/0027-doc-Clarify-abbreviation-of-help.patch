@@ -1,0 +1,27 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Sat, 4 Feb 2017 01:28:08 -0500
+Subject: doc: Clarify abbreviation of --help.
+
+* doc/gpg.texi: clarify abbreviation of --help.
+
+Debian-bug-id: 852979
+Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+(cherry picked from commit f2b276dffbe2435b17abf2b3c51684d3636f3f11)
+---
+ doc/gpg.texi | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/doc/gpg.texi b/doc/gpg.texi
+index 8e1a5e6fc..b79b78334 100644
+--- a/doc/gpg.texi
++++ b/doc/gpg.texi
+@@ -141,7 +141,8 @@ cannot abbreviate this command.
+ @itemx -h
+ @opindex help
+ Print a usage message summarizing the most useful command-line options.
+-Note that you cannot abbreviate this command.
++Note that you cannot arbitrarily abbreviate this command
++(though you can use its short form @option{-h}).
+ 
+ @item --warranty
+ @opindex warranty

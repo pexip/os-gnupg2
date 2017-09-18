@@ -1,0 +1,4 @@
+# doc merely references / cites IETF RFC: 
+gnupg2 source: license-problem-non-free-RFC doc/OpenPGP
+gnupg2 source: license-problem-non-free-RFC debian/copyright
+

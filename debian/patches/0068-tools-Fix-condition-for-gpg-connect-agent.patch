@@ -1,0 +1,30 @@
+From: NIIBE Yutaka <gniibe@fsij.org>
+Date: Wed, 12 Apr 2017 16:01:16 +0900
+Subject: tools: Fix condition for gpg-connect-agent.
+
+* tools/gpg-connect-agent.c (start_agent): Add paren.
+
+--
+
+The intention is comparing the error code depending opt.use_dirmngr.
+Considering C Operator Precedence, we should have paren here.
+
+Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
+(cherry picked from commit f52f6af834cc488d11612e349e4af023d69a45f4)
+---
+ tools/gpg-connect-agent.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tools/gpg-connect-agent.c b/tools/gpg-connect-agent.c
+index a5413cf..5af1465 100644
+--- a/tools/gpg-connect-agent.c
++++ b/tools/gpg-connect-agent.c
+@@ -2237,7 +2237,7 @@ start_agent (void)
+     {
+       if (!opt.autostart
+           && (gpg_err_code (err)
+-              == opt.use_dirmngr? GPG_ERR_NO_DIRMNGR : GPG_ERR_NO_AGENT))
++              == (opt.use_dirmngr? GPG_ERR_NO_DIRMNGR : GPG_ERR_NO_AGENT)))
+         {
+           /* In the no-autostart case we don't make gpg-connect-agent
+              fail on a missing server.  */

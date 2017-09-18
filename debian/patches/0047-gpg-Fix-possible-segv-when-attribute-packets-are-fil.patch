@@ -1,0 +1,58 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Fri, 3 Mar 2017 09:50:40 +0100
+Subject: gpg: Fix possible segv when attribute packets are filtered.
+
+* g10/import.c (impex_filter_getval): Handle PKT_ATTRIBUTE the same as
+PKT_USER_ID
+(apply_drop_sig_filter): Ditto.
+--
+
+The old code was plainly wrong in that it considered PKT_ATTRIBUTE to
+use a PKT_signature object.
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 5f6f3f5cae8a95ed469129f9677782c17951dab3)
+---
+ g10/import.c | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/g10/import.c b/g10/import.c
+index b6c04dc..4e6f692 100644
+--- a/g10/import.c
++++ b/g10/import.c
+@@ -1173,7 +1173,8 @@ impex_filter_getval (void *cookie, const char *propname)
+   static char numbuf[20];
+   const char *result;
+ 
+-  if (node->pkt->pkttype == PKT_USER_ID)
++  if (node->pkt->pkttype == PKT_USER_ID
++      || node->pkt->pkttype == PKT_ATTRIBUTE)
+     {
+       if (!strcmp (propname, "uid"))
+         result = node->pkt->pkt.user_id->name;
+@@ -1191,8 +1192,7 @@ impex_filter_getval (void *cookie, const char *propname)
+       else
+         result = NULL;
+     }
+-  else if (node->pkt->pkttype == PKT_SIGNATURE
+-           || node->pkt->pkttype == PKT_ATTRIBUTE)
++  else if (node->pkt->pkttype == PKT_SIGNATURE)
+     {
+       PKT_signature *sig = node->pkt->pkt.signature;
+ 
+@@ -1313,12 +1313,12 @@ apply_drop_sig_filter (kbnode_t keyblock, recsel_expr_t selector)
+       if (node->pkt->pkttype == PKT_PUBLIC_SUBKEY
+           || node->pkt->pkttype == PKT_SECRET_SUBKEY)
+         break; /* ready.  */
+-      if (node->pkt->pkttype == PKT_USER_ID)
++      if (node->pkt->pkttype == PKT_USER_ID
++          || node->pkt->pkttype == PKT_ATTRIBUTE)
+         active = 1;
+       if (!active)
+         continue;
+-      if (node->pkt->pkttype != PKT_SIGNATURE
+-          && node->pkt->pkttype != PKT_ATTRIBUTE)
++      if (node->pkt->pkttype != PKT_SIGNATURE)
+         continue;
+ 
+       sig = node->pkt->pkt.signature;

@@ -1,0 +1,27 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Fri, 7 Apr 2017 10:11:07 +0200
+Subject: gpg: Fix printing of offline taken subkey.
+
+* g10/keylist.c (list_keyblock_print): Set SECRET to 2 and not 0x32.
+--
+
+Reported-by: Danielle McLean <dani@00dani.me>
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 547bc01d57528ecc27b3b5e16797967a7f88fecf)
+---
+ g10/keylist.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/g10/keylist.c b/g10/keylist.c
+index 4078053..1998ee9 100644
+--- a/g10/keylist.c
++++ b/g10/keylist.c
+@@ -1017,7 +1017,7 @@ list_keyblock_print (ctrl_t ctrl, kbnode_t keyblock, int secret, int fpr,
+               if (!agent_get_keyinfo (NULL, hexgrip, &serialno, NULL))
+                 secret = serialno? 3 : 1;
+               else
+-                secret = '2';  /* Key not found.  */
++                secret = 2;  /* Key not found.  */
+             }
+ 
+           /* Print the "sub" line.  */

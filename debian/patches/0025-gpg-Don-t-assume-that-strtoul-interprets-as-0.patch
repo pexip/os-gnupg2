@@ -1,0 +1,53 @@
+From: "Neal H. Walfield" <neal@g10code.com>
+Date: Thu, 2 Feb 2017 15:48:45 +0100
+Subject: gpg: Don't assume that strtoul interprets "" as 0.
+
+* g10/tofu.c (show_statistics): If there are not records, return 0
+instead of NULL.
+
+--
+Signed-off-by: Neal H. Walfield <neal@g10code.com>
+GnuPG-bug-id: 2853
+
+According to SUSv3:
+
+  If the subject sequence is empty or does not have the expected form,
+  no conversion is performed
+  ...
+  If no conversion could be performed, 0 is returned and errno may be
+  set to [EINVAL].
+
+  http://pubs.opengroup.org/onlinepubs/007908799/xsh/strtol.html
+
+It appears that MacOS X sets errno to EINVAL, but glibc doesn't.
+Hence, we map NULL to 0 explicitly.
+
+(cherry picked from commit 407f5f9baea5591f148974240a87dfb43e5efef3)
+---
+ g10/tofu.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/g10/tofu.c b/g10/tofu.c
+index 85347bb74..449e921b6 100644
+--- a/g10/tofu.c
++++ b/g10/tofu.c
+@@ -2983,7 +2983,8 @@ show_statistics (tofu_dbs_t dbs,
+   /* Get the signature stats.  */
+   rc = gpgsql_exec_printf
+     (dbs->db, strings_collect_cb, &strlist, &err,
+-     "select count (*), min (signatures.time), max (signatures.time)\n"
++     "select count (*), coalesce (min (signatures.time), 0),\n"
++     "  coalesce (max (signatures.time), 0)\n"
+      " from signatures\n"
+      " left join bindings on signatures.binding = bindings.oid\n"
+      " where fingerprint = %Q and email = %Q;",
+@@ -3036,7 +3037,8 @@ show_statistics (tofu_dbs_t dbs,
+   /* Get the encryption stats.  */
+   rc = gpgsql_exec_printf
+     (dbs->db, strings_collect_cb, &strlist, &err,
+-     "select count (*), min (encryptions.time), max (encryptions.time)\n"
++     "select count (*), coalesce (min (encryptions.time), 0),\n"
++     "  coalesce (max (encryptions.time), 0)\n"
+      " from encryptions\n"
+      " left join bindings on encryptions.binding = bindings.oid\n"
+      " where fingerprint = %Q and email = %Q;",

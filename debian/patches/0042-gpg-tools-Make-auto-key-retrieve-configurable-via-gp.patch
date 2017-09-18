@@ -1,0 +1,40 @@
+From: Justus Winter <justus@g10code.com>
+Date: Tue, 28 Feb 2017 14:59:11 +0100
+Subject: gpg,tools: Make auto-key-retrieve configurable via gpgconf.
+
+* g10/gpg.c (gpgconf_list): Add 'auto-key-retrieve'.
+* tools/gpgconf-comp.c (gc_options_gpg): Likewise.
+
+GnuPG-bug-id: 2381
+Signed-off-by: Justus Winter <justus@g10code.com>
+(cherry picked from commit d379a0174cca595204b32da9a66c513a1304e6d0)
+---
+ g10/gpg.c            | 1 +
+ tools/gpgconf-comp.c | 2 ++
+ 2 files changed, 3 insertions(+)
+
+diff --git a/g10/gpg.c b/g10/gpg.c
+index 09bdf66..2a4a0ad 100644
+--- a/g10/gpg.c
++++ b/g10/gpg.c
+@@ -1840,6 +1840,7 @@ gpgconf_list (const char *configfile)
+   es_printf ("encrypt-to:%lu:\n", GC_OPT_FLAG_NONE);
+   es_printf ("try-secret-key:%lu:\n", GC_OPT_FLAG_NONE);
+   es_printf ("auto-key-locate:%lu:\n", GC_OPT_FLAG_NONE);
++  es_printf ("auto-key-retrieve:%lu:\n", GC_OPT_FLAG_NONE);
+   es_printf ("log-file:%lu:\n", GC_OPT_FLAG_NONE);
+   es_printf ("debug-level:%lu:\"none:\n", GC_OPT_FLAG_DEFAULT);
+   es_printf ("group:%lu:\n", GC_OPT_FLAG_NONE);
+diff --git a/tools/gpgconf-comp.c b/tools/gpgconf-comp.c
+index cdd2586..530c128 100644
+--- a/tools/gpgconf-comp.c
++++ b/tools/gpgconf-comp.c
+@@ -747,6 +747,8 @@ static gc_option_t gc_options_gpg[] =
+    { "auto-key-locate", GC_OPT_FLAG_NONE, GC_LEVEL_ADVANCED,
+      "gnupg", N_("|MECHANISMS|use MECHANISMS to locate keys by mail address"),
+      GC_ARG_TYPE_STRING, GC_BACKEND_GPG },
++   { "auto-key-retrieve", GC_OPT_FLAG_NONE, GC_LEVEL_INVISIBLE,
++     NULL, NULL, GC_ARG_TYPE_NONE, GC_BACKEND_GPG },
+ 
+ 
+    GC_OPTION_NULL

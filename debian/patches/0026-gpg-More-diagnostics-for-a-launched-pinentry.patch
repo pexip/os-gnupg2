@@ -1,0 +1,81 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Fri, 3 Feb 2017 12:04:52 +0100
+Subject: gpg: More diagnostics for a launched pinentry.
+
+* agent/call-pinentry.c (start_pinentry): Call getinfo/ttyinfo.
+* g10/server.c (gpg_proxy_pinentry_notify): Simplify the output so
+that we do not change the code when adding new fields to
+PINENTRY_LAUNCHED.
+--
+
+This patch changes the --verbose output of gpg to show
+for example
+
+  gpg: pinentry launched (5228 gtk2 1.0.1-beta10 \
+  /dev/pts/4 xterm localhost:10.0)
+
+the used tty, its type, and the value of DISPLAY in addiion to the
+pid, flavor, and version.
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 7052a0d77cf8f3a445b252a809d29be445788625)
+---
+ agent/call-pinentry.c |  6 +++++-
+ g10/server.c          | 19 ++++++++-----------
+ 2 files changed, 13 insertions(+), 12 deletions(-)
+
+diff --git a/agent/call-pinentry.c b/agent/call-pinentry.c
+index fa00bf921..2bebee205 100644
+--- a/agent/call-pinentry.c
++++ b/agent/call-pinentry.c
+@@ -541,7 +541,7 @@ start_pinentry (ctrl_t ctrl)
+     }
+ 
+ 
+-  /* Ask the pinentry for its version and flavor and streo that as a
++  /* Ask the pinentry for its version and flavor and store that as a
+    * string in MB.  This information is useful for helping users to
+    * figure out Pinentry problems.  */
+   {
+@@ -555,6 +555,10 @@ start_pinentry (ctrl_t ctrl)
+     if (assuan_transact (entry_ctx, "GETINFO version",
+                          put_membuf_cb, &mb, NULL, NULL, NULL, NULL))
+       put_membuf_str (&mb, "unknown");
++    put_membuf_str (&mb, " ");
++    if (assuan_transact (entry_ctx, "GETINFO ttyinfo",
++                         put_membuf_cb, &mb, NULL, NULL, NULL, NULL))
++      put_membuf_str (&mb, "? ? ?");
+     put_membuf (&mb, "", 1);
+     flavor_version = get_membuf (&mb, NULL);
+   }
+diff --git a/g10/server.c b/g10/server.c
+index b89f0be69..e3a3bad22 100644
+--- a/g10/server.c
++++ b/g10/server.c
+@@ -770,18 +770,15 @@ gpg_server (ctrl_t ctrl)
+ gpg_error_t
+ gpg_proxy_pinentry_notify (ctrl_t ctrl, const unsigned char *line)
+ {
+-  if (opt.verbose)
+-    {
+-      char *linecopy = xtrystrdup (line);
+-      char *fields[4];
+-
+-      if (linecopy
+-          && split_fields (linecopy, fields, DIM (fields)) >= 4
+-          && !strcmp (fields[0], "PINENTRY_LAUNCHED"))
+-        log_info (_("pinentry launched (pid %s, flavor %s, version %s)\n"),
+-                  fields[1], fields[2], fields[3]);
++  const char *s;
+ 
+-      xfree (linecopy);
++  if (opt.verbose
++      && !strncmp (line, "PINENTRY_LAUNCHED", 17)
++      && (line[17]==' '||!line[17]))
++    {
++      for (s = line + 17; *s && spacep (s); s++)
++        ;
++      log_info (_("pinentry launched (%s)\n"), s);
+     }
+ 
+   if (!ctrl || !ctrl->server_local
