@@ -76,3 +76,4 @@ gpg-agent-idling/0004-agent-Avoid-scheduled-checks-on-socket-when-inotify-.patch
 skip-missing-signing-keys/0076-g10-Skip-signing-keys-where-no-secret-key-is-availab.patch
 skel-file-removal/0077-g10-remove-skeleton-options-files.patch
 avoid-spurious-warnings/0078-gpg-Avoid-spurious-warnings-about-trust-packets.patch
+0079-gpg-Sanitize-diagnostic-with-the-original-file-name.patch
