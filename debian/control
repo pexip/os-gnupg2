@@ -1,8 +1,9 @@
 Source: gnupg2
 Section: utils
 Priority: optional
-Maintainer: Debian GnuPG Maintainers <pkg-gnupg-maint@lists.alioth.debian.org>
-Uploaders:
+Maintainer: Pexip AS <packaging@pexip.com>
+XSBC-Pexip-Original-Maintainer: Debian GnuPG Maintainers <pkg-gnupg-maint@lists.alioth.debian.org>
+XSBC-Pexip-Original-Uploaders:
  Eric Dorland <eric@debian.org>,
  Daniel Kahn Gillmor <dkg@fifthhorseman.net>,
 Standards-Version: 3.9.8
@@ -44,6 +45,7 @@ Build-Depends-Indep:
 Vcs-Git: https://anonscm.debian.org/git/pkg-gnupg/gnupg2.git -b stretch
 Vcs-Browser: https://anonscm.debian.org/git/pkg-gnupg/gnupg2.git
 Homepage: https://www.gnupg.org/
+XS-Pexip-Upstream: http://ftp.debian.org/debian/ stretch
 
 Package: gnupg-agent
 Architecture: any

@@ -1,3 +1,9 @@
+gnupg2 (2.1.18-8~deb9u1pexip1) pexip; urgency=medium
+
+  * Prepare Pexip packaging
+
+ -- John-Mark Bell <jmb@pexip.com>  Fri, 06 Jul 2018 14:58:58 +0000
+
 gnupg2 (2.1.18-8~deb9u1) stretch; urgency=medium
 
   * Bugfix update for debian stretch point release.
