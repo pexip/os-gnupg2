@@ -1,3 +1,16 @@
+gnupg2 (2.1.18-8~deb9u2pexip1) pexip; urgency=medium
+
+  * New upstream release
+
+ -- John-Mark Bell <jmb@pexip.com>  Sat, 28 Jul 2018 22:54:05 +0100
+
+gnupg2 (2.1.18-8~deb9u2) stretch-security; urgency=high
+
+  * Non-maintainer upload by the Security Team.
+  * gpg: Sanitize diagnostic with the original file name (CVE-2018-12020)
+
+ -- Salvatore Bonaccorso <carnil@debian.org>  Fri, 08 Jun 2018 20:12:24 +0200
+
 gnupg2 (2.1.18-8~deb9u1pexip1) pexip; urgency=medium
 
   * Prepare Pexip packaging
