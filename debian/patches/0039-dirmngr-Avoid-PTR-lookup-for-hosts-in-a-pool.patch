@@ -14,7 +14,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  1 file changed, 18 insertions(+), 5 deletions(-)
 
 diff --git a/dirmngr/ks-engine-hkp.c b/dirmngr/ks-engine-hkp.c
-index be8b083..32db4bc 100644
+index be8b08333..32db4bc69 100644
 --- a/dirmngr/ks-engine-hkp.c
 +++ b/dirmngr/ks-engine-hkp.c
 @@ -320,10 +320,17 @@ add_host (const char *name, int is_pool,

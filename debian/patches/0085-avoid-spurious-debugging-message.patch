@@ -1,0 +1,21 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Wed, 3 Oct 2018 00:14:24 -0500
+Subject: avoid spurious debugging message
+
+---
+ g10/export.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/g10/export.c b/g10/export.c
+index ea9ffb4d0..4c4c0971a 100644
+--- a/g10/export.c
++++ b/g10/export.c
+@@ -1377,7 +1377,7 @@ apply_drop_subkey_filter (kbnode_t keyblock, recsel_expr_t selector)
+         {
+           if (recsel_select (selector, impex_filter_getval, node))
+             {
+-              log_debug ("drop-subkey: deleting a key\n");
++              /*log_debug ("drop-subkey: deleting a key\n");*/
+               /* The subkey packet and all following packets up to the
+                * next subkey.  */
+               delete_kbnode (node);

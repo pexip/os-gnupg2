@@ -15,7 +15,7 @@ Signed-off-by: Justus Winter <justus@g10code.com>
  2 files changed, 8 insertions(+)
 
 diff --git a/g10/keyedit.c b/g10/keyedit.c
-index 1456d28..a477e92 100644
+index 1456d2867..a477e92c4 100644
 --- a/g10/keyedit.c
 +++ b/g10/keyedit.c
 @@ -3053,6 +3053,8 @@ keyedit_quick_revuid (ctrl_t ctrl, const char *username, const char *uidtorev)
@@ -28,7 +28,7 @@ index 1456d28..a477e92 100644
    release_kbnode (keyblock);
    keydb_release (kdbhd);
 diff --git a/tests/openpgp/quick-key-manipulation.scm b/tests/openpgp/quick-key-manipulation.scm
-index d43f7b5..ae1d0b9 100755
+index d43f7b53a..ae1d0b963 100755
 --- a/tests/openpgp/quick-key-manipulation.scm
 +++ b/tests/openpgp/quick-key-manipulation.scm
 @@ -36,6 +36,7 @@

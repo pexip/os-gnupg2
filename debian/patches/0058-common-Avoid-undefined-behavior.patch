@@ -12,7 +12,7 @@ Signed-off-by: Justus Winter <justus@g10code.com>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/common/iobuf.c b/common/iobuf.c
-index d346027..b8baf7f 100644
+index d346027e4..b8baf7ff7 100644
 --- a/common/iobuf.c
 +++ b/common/iobuf.c
 @@ -2552,7 +2552,7 @@ iobuf_read_line (iobuf_t a, byte ** addr_of_buffer,

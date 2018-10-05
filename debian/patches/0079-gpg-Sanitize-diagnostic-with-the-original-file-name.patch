@@ -1,9 +1,6 @@
 From: Werner Koch <wk@gnupg.org>
 Date: Fri, 8 Jun 2018 10:45:21 +0200
 Subject: gpg: Sanitize diagnostic with the original file name.
-Origin: https://git.gnupg.org/cgi-bin/gitweb.cgi?p=gnupg.git;a=commit;h=210e402acd3e284b32db1901e43bf1470e659e49
-Bug: https://dev.gnupg.org/T4012
-Bug-Debian-Security: https://security-tracker.debian.org/tracker/CVE-2018-12020
 
 * g10/mainproc.c (proc_plaintext): Sanitize verbose output.
 --
@@ -22,10 +19,10 @@ GnuPG-bug-id: 4012
  1 file changed, 8 insertions(+), 1 deletion(-)
 
 diff --git a/g10/mainproc.c b/g10/mainproc.c
-index 116b72a6b..72b0dd828 100644
+index ac2ab03c9..79ad8d5a2 100644
 --- a/g10/mainproc.c
 +++ b/g10/mainproc.c
-@@ -758,7 +758,14 @@ proc_plaintext( CTX c, PACKET *pkt )
+@@ -675,7 +675,14 @@ proc_plaintext( CTX c, PACKET *pkt )
    if (pt->namelen == 8 && !memcmp( pt->name, "_CONSOLE", 8))
      log_info (_("Note: sender requested \"for-your-eyes-only\"\n"));
    else if (opt.verbose)
@@ -41,6 +38,3 @@ index 116b72a6b..72b0dd828 100644
  
    free_md_filter_context (&c->mfx);
    if (gcry_md_open (&c->mfx.md, 0, 0))
--- 
-2.17.1
-

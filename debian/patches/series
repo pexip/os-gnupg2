@@ -1,5 +1,5 @@
 debian-packaging/0001-avoid-beta-warning.patch
-block-ptrace-on-agent/0002-Avoid-simple-memory-dumps-via-ptrace.patch
+block-ptrace-on-sensitive-daemons/0002-Avoid-simple-memory-dumps-via-ptrace.patch
 debian-packaging/0003-avoid-regenerating-defsincdate-use-shipped-file.patch
 dirmngr-idling/0001-dirmngr-hkp-Avoid-potential-race-condition-when-some.patch
 dirmngr-idling/0002-dimrngr-Avoid-need-for-hkp-housekeeping.patch
@@ -77,3 +77,17 @@ skip-missing-signing-keys/0076-g10-Skip-signing-keys-where-no-secret-key-is-avai
 skel-file-removal/0077-g10-remove-skeleton-options-files.patch
 avoid-spurious-warnings/0078-gpg-Avoid-spurious-warnings-about-trust-packets.patch
 0079-gpg-Sanitize-diagnostic-with-the-original-file-name.patch
+update-crypto-defaults/0079-gpgsm-default-to-3072-bit-keys.patch
+update-crypto-defaults/0080-gpg-default-to-3072-bit-RSA-keys.patch
+update-crypto-defaults/0081-gpg-default-to-AES-256.patch
+0082-dirmngr-Implement-querying-nameservers-over-IPv6.patch
+0084-gpg-New-option-no-symkey-cache.patch
+0085-avoid-spurious-debugging-message.patch
+0086-gpg-Add-new-variables-to-the-import-and-export-filte.patch
+0087-gpg-Add-new-usage-option-for-drop-subkey-filters.patch
+0088-gpg-Extend-the-sig-record-in-list-mode.patch
+0089-gpg-Let-show-keys-print-revocation-certificates.patch
+0090-g10-strip-expired-subkeys-and-redundant-subkey-bindi.patch
+0091-gpg-Make-dry-run-work-for-secret-keys.patch
+0092-gpg-Print-sec-sbb-with-import-option-import-show-or-.patch
+0093-gpg-Check-and-fix-keys-on-import.patch

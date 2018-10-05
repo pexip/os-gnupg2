@@ -48,7 +48,7 @@ Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
  1 file changed, 3 insertions(+), 3 deletions(-)
 
 diff --git a/g10/gpg.c b/g10/gpg.c
-index f9039ae..e280c22 100644
+index f9039ae09..e280c2249 100644
 --- a/g10/gpg.c
 +++ b/g10/gpg.c
 @@ -728,9 +728,9 @@ static ARGPARSE_OPTS opts[] = {

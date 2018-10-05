@@ -16,7 +16,7 @@ Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
  3 files changed, 5 insertions(+), 4 deletions(-)
 
 diff --git a/g10/export.c b/g10/export.c
-index 207f994..ea9ffb4 100644
+index 207f9949b..ea9ffb4d0 100644
 --- a/g10/export.c
 +++ b/g10/export.c
 @@ -580,7 +580,7 @@ canon_pk_algo (enum gcry_pk_algos algo)
@@ -38,7 +38,7 @@ index 207f994..ea9ffb4 100644
    subkey_list_t subkey_list = NULL;  /* Track already processed subkeys. */
    int skip_until_subkey = 0;
 diff --git a/g10/getkey.c b/g10/getkey.c
-index 21dcf08..961d7de 100644
+index 21dcf083c..961d7de22 100644
 --- a/g10/getkey.c
 +++ b/g10/getkey.c
 @@ -1640,7 +1640,8 @@ get_best_pubkey_byname (ctrl_t ctrl, GETKEY_CTX *retctx, PKT_public_key *pk,
@@ -52,7 +52,7 @@ index 21dcf08..961d7de 100644
                      }
                    else
 diff --git a/g10/tofu.c b/g10/tofu.c
-index 39457a5..c3a4988 100644
+index 39457a501..c3a4988cd 100644
 --- a/g10/tofu.c
 +++ b/g10/tofu.c
 @@ -3857,7 +3857,7 @@ tofu_get_validity (ctrl_t ctrl, PKT_public_key *pk, strlist_t user_id_list,

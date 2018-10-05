@@ -13,7 +13,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  1 file changed, 1 insertion(+)
 
 diff --git a/dirmngr/ks-engine-hkp.c b/dirmngr/ks-engine-hkp.c
-index 32db4bc..66350a7 100644
+index 32db4bc69..66350a7bc 100644
 --- a/dirmngr/ks-engine-hkp.c
 +++ b/dirmngr/ks-engine-hkp.c
 @@ -1245,6 +1245,7 @@ handle_send_request_error (ctrl_t ctrl, gpg_error_t err, const char *request,

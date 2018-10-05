@@ -32,7 +32,7 @@ Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
  delete mode 100644 g10/options.skel
 
 diff --git a/build-aux/speedo/w32/inst.nsi b/build-aux/speedo/w32/inst.nsi
-index 164e26b..779c759 100644
+index 164e26bc3..779c759ba 100644
 --- a/build-aux/speedo/w32/inst.nsi
 +++ b/build-aux/speedo/w32/inst.nsi
 @@ -607,8 +607,6 @@ Section "GnuPG" SEC_gnupg
@@ -45,7 +45,7 @@ index 164e26b..779c759 100644
  
    SetOutPath "$INSTDIR\share\locale\ca\LC_MESSAGES"
 diff --git a/doc/gpg.texi b/doc/gpg.texi
-index c591049..a7d78c4 100644
+index c591049f0..a7d78c4ff 100644
 --- a/doc/gpg.texi
 +++ b/doc/gpg.texi
 @@ -3452,10 +3452,6 @@ files; They all live in in the current home directory (@pxref{option
@@ -60,7 +60,7 @@ index c591049..a7d78c4 100644
  
  Operation is further controlled by a few environment variables:
 diff --git a/g10/Makefile.am b/g10/Makefile.am
-index 604be93..19c5c78 100644
+index 604be93d5..19c5c7810 100644
 --- a/g10/Makefile.am
 +++ b/g10/Makefile.am
 @@ -18,7 +18,7 @@
@@ -93,7 +93,7 @@ index 604be93..19c5c78 100644
  	  sed -e 'h;s,^.*/,,;s/$(EXEEXT)$$//;$(transform)' \
 diff --git a/g10/dirmngr-conf.skel b/g10/dirmngr-conf.skel
 deleted file mode 100644
-index fbb730b..0000000
+index fbb730bae..000000000
 --- a/g10/dirmngr-conf.skel
 +++ /dev/null
 @@ -1,69 +0,0 @@
@@ -167,7 +167,7 @@ index fbb730b..0000000
 -
 -#hkp-cacert /path/to/CA/sks-keyservers.netCA.pem
 diff --git a/g10/openfile.c b/g10/openfile.c
-index f62deec..2e8c102 100644
+index f62deec54..2e8c102fd 100644
 --- a/g10/openfile.c
 +++ b/g10/openfile.c
 @@ -36,12 +36,6 @@
@@ -295,7 +295,7 @@ index f62deec..2e8c102 100644
  
 diff --git a/g10/options.skel b/g10/options.skel
 deleted file mode 100644
-index 87fc627..0000000
+index 87fc62757..000000000
 --- a/g10/options.skel
 +++ /dev/null
 @@ -1,139 +0,0 @@

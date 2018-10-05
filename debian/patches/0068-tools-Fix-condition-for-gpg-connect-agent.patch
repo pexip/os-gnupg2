@@ -16,7 +16,7 @@ Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/tools/gpg-connect-agent.c b/tools/gpg-connect-agent.c
-index a5413cf..5af1465 100644
+index a5413cf61..5af146565 100644
 --- a/tools/gpg-connect-agent.c
 +++ b/tools/gpg-connect-agent.c
 @@ -2237,7 +2237,7 @@ start_agent (void)

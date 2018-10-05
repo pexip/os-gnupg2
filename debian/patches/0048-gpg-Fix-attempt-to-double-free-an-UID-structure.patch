@@ -20,7 +20,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  1 file changed, 7 insertions(+), 2 deletions(-)
 
 diff --git a/g10/getkey.c b/g10/getkey.c
-index e39de28..21dcf08 100644
+index e39de28ae..21dcf083c 100644
 --- a/g10/getkey.c
 +++ b/g10/getkey.c
 @@ -1592,8 +1592,10 @@ get_best_pubkey_byname (ctrl_t ctrl, GETKEY_CTX *retctx, PKT_public_key *pk,

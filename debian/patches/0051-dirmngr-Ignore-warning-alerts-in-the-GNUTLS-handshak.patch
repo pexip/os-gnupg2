@@ -14,7 +14,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  1 file changed, 7 insertions(+), 1 deletion(-)
 
 diff --git a/dirmngr/http.c b/dirmngr/http.c
-index fe9c3c7..c9c16df 100644
+index fe9c3c734..c9c16dfac 100644
 --- a/dirmngr/http.c
 +++ b/dirmngr/http.c
 @@ -1847,6 +1847,7 @@ send_request (http_t hd, const char *httphost, const char *auth,

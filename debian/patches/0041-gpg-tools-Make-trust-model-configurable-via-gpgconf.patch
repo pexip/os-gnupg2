@@ -14,7 +14,7 @@ Signed-off-by: Justus Winter <justus@g10code.com>
  2 files changed, 5 insertions(+)
 
 diff --git a/g10/gpg.c b/g10/gpg.c
-index 0c5a167..09bdf66 100644
+index 0c5a1677c..09bdf66ba 100644
 --- a/g10/gpg.c
 +++ b/g10/gpg.c
 @@ -1845,6 +1845,7 @@ gpgconf_list (const char *configfile)
@@ -26,7 +26,7 @@ index 0c5a167..09bdf66 100644
    /* The next one is an info only item and should match the macros at
       the top of keygen.c  */
 diff --git a/tools/gpgconf-comp.c b/tools/gpgconf-comp.c
-index a0d9659..cdd2586 100644
+index a0d965969..cdd2586b7 100644
 --- a/tools/gpgconf-comp.c
 +++ b/tools/gpgconf-comp.c
 @@ -716,6 +716,10 @@ static gc_option_t gc_options_gpg[] =

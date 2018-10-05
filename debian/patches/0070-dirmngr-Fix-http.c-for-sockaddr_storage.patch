@@ -12,7 +12,7 @@ Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
  1 file changed, 7 insertions(+), 6 deletions(-)
 
 diff --git a/dirmngr/http.c b/dirmngr/http.c
-index c9c16df..674cb3d 100644
+index c9c16dfac..674cb3d2e 100644
 --- a/dirmngr/http.c
 +++ b/dirmngr/http.c
 @@ -2415,13 +2415,13 @@ start_server ()

@@ -21,7 +21,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  1 file changed, 5 insertions(+), 2 deletions(-)
 
 diff --git a/tools/gpgconf-comp.c b/tools/gpgconf-comp.c
-index 180fd65..a0d9659 100644
+index 180fd65c2..a0d965969 100644
 --- a/tools/gpgconf-comp.c
 +++ b/tools/gpgconf-comp.c
 @@ -2163,8 +2163,11 @@ retrieve_options_from_program (gc_component_t component, gc_backend_t backend)

@@ -19,7 +19,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  4 files changed, 34 insertions(+), 83 deletions(-)
 
 diff --git a/common/sexputil.c b/common/sexputil.c
-index 0c5c730..a8dc1a5 100644
+index 0c5c730ac..a8dc1a58c 100644
 --- a/common/sexputil.c
 +++ b/common/sexputil.c
 @@ -512,53 +512,6 @@ get_rsa_pk_from_canon_sexp (const unsigned char *keydata, size_t keydatalen,
@@ -99,7 +99,7 @@ index 0c5c730..a8dc1a5 100644
 +  return algo;
 +}
 diff --git a/common/util.h b/common/util.h
-index f7a53e1..b6d7156 100644
+index f7a53e160..b6d715630 100644
 --- a/common/util.h
 +++ b/common/util.h
 @@ -195,10 +195,10 @@ gpg_error_t get_rsa_pk_from_canon_sexp (const unsigned char *keydata,
@@ -117,7 +117,7 @@ index f7a53e1..b6d7156 100644
  /*-- convert.c --*/
  int hex2bin (const char *string, void *buffer, size_t length);
 diff --git a/g10/keygen.c b/g10/keygen.c
-index 98ef29e..0180581 100644
+index 98ef29efb..0180581d3 100644
 --- a/g10/keygen.c
 +++ b/g10/keygen.c
 @@ -1838,7 +1838,7 @@ check_keygrip (ctrl_t ctrl, const char *hexgrip)
@@ -159,7 +159,7 @@ index 98ef29e..0180581 100644
  
  
 diff --git a/sm/certreqgen-ui.c b/sm/certreqgen-ui.c
-index ece8668..b50d338 100644
+index ece8668f6..b50d338ae 100644
 --- a/sm/certreqgen-ui.c
 +++ b/sm/certreqgen-ui.c
 @@ -95,7 +95,7 @@ check_keygrip (ctrl_t ctrl, const char *hexgrip)

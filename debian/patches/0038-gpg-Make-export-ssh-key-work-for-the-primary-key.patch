@@ -25,7 +25,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  create mode 100644 tests/openpgp/samplekeys/rsa-primary-auth-only.sec.asc
 
 diff --git a/g10/export.c b/g10/export.c
-index f354ca0..8668126 100644
+index f354ca0f6..86681264d 100644
 --- a/g10/export.c
 +++ b/g10/export.c
 @@ -2208,6 +2208,48 @@ export_ssh_key (ctrl_t ctrl, const char *userid)
@@ -78,7 +78,7 @@ index f354ca0..8668126 100644
  
    if (!latest_key)
 diff --git a/tests/openpgp/samplekeys/README b/tests/openpgp/samplekeys/README
-index 29524d5..6f2399f 100644
+index 29524d512..6f2399fd9 100644
 --- a/tests/openpgp/samplekeys/README
 +++ b/tests/openpgp/samplekeys/README
 @@ -17,3 +17,5 @@ E657FB607BB4F21C90BB6651BC067AF28BC90111.asc Key with subkeys (no protection)
@@ -89,7 +89,7 @@ index 29524d5..6f2399f 100644
 +rsa-primary-auth-only.sec.asc  Ditto but the secret keyblock.
 diff --git a/tests/openpgp/samplekeys/rsa-primary-auth-only.pub.asc b/tests/openpgp/samplekeys/rsa-primary-auth-only.pub.asc
 new file mode 100644
-index 0000000..f34999e
+index 000000000..f34999e92
 --- /dev/null
 +++ b/tests/openpgp/samplekeys/rsa-primary-auth-only.pub.asc
 @@ -0,0 +1,23 @@
@@ -118,7 +118,7 @@ index 0000000..f34999e
 +-----END PGP PUBLIC KEY BLOCK-----
 diff --git a/tests/openpgp/samplekeys/rsa-primary-auth-only.sec.asc b/tests/openpgp/samplekeys/rsa-primary-auth-only.sec.asc
 new file mode 100644
-index 0000000..9d72421
+index 000000000..9d72421d0
 --- /dev/null
 +++ b/tests/openpgp/samplekeys/rsa-primary-auth-only.sec.asc
 @@ -0,0 +1,38 @@

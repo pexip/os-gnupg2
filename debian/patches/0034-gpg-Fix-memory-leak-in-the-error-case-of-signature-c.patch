@@ -20,7 +20,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  1 file changed, 9 insertions(+), 2 deletions(-)
 
 diff --git a/g10/sign.c b/g10/sign.c
-index acc894c..ff099b3 100644
+index acc894c49..ff099b31c 100644
 --- a/g10/sign.c
 +++ b/g10/sign.c
 @@ -686,7 +686,10 @@ write_signature_packets (SK_LIST sk_list, IOBUF out, gcry_md_hd_t hash,

@@ -32,7 +32,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  10 files changed, 40 insertions(+), 8 deletions(-)
 
 diff --git a/dirmngr/crlfetch.c b/dirmngr/crlfetch.c
-index 337fe6e..2700cf9 100644
+index 337fe6e4d..2700cf932 100644
 --- a/dirmngr/crlfetch.c
 +++ b/dirmngr/crlfetch.c
 @@ -200,6 +200,7 @@ crl_fetch (ctrl_t ctrl, const char *url, ksba_reader_t *reader)
@@ -44,7 +44,7 @@ index 337fe6e..2700cf9 100644
                                    ctrl->http_proxy, NULL, NULL, NULL);
  
 diff --git a/dirmngr/dirmngr.c b/dirmngr/dirmngr.c
-index 43e9cbd..31d3ca2 100644
+index 43e9cbd07..31d3ca235 100644
 --- a/dirmngr/dirmngr.c
 +++ b/dirmngr/dirmngr.c
 @@ -112,6 +112,7 @@ enum cmd_and_opt_values {
@@ -80,7 +80,7 @@ index 43e9cbd..31d3ca2 100644
    return 1; /* Handled. */
  }
 diff --git a/dirmngr/dirmngr.h b/dirmngr/dirmngr.h
-index 6a4fd00..4cc2be0 100644
+index 6a4fd003f..4cc2be0a9 100644
 --- a/dirmngr/dirmngr.h
 +++ b/dirmngr/dirmngr.h
 @@ -97,7 +97,8 @@ struct
@@ -94,7 +94,7 @@ index 6a4fd00..4cc2be0 100644
    const char *http_proxy; /* The default HTTP proxy.  */
    const char *ldap_proxy; /* Use given LDAP proxy.  */
 diff --git a/dirmngr/dns-stuff.c b/dirmngr/dns-stuff.c
-index 150237e..ed77742 100644
+index 150237e53..ed77742b4 100644
 --- a/dirmngr/dns-stuff.c
 +++ b/dirmngr/dns-stuff.c
 @@ -123,6 +123,10 @@ static int opt_timeout;
@@ -134,7 +134,7 @@ index 150237e..ed77742 100644
        dai = xtrymalloc (sizeof *dai + ai->ai_addrlen - 1);
        dai->family = ai->ai_family;
 diff --git a/dirmngr/dns-stuff.h b/dirmngr/dns-stuff.h
-index 9b8303c..71605b7 100644
+index 9b8303c3b..71605b741 100644
 --- a/dirmngr/dns-stuff.h
 +++ b/dirmngr/dns-stuff.h
 @@ -99,6 +99,10 @@ void set_dns_verbose (int verbose, int debug);
@@ -149,7 +149,7 @@ index 9b8303c..71605b7 100644
  void set_dns_timeout (int seconds);
  
 diff --git a/dirmngr/ks-engine-finger.c b/dirmngr/ks-engine-finger.c
-index 811b72d..8a21c9f 100644
+index 811b72de4..8a21c9f40 100644
 --- a/dirmngr/ks-engine-finger.c
 +++ b/dirmngr/ks-engine-finger.c
 @@ -84,7 +84,8 @@ ks_finger_fetch (ctrl_t ctrl, parsed_uri_t uri, estream_t *r_fp)
@@ -163,7 +163,7 @@ index 811b72d..8a21c9f 100644
    if (err)
      {
 diff --git a/dirmngr/ks-engine-hkp.c b/dirmngr/ks-engine-hkp.c
-index 66350a7..7c91b6a 100644
+index 66350a7bc..7c91b6a36 100644
 --- a/dirmngr/ks-engine-hkp.c
 +++ b/dirmngr/ks-engine-hkp.c
 @@ -568,6 +568,8 @@ map_host (ctrl_t ctrl, const char *name, const char *srvtag, int force_reselect,
@@ -195,7 +195,7 @@ index 66350a7..7c91b6a 100644
                     session,
                     NULL,
 diff --git a/dirmngr/ks-engine-http.c b/dirmngr/ks-engine-http.c
-index 69642ff..6de0616 100644
+index 69642ff98..6de061699 100644
 --- a/dirmngr/ks-engine-http.c
 +++ b/dirmngr/ks-engine-http.c
 @@ -89,7 +89,8 @@ ks_http_fetch (ctrl_t ctrl, const char *url, estream_t *r_fp)
@@ -209,7 +209,7 @@ index 69642ff..6de0616 100644
                     session,
                     NULL,
 diff --git a/dirmngr/ocsp.c b/dirmngr/ocsp.c
-index aff8e32..22391c3 100644
+index aff8e3288..22391c32d 100644
 --- a/dirmngr/ocsp.c
 +++ b/dirmngr/ocsp.c
 @@ -175,7 +175,8 @@ do_ocsp_request (ctrl_t ctrl, ksba_ocsp_t ocsp, gcry_md_hd_t md,
@@ -223,7 +223,7 @@ index aff8e32..22391c3 100644
    if (err)
      {
 diff --git a/doc/dirmngr.texi b/doc/dirmngr.texi
-index b00c2d3..9a7238f 100644
+index b00c2d377..9a7238fb5 100644
 --- a/doc/dirmngr.texi
 +++ b/doc/dirmngr.texi
 @@ -313,9 +313,10 @@ a numerical IP address must be given (IPv6 or IPv4) and that no error
