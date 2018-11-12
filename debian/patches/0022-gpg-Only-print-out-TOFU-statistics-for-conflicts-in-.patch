@@ -1,6 +1,7 @@
 From: "Neal H. Walfield" <neal@g10code.com>
 Date: Thu, 2 Feb 2017 13:24:57 +0100
-Subject: gpg: Only print out TOFU statistics for conflicts in interactive mode
+Subject: gpg: Only print out TOFU statistics for conflicts in interactive
+ mode
 
 * g10/tofu.c (get_trust): Add arguments POLICYP and CONFLICT_SETP.  If
 they are not NULL, return the policy and conflict set (if there is

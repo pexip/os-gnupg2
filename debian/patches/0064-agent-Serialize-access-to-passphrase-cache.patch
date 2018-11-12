@@ -19,7 +19,7 @@ Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
  1 file changed, 37 insertions(+), 36 deletions(-)
 
 diff --git a/agent/cache.c b/agent/cache.c
-index 2483682..fead737 100644
+index 248368277..fead73708 100644
 --- a/agent/cache.c
 +++ b/agent/cache.c
 @@ -31,9 +31,8 @@

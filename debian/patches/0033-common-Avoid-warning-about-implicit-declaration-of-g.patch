@@ -23,7 +23,7 @@ Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
  1 file changed, 1 insertion(+)
 
 diff --git a/common/logging.c b/common/logging.c
-index ac13053..670affb 100644
+index ac130535c..670affb12 100644
 --- a/common/logging.c
 +++ b/common/logging.c
 @@ -61,6 +61,7 @@

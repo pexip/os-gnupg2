@@ -1,3 +1,27 @@
+gnupg2 (2.1.18-8~deb9u3pexip1) pexip; urgency=medium
+
+  * New upstream release
+
+ -- John-Mark Bell <jmb@pexip.com>  Mon, 12 Nov 2018 18:56:57 +0000
+
+gnupg2 (2.1.18-8~deb9u3) stretch; urgency=medium
+
+  * block trivial access to scdaemon memory (Closes: #878952)
+  * Update crypto defaults for 2018 (new keys are RSA 3072, prefer AES256)
+  * d/control: move Vcs*: to salsa
+  * dirmngr: implement querying nameservers over IPv6 (Closes: #862682)
+  * use DEP-14 branch naming
+  * refresh patches
+  * backport --no-symkey-cache
+  * backport improved import and export filtering
+  * backport display of revocation certificates
+  * backport stripping unusable subkey material during export-minimal
+  * backport fix to make --dry-run work when listing secret keys
+  * backport fix showing secret keys when listing keys
+  * backport fix to clean keys before importing (Closes: #906545)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Fri, 05 Oct 2018 15:43:38 -0500
+
 gnupg2 (2.1.18-8~deb9u2pexip1) pexip; urgency=medium
 
   * New upstream release

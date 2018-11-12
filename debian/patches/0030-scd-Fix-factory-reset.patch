@@ -20,7 +20,7 @@ Additionally, fix another bug when tested with 2.1.18-7 with PC/SC.
  5 files changed, 102 insertions(+), 45 deletions(-)
 
 diff --git a/scd/app-common.h b/scd/app-common.h
-index b979f54..c7a0575 100644
+index b979f5476..c7a057521 100644
 --- a/scd/app-common.h
 +++ b/scd/app-common.h
 @@ -54,6 +54,7 @@ struct app_ctx_s {
@@ -41,7 +41,7 @@ index b979f54..c7a0575 100644
  gpg_error_t app_write_learn_status (app_t app, ctrl_t ctrl,
                                      unsigned int flags);
 diff --git a/scd/app.c b/scd/app.c
-index 8fb0d45..3f3f3ef 100644
+index 8fb0d4553..3f3f3ef84 100644
 --- a/scd/app.c
 +++ b/scd/app.c
 @@ -136,40 +136,32 @@ check_application_conflict (const char *name, app_t app)
@@ -204,7 +204,7 @@ index 8fb0d45..3f3f3ef 100644
    npth_mutex_unlock (&app_list_lock);
  }
 diff --git a/scd/command.c b/scd/command.c
-index 0ae6d29..b17c4a1 100644
+index 0ae6d29aa..b17c4a109 100644
 --- a/scd/command.c
 +++ b/scd/command.c
 @@ -227,7 +227,7 @@ open_card_with_request (ctrl_t ctrl, const char *apptype, const char *serialno)
@@ -235,10 +235,10 @@ index 0ae6d29..b17c4a1 100644
  
          if (!sl->event_signal || !sl->assuan_ctx)
 diff --git a/scd/scdaemon.c b/scd/scdaemon.c
-index 74fed44..02f0e72 100644
+index 4d011c4c9..dda9ab445 100644
 --- a/scd/scdaemon.c
 +++ b/scd/scdaemon.c
-@@ -52,6 +52,7 @@
+@@ -55,6 +55,7 @@
  #include "ccid-driver.h"
  #include "gc-opt-flags.h"
  #include "asshelp.h"
@@ -246,7 +246,7 @@ index 74fed44..02f0e72 100644
  #include "../common/init.h"
  
  #ifndef ENAMETOOLONG
-@@ -224,7 +225,8 @@ static assuan_sock_nonce_t socket_nonce;
+@@ -227,7 +228,8 @@ static assuan_sock_nonce_t socket_nonce;
     disabled but it won't perform any ticker specific actions. */
  static int ticker_disabled;
  
@@ -256,7 +256,7 @@ index 74fed44..02f0e72 100644
  
  static char *create_socket_name (char *standard_name);
  static gnupg_fd_t create_server_socket (const char *name,
-@@ -1181,6 +1183,16 @@ start_connection_thread (void *arg)
+@@ -1190,6 +1192,16 @@ start_connection_thread (void *arg)
  }
  
  
@@ -273,7 +273,7 @@ index 74fed44..02f0e72 100644
  /* Connection handler loop.  Wait for connection requests and spawn a
     thread after accepting a connection.  LISTEN_FD is allowed to be -1
     in which case this code will only do regular timeouts and handle
-@@ -1202,9 +1214,23 @@ handle_connections (int listen_fd)
+@@ -1211,9 +1223,23 @@ handle_connections (int listen_fd)
  #ifndef HAVE_W32_SYSTEM
    int signo;
  #endif
@@ -298,7 +298,7 @@ index 74fed44..02f0e72 100644
    npth_attr_setdetachstate (&tattr, NPTH_CREATE_DETACHED);
  
  #ifndef HAVE_W32_SYSTEM
-@@ -1233,6 +1259,8 @@ handle_connections (int listen_fd)
+@@ -1242,6 +1268,8 @@ handle_connections (int listen_fd)
  
    for (;;)
      {
@@ -307,7 +307,7 @@ index 74fed44..02f0e72 100644
        if (shutdown_pending)
          {
            if (active_connections == 0)
-@@ -1261,14 +1289,20 @@ handle_connections (int listen_fd)
+@@ -1270,14 +1298,20 @@ handle_connections (int listen_fd)
           thus a simple assignment is fine to copy the entire set.  */
        read_fdset = fdset;
  
@@ -330,7 +330,7 @@ index 74fed44..02f0e72 100644
        saved_errno = errno;
  #endif
  
-@@ -1284,6 +1318,13 @@ handle_connections (int listen_fd)
+@@ -1293,6 +1327,13 @@ handle_connections (int listen_fd)
  	/* Timeout.  Will be handled when calculating the next timeout.  */
  	continue;
  
@@ -344,7 +344,7 @@ index 74fed44..02f0e72 100644
        if (listen_fd != -1 && FD_ISSET (listen_fd, &read_fdset))
  	{
            ctrl_t ctrl;
-@@ -1322,6 +1363,8 @@ handle_connections (int listen_fd)
+@@ -1331,6 +1372,8 @@ handle_connections (int listen_fd)
  	}
      }
  
@@ -354,7 +354,7 @@ index 74fed44..02f0e72 100644
    log_info (_("%s %s stopped\n"), strusage(11), strusage(13));
    npth_attr_destroy (&tattr);
 diff --git a/scd/scdaemon.h b/scd/scdaemon.h
-index d0bc98e..fcab648 100644
+index d0bc98efe..fcab6489f 100644
 --- a/scd/scdaemon.h
 +++ b/scd/scdaemon.h
 @@ -125,6 +125,7 @@ void send_status_info (ctrl_t ctrl, const char *keyword, ...)

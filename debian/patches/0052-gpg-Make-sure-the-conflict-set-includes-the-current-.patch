@@ -18,7 +18,7 @@ Signed-off-by: Neal H. Walfield <neal@g10code.com>
  1 file changed, 25 insertions(+), 3 deletions(-)
 
 diff --git a/g10/tofu.c b/g10/tofu.c
-index 449e921..39457a5 100644
+index 449e921b6..39457a501 100644
 --- a/g10/tofu.c
 +++ b/g10/tofu.c
 @@ -2304,9 +2304,14 @@ build_conflict_set (tofu_dbs_t dbs,

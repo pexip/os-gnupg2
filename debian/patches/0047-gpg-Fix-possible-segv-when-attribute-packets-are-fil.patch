@@ -17,7 +17,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  1 file changed, 6 insertions(+), 6 deletions(-)
 
 diff --git a/g10/import.c b/g10/import.c
-index b6c04dc..4e6f692 100644
+index b6c04dcfc..4e6f6923d 100644
 --- a/g10/import.c
 +++ b/g10/import.c
 @@ -1173,7 +1173,8 @@ impex_filter_getval (void *cookie, const char *propname)

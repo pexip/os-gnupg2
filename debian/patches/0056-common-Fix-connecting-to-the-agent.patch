@@ -20,7 +20,7 @@ Signed-off-by: Justus Winter <justus@g10code.com>
  1 file changed, 2 insertions(+)
 
 diff --git a/common/homedir.c b/common/homedir.c
-index c41cbdc..4571aac 100644
+index c41cbdc7e..4571aac7b 100644
 --- a/common/homedir.c
 +++ b/common/homedir.c
 @@ -586,6 +586,8 @@ _gnupg_socketdir_internal (int skip_checks, unsigned *r_info)

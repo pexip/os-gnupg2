@@ -11,7 +11,7 @@ Signed-off-by: Justus Winter <justus@g10code.com>
  1 file changed, 2 insertions(+), 1 deletion(-)
 
 diff --git a/g10/decrypt-data.c b/g10/decrypt-data.c
-index 585b150..f5843d6 100644
+index 585b1507f..f5843d6d7 100644
 --- a/g10/decrypt-data.c
 +++ b/g10/decrypt-data.c
 @@ -222,7 +222,7 @@ decrypt_data (ctrl_t ctrl, void *procctx, PKT_encrypted *ed, DEK *dek)

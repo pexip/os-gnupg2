@@ -11,7 +11,7 @@ Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/g10/import.c b/g10/import.c
-index 4e6f692..125b994 100644
+index 4e6f6923d..125b9948b 100644
 --- a/g10/import.c
 +++ b/g10/import.c
 @@ -1235,7 +1235,7 @@ impex_filter_getval (void *cookie, const char *propname)

@@ -17,7 +17,7 @@ Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
  2 files changed, 19 insertions(+), 16 deletions(-)
 
 diff --git a/dirmngr/dns-stuff.c b/dirmngr/dns-stuff.c
-index ed77742..c63d958 100644
+index ed77742b4..c63d9583d 100644
 --- a/dirmngr/dns-stuff.c
 +++ b/dirmngr/dns-stuff.c
 @@ -827,7 +827,7 @@ resolve_name_libdns (const char *name, unsigned short port,
@@ -132,7 +132,7 @@ index ed77742..c63d958 100644
  {
    gpg_error_t err;
 diff --git a/dirmngr/dns-stuff.h b/dirmngr/dns-stuff.h
-index 71605b7..adb0b80 100644
+index 71605b741..adb0b80b0 100644
 --- a/dirmngr/dns-stuff.h
 +++ b/dirmngr/dns-stuff.h
 @@ -78,7 +78,7 @@ struct dns_addrinfo_s

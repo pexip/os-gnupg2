@@ -22,7 +22,7 @@ Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
  1 file changed, 3 insertions(+), 2 deletions(-)
 
 diff --git a/g10/keydb.c b/g10/keydb.c
-index aab90e3..81dd32e 100644
+index aab90e380..81dd32ec9 100644
 --- a/g10/keydb.c
 +++ b/g10/keydb.c
 @@ -1205,8 +1205,9 @@ parse_keyblock_image (iobuf_t iobuf, int pk_no, int uid_no,

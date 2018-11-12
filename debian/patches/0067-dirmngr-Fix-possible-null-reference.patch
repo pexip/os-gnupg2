@@ -11,7 +11,7 @@ Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
  1 file changed, 3 insertions(+), 2 deletions(-)
 
 diff --git a/dirmngr/dns.c b/dirmngr/dns.c
-index 869e7ed..ebfd4c3 100644
+index 869e7ed2e..ebfd4c31f 100644
 --- a/dirmngr/dns.c
 +++ b/dirmngr/dns.c
 @@ -4594,8 +4594,9 @@ dns_error_t dns_trace_fput(const struct dns_trace_event *te, const void *data, s

@@ -15,7 +15,7 @@ Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
  1 file changed, 18 insertions(+), 16 deletions(-)
 
 diff --git a/dirmngr/dns.c b/dirmngr/dns.c
-index ebfd4c3..866f69d 100644
+index ebfd4c31f..866f69dd5 100644
 --- a/dirmngr/dns.c
 +++ b/dirmngr/dns.c
 @@ -9440,29 +9440,31 @@ void dns_ai_close(struct dns_addrinfo *ai) {

@@ -58,7 +58,7 @@ Signed-off-by: Justus Winter <justus@g10code.com>
  create mode 100755 tests/openpgp/issue2941.scm
 
 diff --git a/common/logging.c b/common/logging.c
-index 8c70742..ac13053 100644
+index 8c70742cc..ac130535c 100644
 --- a/common/logging.c
 +++ b/common/logging.c
 @@ -570,6 +570,9 @@ log_set_file (const char *name)
@@ -72,7 +72,7 @@ index 8c70742..ac13053 100644
  }
  
 diff --git a/common/sysutils.c b/common/sysutils.c
-index e67420f..a796677 100644
+index e67420f18..a796677ba 100644
 --- a/common/sysutils.c
 +++ b/common/sysutils.c
 @@ -1281,3 +1281,14 @@ gnupg_get_socket_name (int fd)
@@ -91,7 +91,7 @@ index e67420f..a796677 100644
 +  return 1;
 +}
 diff --git a/common/sysutils.h b/common/sysutils.h
-index a9316d7..ecd9f84 100644
+index a9316d7ce..ecd9f846e 100644
 --- a/common/sysutils.h
 +++ b/common/sysutils.h
 @@ -72,6 +72,7 @@ int  gnupg_setenv (const char *name, const char *value, int overwrite);
@@ -103,7 +103,7 @@ index a9316d7..ecd9f84 100644
  gpg_error_t gnupg_inotify_watch_socket (int *r_fd, const char *socket_name);
  int gnupg_inotify_has_name (int fd, const char *name);
 diff --git a/g10/cpr.c b/g10/cpr.c
-index 0133cad..4984e89 100644
+index 0133cad31..4984e8903 100644
 --- a/g10/cpr.c
 +++ b/g10/cpr.c
 @@ -107,6 +107,9 @@ set_status_fd (int fd)
@@ -117,7 +117,7 @@ index 0133cad..4984e89 100644
      statusfp = es_stdout;
    else if (fd == 2)
 diff --git a/g10/gpg.c b/g10/gpg.c
-index e280c22..66a2055 100644
+index e280c2249..66a2055b5 100644
 --- a/g10/gpg.c
 +++ b/g10/gpg.c
 @@ -3079,6 +3079,8 @@ main (int argc, char **argv)
@@ -140,7 +140,7 @@ index e280c22..66a2055 100644
      {
        if (i >= len-1 )
 diff --git a/g10/keylist.c b/g10/keylist.c
-index 4fe1e40..abdcb9f 100644
+index 4fe1e4034..abdcb9f0a 100644
 --- a/g10/keylist.c
 +++ b/g10/keylist.c
 @@ -1900,6 +1900,9 @@ set_attrib_fd (int fd)
@@ -154,7 +154,7 @@ index 4fe1e40..abdcb9f 100644
    setmode (fd, O_BINARY);
  #endif
 diff --git a/g10/passphrase.c b/g10/passphrase.c
-index fb4ec4c..37abc0f 100644
+index fb4ec4c85..37abc0f1c 100644
 --- a/g10/passphrase.c
 +++ b/g10/passphrase.c
 @@ -166,6 +166,9 @@ read_passphrase_from_fd( int fd )
@@ -168,7 +168,7 @@ index fb4ec4c..37abc0f 100644
      { /* Not used but we have to do a dummy read, so that it won't end
           up at the begin of the message if the quite usual trick to
 diff --git a/tests/openpgp/Makefile.am b/tests/openpgp/Makefile.am
-index 05341fb..377a2ed 100644
+index 05341fbfd..377a2edc3 100644
 --- a/tests/openpgp/Makefile.am
 +++ b/tests/openpgp/Makefile.am
 @@ -95,12 +95,12 @@ XTESTS = \
@@ -188,7 +188,7 @@ index 05341fb..377a2ed 100644
  # the 'check' target.  For extra robustness, we merely define a
 diff --git a/tests/openpgp/issue2941.scm b/tests/openpgp/issue2941.scm
 new file mode 100755
-index 0000000..d7220e0
+index 000000000..d7220e098
 --- /dev/null
 +++ b/tests/openpgp/issue2941.scm
 @@ -0,0 +1,34 @@

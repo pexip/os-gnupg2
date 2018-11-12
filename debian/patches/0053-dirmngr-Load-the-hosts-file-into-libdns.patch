@@ -18,7 +18,7 @@ Signed-off-by: Justus Winter <justus@g10code.com>
  1 file changed, 25 insertions(+), 1 deletion(-)
 
 diff --git a/dirmngr/dns-stuff.c b/dirmngr/dns-stuff.c
-index bc2e071..35e6c82 100644
+index bc2e071f8..35e6c8240 100644
 --- a/dirmngr/dns-stuff.c
 +++ b/dirmngr/dns-stuff.c
 @@ -533,11 +533,35 @@ libdns_init (void)

@@ -13,7 +13,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  1 file changed, 5 insertions(+), 1 deletion(-)
 
 diff --git a/g10/gpg.c b/g10/gpg.c
-index 66a2055..0c5a167 100644
+index 66a2055b5..0c5a1677c 100644
 --- a/g10/gpg.c
 +++ b/g10/gpg.c
 @@ -4894,8 +4894,12 @@ main (int argc, char **argv)

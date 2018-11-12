@@ -1,0 +1,59 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Tue, 12 Jun 2018 00:41:59 -0400
+Subject: gpg: Add new usage option for drop-subkey filters.
+
+* g10/import.c (impex_filter_getval): Add new "usage" property for
+drop-subkey filter.
+--
+
+For example, this permits extraction of only encryption-capable
+subkeys like so:
+
+    gpg --export-filter 'drop-subkey=usage !~ e' --export $FPR
+
+GnuPG-Bug-id: 4019
+Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+(cherry picked from commit 2ddfb5bef920919443309ece9fa2930282bbce85)
+(cherry picked from commit 86b64876bef0d8c4be8e309fcf3e2ce21e65a947)
+---
+ doc/gpg.texi |  5 +++++
+ g10/import.c | 10 ++++++++++
+ 2 files changed, 15 insertions(+)
+
+diff --git a/doc/gpg.texi b/doc/gpg.texi
+index c77a4a50e..ca6f53698 100644
+--- a/doc/gpg.texi
++++ b/doc/gpg.texi
+@@ -2376,6 +2376,11 @@ The available properties are:
+   Boolean indicating whether a key or subkey is a secret one.
+   (drop-subkey)
+ 
++  @item usage
++  A string indicating the usage flags for the subkey, from the
++  sequence ``ecsa?''.  For example, a subkey capable of just signing
++  and authentication would be an exact match for ``sa''. (drop-subkey)
++
+   @item sig_created
+   @itemx sig_created_d
+   The first is the timestamp a signature packet was created.  The
+diff --git a/g10/import.c b/g10/import.c
+index 153b4daed..49ba04b6f 100644
+--- a/g10/import.c
++++ b/g10/import.c
+@@ -1271,6 +1271,16 @@ impex_filter_getval (void *cookie, const char *propname)
+         {
+           result = pk_is_disabled (pk)? "1":"0";
+         }
++      else if (!strcmp (propname, "usage"))
++        {
++          snprintf (numbuf, sizeof numbuf, "%s%s%s%s%s",
++                    (pk->pubkey_usage & PUBKEY_USAGE_ENC)?"e":"",
++                    (pk->pubkey_usage & PUBKEY_USAGE_SIG)?"s":"",
++                    (pk->pubkey_usage & PUBKEY_USAGE_CERT)?"c":"",
++                    (pk->pubkey_usage & PUBKEY_USAGE_AUTH)?"a":"",
++                    (pk->pubkey_usage & PUBKEY_USAGE_UNKNOWN)?"?":"");
++          result = numbuf;
++        }
+       else
+         result = NULL;
+     }

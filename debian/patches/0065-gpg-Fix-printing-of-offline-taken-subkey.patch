@@ -13,7 +13,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/g10/keylist.c b/g10/keylist.c
-index 4078053..1998ee9 100644
+index 407805357..1998ee9aa 100644
 --- a/g10/keylist.c
 +++ b/g10/keylist.c
 @@ -1017,7 +1017,7 @@ list_keyblock_print (ctrl_t ctrl, kbnode_t keyblock, int secret, int fpr,

@@ -1,0 +1,292 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Thu, 4 Oct 2018 17:29:54 -0500
+Subject: g10: strip expired subkeys and redundant subkey bindings on
+ export-minimal
+
+When exporting minimal public keyblocks, we do not want to include any
+unusable material.
+
+This represents a manual backport of the fixes in upstream's
+8055f186a32e628028de897b7ee4705cd8e999b7 and
+61562fe00027a4263f53661ad279072bd0b0133e (which were released in
+2.2.9), but without attempting to backport the major code
+refactoring/reorganization found in the previous two commits.
+---
+ g10/export.c  |   4 +-
+ g10/import.c  |   5 +-
+ g10/trust.c   | 173 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ g10/trustdb.h |  15 ++++-
+ 4 files changed, 190 insertions(+), 7 deletions(-)
+
+diff --git a/g10/export.c b/g10/export.c
+index 4c4c0971a..801a4bea3 100644
+--- a/g10/export.c
++++ b/g10/export.c
+@@ -1976,7 +1976,9 @@ do_export_stream (ctrl_t ctrl, iobuf_t out, strlist_t users, int secret,
+        * UID sigs (0x10, 0x11, 0x12, and 0x13).  A designated
+        * revocation is never stripped, even with export-minimal set.  */
+       if ((options & EXPORT_CLEAN))
+-        clean_key (keyblock, opt.verbose, (options&EXPORT_MINIMAL), NULL, NULL);
++        clean_key (keyblock, opt.verbose, (options&EXPORT_MINIMAL),
++                   (options&EXPORT_MINIMAL)? KEY_CLEAN_ALL : KEY_CLEAN_AUTHENCR,
++                   NULL, NULL, NULL);
+ 
+       if (export_keep_uid)
+         {
+diff --git a/g10/import.c b/g10/import.c
+index b6b722f81..2c748823e 100644
+--- a/g10/import.c
++++ b/g10/import.c
+@@ -1462,7 +1462,7 @@ import_one (ctrl_t ctrl,
+      end result, but does result in less logging which might confuse
+      the user. */
+   if (options&IMPORT_CLEAN)
+-    clean_key (keyblock,opt.verbose,options&IMPORT_MINIMAL,NULL,NULL);
++    clean_key (keyblock,opt.verbose,options&IMPORT_MINIMAL,KEY_CLEAN_NONE,NULL,NULL,NULL);
+ 
+   clear_kbnode_flags( keyblock );
+ 
+@@ -1691,7 +1691,8 @@ import_one (ctrl_t ctrl,
+ 
+       if ((options & IMPORT_CLEAN))
+         clean_key (keyblock_orig,opt.verbose,options&IMPORT_MINIMAL,
+-                   &n_uids_cleaned,&n_sigs_cleaned);
++                   KEY_CLEAN_NONE,
++                   &n_uids_cleaned,&n_sigs_cleaned,NULL);
+ 
+       if (n_uids || n_sigs || n_subk || n_sigs_cleaned || n_uids_cleaned)
+         {
+diff --git a/g10/trust.c b/g10/trust.c
+index 888b4ca53..90d5a7546 100644
+--- a/g10/trust.c
++++ b/g10/trust.c
+@@ -756,13 +756,145 @@ clean_one_uid (kbnode_t keyblock, kbnode_t uidnode, int noisy, int self_only,
+ }
+ 
+ 
++
++/* Helper for clean_key.  Here duplicate signatures from a
++ * subkey are removed.  This should in general not happen because
++ * import takes care of that.  However, sometimes other tools are used
++ * to manage a keyring or key has been imported a long time ago.  */
++static int
++clean_one_subkey_dupsigs (kbnode_t subkeynode)
++{
++  kbnode_t node;
++  PKT_public_key *pk = subkeynode->pkt->pkt.public_key;
++  int any_choosen = 0;
++  int count = 0;
++
++  log_assert (subkeynode->pkt->pkttype == PKT_PUBLIC_SUBKEY
++              || subkeynode->pkt->pkttype == PKT_SECRET_SUBKEY);
++
++  if (DBG_LOOKUP)
++    log_debug ("\tchecking subkey %08lX for dupsigs\n",
++               (ulong) keyid_from_pk (pk, NULL));
++
++  /* First check that the choosen flag has been set.  Note that we
++   * only look at plain signatures so to keep all revocation
++   * signatures which may carry important information.  */
++  for (node = subkeynode->next;
++       node && !(node->pkt->pkttype == PKT_PUBLIC_SUBKEY
++                 || node->pkt->pkttype == PKT_SECRET_SUBKEY);
++       node = node->next)
++    {
++      if (!is_deleted_kbnode (node)
++          && node->pkt->pkttype == PKT_SIGNATURE
++          && IS_SUBKEY_SIG (node->pkt->pkt.signature)
++          && node->pkt->pkt.signature->flags.chosen_selfsig)
++        {
++          any_choosen = 1;
++          break;
++        }
++    }
++
++  if (!any_choosen)
++    return 0; /* Ooops no choosen flag set - we can't decide.  */
++
++  for (node = subkeynode->next;
++       node && !(node->pkt->pkttype == PKT_PUBLIC_SUBKEY
++                 || node->pkt->pkttype == PKT_SECRET_SUBKEY);
++       node = node->next)
++    {
++      if (!is_deleted_kbnode (node)
++          && node->pkt->pkttype == PKT_SIGNATURE
++          && IS_SUBKEY_SIG (node->pkt->pkt.signature)
++          && !node->pkt->pkt.signature->flags.chosen_selfsig)
++        {
++          delete_kbnode (node);
++          count++;
++        }
++    }
++
++  return count;
++}
++
++
++/* Helper for clean_all_subkeys.  */
++static int
++clean_one_subkey (kbnode_t subkeynode, int clean_level)
++{
++  kbnode_t node;
++  PKT_public_key *pk = subkeynode->pkt->pkt.public_key;
++  unsigned int use = pk->pubkey_usage;
++  int do_clean = 0;
++
++  log_assert (subkeynode->pkt->pkttype == PKT_PUBLIC_SUBKEY
++              || subkeynode->pkt->pkttype == PKT_SECRET_SUBKEY);
++
++  if (DBG_LOOKUP)
++    log_debug ("\tchecking subkey %08lX [%c%c%c%c%c]\n",
++               (ulong) keyid_from_pk (pk, NULL),
++               (use & PUBKEY_USAGE_ENC)? 'e':'-',
++               (use & PUBKEY_USAGE_SIG)? 's':'-',
++               (use & PUBKEY_USAGE_CERT)? 'c':'-',
++               (use & PUBKEY_USAGE_AUTH)? 'a':'-',
++               (use & PUBKEY_USAGE_UNKNOWN)? '?':'-');
++
++  if (!pk->flags.valid)
++    {
++      if (DBG_LOOKUP)
++        log_debug ("\tsubkey not valid\n");
++      if (clean_level == KEY_CLEAN_INVALID)
++        do_clean = 1;
++    }
++  if (pk->has_expired)
++    {
++      if (DBG_LOOKUP)
++        log_debug ("\tsubkey has expired\n");
++      if (clean_level == KEY_CLEAN_ALL)
++        do_clean = 1;
++      else if (clean_level == KEY_CLEAN_AUTHENCR
++               && (use & (PUBKEY_USAGE_ENC | PUBKEY_USAGE_AUTH))
++               && !(use & (PUBKEY_USAGE_SIG | PUBKEY_USAGE_CERT)))
++        do_clean = 1;
++      else if (clean_level == KEY_CLEAN_ENCR
++               && (use & PUBKEY_USAGE_ENC)
++               && !(use & (PUBKEY_USAGE_SIG | PUBKEY_USAGE_CERT
++                           | PUBKEY_USAGE_AUTH)))
++        do_clean = 1;
++    }
++  if (pk->flags.revoked)
++    {
++      if (DBG_LOOKUP)
++        log_debug ("\tsubkey has been revoked (keeping)\n");
++      /* Avoid any cleaning because revocations are important.  */
++      do_clean = 0;
++    }
++  if (!do_clean)
++    return 0;
++
++  if (DBG_LOOKUP)
++    log_debug ("\t=> removing this subkey\n");
++
++  delete_kbnode (subkeynode);
++  for (node = subkeynode->next;
++       node && !(node->pkt->pkttype == PKT_PUBLIC_SUBKEY
++                 || node->pkt->pkttype == PKT_SECRET_SUBKEY);
++       node = node->next)
++    delete_kbnode (node);
++
++  return 1;
++}
++
++
++
++
+ /* NB: This function marks the deleted nodes only and the caller is
+  * responsible to skip or remove them.  */
+ void
+ clean_key (kbnode_t keyblock, int noisy, int self_only,
+-           int *uids_cleaned, int *sigs_cleaned)
++           int key_clean_level,
++           int *uids_cleaned, int *sigs_cleaned, int *subkeys_cleaned)
+ {
+-  kbnode_t node;
++  kbnode_t first_subkey, node;
++  int n;
+ 
+   merge_keys_and_selfsig (keyblock);
+ 
+@@ -780,7 +912,8 @@ clean_key (kbnode_t keyblock, int noisy, int self_only,
+    * allowed are of class 0x18 and 0x28.  */
+   log_assert (!node || (node->pkt->pkttype == PKT_PUBLIC_SUBKEY
+                         || node->pkt->pkttype == PKT_SECRET_SUBKEY));
+-  for (; node; node = node->next)
++  first_subkey = node;
++  for (node = first_subkey; node; node = node->next)
+     {
+       if (is_deleted_kbnode (node))
+         continue;
+@@ -793,4 +926,38 @@ clean_key (kbnode_t keyblock, int noisy, int self_only,
+             ++*sigs_cleaned;
+         }
+     }
++
++  /* Do the selected cleaning.  */
++  if (key_clean_level > KEY_CLEAN_NONE)
++    {
++      /* Clean enitre subkeys.  */
++      for (node = first_subkey; node; node = node->next)
++        {
++          if (is_deleted_kbnode (node))
++            continue;
++          if (node->pkt->pkttype == PKT_PUBLIC_SUBKEY
++              || node->pkt->pkttype == PKT_SECRET_SUBKEY)
++            {
++              if (clean_one_subkey (node, key_clean_level))
++                {
++                  if (subkeys_cleaned)
++                    ++*subkeys_cleaned;
++                }
++            }
++        }
++
++      /* Clean duplicate signatures from a subkey.  */
++      for (node = first_subkey; node; node = node->next)
++        {
++          if (is_deleted_kbnode (node))
++            continue;
++          if (node->pkt->pkttype == PKT_PUBLIC_SUBKEY
++              || node->pkt->pkttype == PKT_SECRET_SUBKEY)
++            {
++              n = clean_one_subkey_dupsigs (node);
++              if (sigs_cleaned)
++                *sigs_cleaned += n;
++            }
++        }
++    }
+ }
+diff --git a/g10/trustdb.h b/g10/trustdb.h
+index 6081d1088..7dbd296d6 100644
+--- a/g10/trustdb.h
++++ b/g10/trustdb.h
+@@ -77,6 +77,18 @@ is_in_klist (struct key_item *k, PKT_signature *sig)
+ 
+ 
+ /*-- trust.c --*/
++
++/* No explict cleaning.  */
++#define KEY_CLEAN_NONE      0
++/* Remove only invalid subkeys (ie. missing key-bindings) */
++#define KEY_CLEAN_INVALID   1
++/* Remove expired encryption keys */
++#define KEY_CLEAN_ENCR      2
++/* Remove expired authentication and encryption keys.  */
++#define KEY_CLEAN_AUTHENCR  3
++/* Remove all expired subkeys.  */
++#define KEY_CLEAN_ALL       4
++
+ int cache_disabled_value (PKT_public_key *pk);
+ void register_trusted_keyid (u32 *keyid);
+ void register_trusted_key (const char *string);
+@@ -110,7 +122,8 @@ void clean_one_uid (kbnode_t keyblock, kbnode_t uidnode,
+                     int noisy, int self_only,
+                     int *uids_cleaned, int *sigs_cleaned);
+ void clean_key (kbnode_t keyblock, int noisy, int self_only,
+-                int *uids_cleaned,int *sigs_cleaned);
++                int key_clean_level,
++                int *uids_cleaned,int *sigs_cleaned,int *subkeys_cleaned);
+ 
+ 
+ 

@@ -11,7 +11,7 @@ Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
  1 file changed, 4 insertions(+), 4 deletions(-)
 
 diff --git a/dirmngr/dirmngr.c b/dirmngr/dirmngr.c
-index 31d3ca2..513e2a6 100644
+index 31d3ca235..513e2a630 100644
 --- a/dirmngr/dirmngr.c
 +++ b/dirmngr/dirmngr.c
 @@ -1905,7 +1905,6 @@ handle_connections (assuan_fd_t listen_fd)

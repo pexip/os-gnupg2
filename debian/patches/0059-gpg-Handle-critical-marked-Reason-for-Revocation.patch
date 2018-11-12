@@ -18,7 +18,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  1 file changed, 1 insertion(+)
 
 diff --git a/g10/parse-packet.c b/g10/parse-packet.c
-index 7f44ce5..bbb784a 100644
+index 7f44ce532..bbb784a90 100644
 --- a/g10/parse-packet.c
 +++ b/g10/parse-packet.c
 @@ -1572,6 +1572,7 @@ can_handle_critical (const byte * buffer, size_t n, int type)

@@ -11,7 +11,7 @@ from trust-mode:foo to trust-model:foo.
  1 file changed, 12 insertions(+), 8 deletions(-)
 
 diff --git a/doc/gpg.texi b/doc/gpg.texi
-index 3b82b44..d658737 100644
+index 3b82b4457..d65873756 100644
 --- a/doc/gpg.texi
 +++ b/doc/gpg.texi
 @@ -1600,17 +1600,17 @@ Set what trust model GnuPG should follow. The models are:

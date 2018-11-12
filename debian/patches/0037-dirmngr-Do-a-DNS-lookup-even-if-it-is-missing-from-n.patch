@@ -14,7 +14,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  1 file changed, 21 insertions(+), 6 deletions(-)
 
 diff --git a/dirmngr/dns-stuff.c b/dirmngr/dns-stuff.c
-index 52f011a..bc2e071 100644
+index 52f011a00..bc2e071f8 100644
 --- a/dirmngr/dns-stuff.c
 +++ b/dirmngr/dns-stuff.c
 @@ -498,12 +498,10 @@ libdns_init (void)

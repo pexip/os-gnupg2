@@ -15,7 +15,7 @@ Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
  1 file changed, 6 insertions(+), 1 deletion(-)
 
 diff --git a/g10/keyring.c b/g10/keyring.c
-index 328290e..d75fdbc 100644
+index 328290ed8..d75fdbc7b 100644
 --- a/g10/keyring.c
 +++ b/g10/keyring.c
 @@ -692,7 +692,6 @@ keyring_search_reset (KEYRING_HANDLE hd)

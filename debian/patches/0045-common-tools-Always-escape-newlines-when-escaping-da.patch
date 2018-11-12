@@ -16,7 +16,7 @@ Signed-off-by: Justus Winter <justus@g10code.com>
  2 files changed, 16 insertions(+), 1 deletion(-)
 
 diff --git a/common/stringhelp.c b/common/stringhelp.c
-index dea2212..0abfa3d 100644
+index dea2212c4..0abfa3d3a 100644
 --- a/common/stringhelp.c
 +++ b/common/stringhelp.c
 @@ -1052,7 +1052,8 @@ do_percent_escape (const char *str, const char *extra, int die)
@@ -44,7 +44,7 @@ index dea2212..0abfa3d 100644
          {
  	  ptr[i++] = '%';
 diff --git a/tools/gpgconf-comp.c b/tools/gpgconf-comp.c
-index 530c128..9358e2e 100644
+index 530c1287f..9358e2efa 100644
 --- a/tools/gpgconf-comp.c
 +++ b/tools/gpgconf-comp.c
 @@ -1490,6 +1490,13 @@ gc_percent_escape (const char *src)

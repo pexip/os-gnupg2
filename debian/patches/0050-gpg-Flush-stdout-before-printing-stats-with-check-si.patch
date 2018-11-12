@@ -12,7 +12,7 @@ Signed-off-by: Werner Koch <wk@gnupg.org>
  1 file changed, 5 insertions(+), 1 deletion(-)
 
 diff --git a/g10/keylist.c b/g10/keylist.c
-index abdcb9f..4078053 100644
+index abdcb9f0a..407805357 100644
 --- a/g10/keylist.c
 +++ b/g10/keylist.c
 @@ -465,6 +465,10 @@ print_signature_stats (struct keylist_context *s)
