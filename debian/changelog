@@ -1,3 +1,9 @@
+gnupg2 (2.1.18-8~deb9u4) stretch; urgency=medium
+
+  * Avoid crash when importing without a TTY (Closes: #913614)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Thu, 07 Feb 2019 15:57:27 -0500
+
 gnupg2 (2.1.18-8~deb9u3) stretch; urgency=medium
 
   * block trivial access to scdaemon memory (Closes: #878952)
