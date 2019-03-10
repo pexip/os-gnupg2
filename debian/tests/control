@@ -1,3 +1,7 @@
 Tests: gpgv-win32
 Depends: gpgv-win32, gnupg2, gpgv2
 Restrictions: needs-root, allow-stderr
+
+Tests: no-tty
+Depends: gpg
+Restrictions: allow-stderr

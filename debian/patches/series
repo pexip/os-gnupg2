@@ -91,3 +91,4 @@ update-crypto-defaults/0081-gpg-default-to-AES-256.patch
 0091-gpg-Make-dry-run-work-for-secret-keys.patch
 0092-gpg-Print-sec-sbb-with-import-option-import-show-or-.patch
 0093-gpg-Check-and-fix-keys-on-import.patch
+0094-gpg-Avoid-superfluous-sig-check-info-during-import.patch

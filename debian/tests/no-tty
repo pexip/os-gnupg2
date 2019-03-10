@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# Author: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+
+# Ensure that import works fine without a tty (see
+# https://bugs.debian.org/913614)
+
+set -e
+GPG=${GPG:-gpg}
+GPG_AGENT=${GPG_AGENT:-gpg-agent}
+export GNUPGHOME="$(mktemp -d)"
+
+cleanup() {
+    rm -rf "$GNUPGHOME"
+}
+trap cleanup EXIT
+
+"$GPG_AGENT" --daemon
+setsid -w "$GPG" --import debian/tests/linus.key

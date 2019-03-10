@@ -1,3 +1,15 @@
+gnupg2 (2.1.18-8~deb9u4pexip1) pexip; urgency=medium
+
+  * New upstream release
+
+ -- Vincent Sanders <vince@pexip.com>  Sat, 09 Mar 2019 13:21:23 +0000
+
+gnupg2 (2.1.18-8~deb9u4) stretch; urgency=medium
+
+  * Avoid crash when importing without a TTY (Closes: #913614)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Thu, 07 Feb 2019 15:57:27 -0500
+
 gnupg2 (2.1.18-8~deb9u3pexip1) pexip; urgency=medium
 
   * New upstream release
