@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <ctype.h>
 #include <assert.h>
 #include <unistd.h>
@@ -39,13 +40,8 @@
 #include "agent.h"
 
 #include "cvt-openpgp.h"
-#include "sexp-parse.h"
+#include "../common/sexp-parse.h"
 
-
-/* To use the openpgp-s2k3-ocb-aes scheme by default set the value of
- * this macro to 1.  Note that the caller of agent_protect may
- * override this default.  */
-#define PROT_DEFAULT_TO_OCB 0
 
 /* The protection mode for encryption.  The supported modes for
    decryption are listed in agent_unprotect().  */
@@ -59,7 +55,7 @@
 
 /* A table containing the information needed to create a protected
    private key.  */
-static struct {
+static const struct {
   const char *algo;
   const char *parmlist;
   int prot_from, prot_to;
@@ -73,6 +69,13 @@ static struct {
   { "ecc",  "pabgnqd", 6, 6, 1 },
   { NULL }
 };
+
+
+/* The number of milliseconds we use in the S2K function and the
+ * calibrated count value.  A count value of zero indicates that the
+ * calibration has not yet been done or needs to be done again.  */
+static unsigned int s2k_calibration_time = AGENT_S2K_CALIBRATION;
+static unsigned long s2k_calibrated_count;
 
 
 /* A helper object for time measurement.  */
@@ -109,11 +112,14 @@ calibrate_get_time (struct calibrate_time_s *data)
                    &data->creation_time, &data->exit_time,
                    &data->kernel_time, &data->user_time);
 # endif
-#else
-  struct tms tmp;
+#elif defined (CLOCK_THREAD_CPUTIME_ID)
+  struct timespec tmp;
 
-  times (&tmp);
-  data->ticks = tmp.tms_utime;
+  clock_gettime (CLOCK_THREAD_CPUTIME_ID, &tmp);
+  data->ticks = (clock_t)(((unsigned long long)tmp.tv_sec * 1000000000 +
+                           tmp.tv_nsec) * CLOCKS_PER_SEC / 1000000000);
+#else
+  data->ticks = clock ();
 #endif
 }
 
@@ -140,7 +146,7 @@ calibrate_elapsed_time (struct calibrate_time_s *starttime)
   }
 #else
   return (unsigned long)((((double) (stoptime.ticks - starttime->ticks))
-                          /CLOCKS_PER_SEC)*10000000);
+                          /CLOCKS_PER_SEC)*1000);
 #endif
 }
 
@@ -164,7 +170,7 @@ calibrate_s2k_count_one (unsigned long count)
 
 
 /* Measure the time we need to do the hash operations and deduce an
-   S2K count which requires about 100ms of time.  */
+   S2K count which requires roughly some targeted amount of time.  */
 static unsigned long
 calibrate_s2k_count (void)
 {
@@ -176,11 +182,11 @@ calibrate_s2k_count (void)
       ms = calibrate_s2k_count_one (count);
       if (opt.verbose > 1)
         log_info ("S2K calibration: %lu -> %lums\n", count, ms);
-      if (ms > 100)
+      if (ms > s2k_calibration_time)
         break;
     }
 
-  count = (unsigned long)(((double)count / ms) * 100);
+  count = (unsigned long)(((double)count / ms) * s2k_calibration_time);
   count /= 1024;
   count *= 1024;
   if (count < 65536)
@@ -196,18 +202,50 @@ calibrate_s2k_count (void)
 }
 
 
+/* Set the calibration time.  This may be called early at startup or
+ * at any time.  Thus it should one set variables.  */
+void
+set_s2k_calibration_time (unsigned int milliseconds)
+{
+  if (!milliseconds)
+    milliseconds = AGENT_S2K_CALIBRATION;
+  else if (milliseconds > 60 * 1000)
+    milliseconds = 60 * 1000;  /* Cap at 60 seconds.  */
+  s2k_calibration_time = milliseconds;
+  s2k_calibrated_count = 0;  /* Force re-calibration.  */
+}
+
+
+/* Return the calibrated S2K count.  This is only public for the use
+ * of the Assuan getinfo s2k_count_cal command.  */
+unsigned long
+get_calibrated_s2k_count (void)
+{
+  if (!s2k_calibrated_count)
+    s2k_calibrated_count = calibrate_s2k_count ();
+
+  /* Enforce a lower limit.  */
+  return s2k_calibrated_count < 65536 ? 65536 : s2k_calibrated_count;
+}
+
 
 /* Return the standard S2K count.  */
 unsigned long
 get_standard_s2k_count (void)
 {
-  static unsigned long count;
+  if (opt.s2k_count)
+    return opt.s2k_count < 65536 ? 65536 : opt.s2k_count;
 
-  if (!count)
-    count = calibrate_s2k_count ();
+  return get_calibrated_s2k_count ();
+}
 
-  /* Enforce a lower limit.  */
-  return count < 65536 ? 65536 : count;
+
+/* Return the milliseconds required for the standard S2K
+ * operation.  */
+unsigned long
+get_standard_s2k_time (void)
+{
+  return calibrate_s2k_count_one (get_standard_s2k_count ());
 }
 
 
@@ -243,7 +281,7 @@ get_standard_s2k_count_rfc4880 (void)
 /* Calculate the MIC for a private key or shared secret S-expression.
    SHA1HASH should point to a 20 byte buffer.  This function is
    suitable for all algorithms. */
-static int
+static gpg_error_t
 calculate_mic (const unsigned char *plainkey, unsigned char *sha1hash)
 {
   const unsigned char *hash_begin, *hash_end;
@@ -386,7 +424,10 @@ do_encryption (const unsigned char *hashbegin, size_t hashlen,
       outbuf = gcry_malloc_secure (outlen);
     }
   if (!outbuf)
-    rc = out_of_core ();
+    {
+      rc = out_of_core ();
+      goto leave;
+    }
 
   /* Allocate a buffer for the nonce and the salt.  */
   if (!rc)
@@ -426,11 +467,13 @@ do_encryption (const unsigned char *hashbegin, size_t hashlen,
         }
     }
 
+  if (rc)
+    goto leave;
+
   /* Set the IV/nonce.  */
-  if (!rc)
-    {
-      rc = gcry_cipher_setiv (hd, iv, use_ocb? 12 : blklen);
-    }
+  rc = gcry_cipher_setiv (hd, iv, use_ocb? 12 : blklen);
+  if (rc)
+    goto leave;
 
   if (use_ocb)
     {
@@ -441,7 +484,6 @@ do_encryption (const unsigned char *hashbegin, size_t hashlen,
       if (!rc)
         rc = gcry_cipher_authenticate
           (hd, protbegin+protlen, hashlen - (protbegin+protlen - hashbegin));
-
     }
   else
     {
@@ -505,14 +547,11 @@ do_encryption (const unsigned char *hashbegin, size_t hashlen,
         }
     }
 
+  if (rc)
+    goto leave;
+
   /* Release cipher handle and check for errors.  */
   gcry_cipher_close (hd);
-  if (rc)
-    {
-      xfree (iv);
-      xfree (outbuf);
-      return rc;
-    }
 
   /* Now allocate the buffer we want to return.  This is
 
@@ -551,6 +590,12 @@ do_encryption (const unsigned char *hashbegin, size_t hashlen,
   xfree (iv);
   xfree (outbuf);
   return 0;
+
+ leave:
+  gcry_cipher_close (hd);
+  xfree (iv);
+  xfree (outbuf);
+  return rc;
 }
 
 
@@ -580,7 +625,7 @@ agent_protect (const unsigned char *plainkey, const char *passphrase,
   int have_curve = 0;
 
   if (use_ocb == -1)
-    use_ocb = PROT_DEFAULT_TO_OCB;
+    use_ocb = opt.enable_extended_key_format;
 
   /* Create an S-expression with the protected-at timestamp.  */
   memcpy (timestamp_exp, "(12:protected-at15:", 19);
@@ -690,7 +735,7 @@ agent_protect (const unsigned char *plainkey, const char *passphrase,
     return rc;
 
   /* Now create the protected version of the key.  Note that the 10
-     extra bytes are for for the inserted "protected-" string (the
+     extra bytes are for the inserted "protected-" string (the
      beginning of the plaintext reads: "((11:private-key(" ).  The 35
      term is the space for (12:protected-at15:<timestamp>).  */
   *resultlen = (10
@@ -726,7 +771,7 @@ agent_protect (const unsigned char *plainkey, const char *passphrase,
 
 
 /* Do the actual decryption and check the return list for consistency.  */
-static int
+static gpg_error_t
 do_decryption (const unsigned char *aad_begin, size_t aad_len,
                const unsigned char *aadhole_begin, size_t aadhole_len,
                const unsigned char *protected, size_t protectedlen,
@@ -736,7 +781,7 @@ do_decryption (const unsigned char *aad_begin, size_t aad_len,
                int prot_cipher, int prot_cipher_keylen, int is_ocb,
                unsigned char **result)
 {
-  int rc = 0;
+  int rc;
   int blklen;
   gcry_cipher_hd_t hd;
   unsigned char *outbuf;
@@ -811,7 +856,14 @@ do_decryption (const unsigned char *aad_begin, size_t aad_len,
                                         protected, protectedlen - 16);
             }
           if (!rc)
-            rc = gcry_cipher_checktag (hd, protected + protectedlen - 16, 16);
+            {
+              rc = gcry_cipher_checktag (hd, protected + protectedlen - 16, 16);
+              if (gpg_err_code (rc) == GPG_ERR_CHECKSUM)
+                {
+                  /* Return Bad Passphrase instead of checksum error */
+                  rc = gpg_error (GPG_ERR_BAD_PASSPHRASE);
+                }
+            }
         }
       else
         {
@@ -831,8 +883,6 @@ do_decryption (const unsigned char *aad_begin, size_t aad_len,
   /* Do a quick check on the data structure. */
   if (*outbuf != '(' && outbuf[1] != '(')
     {
-      /* Note that in OCB mode this is actually invalid _encrypted_
-       * data and not a bad passphrase.  */
       xfree (outbuf);
       return gpg_error (GPG_ERR_BAD_PASSPHRASE);
     }
@@ -856,7 +906,7 @@ do_decryption (const unsigned char *aad_begin, size_t aad_len,
  * CUTOFF and CUTLEN will receive the offset and the length of the
  * resulting list which should go into the MIC calculation but then be
  * removed.  */
-static int
+static gpg_error_t
 merge_lists (const unsigned char *protectedkey,
              size_t replacepos,
              const unsigned char *cleartext,
@@ -1009,13 +1059,13 @@ merge_lists (const unsigned char *protectedkey,
 /* Unprotect the key encoded in canonical format.  We assume a valid
    S-Exp here.  If a protected-at item is available, its value will
    be stored at protected_at unless this is NULL.  */
-int
+gpg_error_t
 agent_unprotect (ctrl_t ctrl,
                  const unsigned char *protectedkey, const char *passphrase,
                  gnupg_isotime_t protected_at,
                  unsigned char **result, size_t *resultlen)
 {
-  static struct {
+  static const struct {
     const char *name; /* Name of the protection method. */
     int algo;         /* (A zero indicates the "openpgp-native" hack.)  */
     int keylen;       /* Used key length in bytes.  */
@@ -1289,6 +1339,7 @@ agent_unprotect (ctrl_t ctrl,
   return 0;
 }
 
+
 /* Check the type of the private key, this is one of the constants:
    PRIVATE_KEY_UNKNOWN if we can't figure out the type (this is the
    value 0), PRIVATE_KEY_CLEAR for an unprotected private key.
@@ -1462,7 +1513,7 @@ make_shadow_info (const char *serialno, const char *idstring)
 
 
 /* Create a shadow key from a public key.  We use the shadow protocol
-  "ti-v1" and insert the S-expressionn SHADOW_INFO.  The resulting
+  "t1-v1" and insert the S-expressionn SHADOW_INFO.  The resulting
   S-expression is returned in an allocated buffer RESULT will point
   to. The input parameters are expected to be valid canonicalized
   S-expressions */
@@ -1547,7 +1598,7 @@ agent_shadow_key (const unsigned char *pubkey,
 
 /* Parse a canonical encoded shadowed key and return a pointer to the
    inner list with the shadow_info */
-int
+gpg_error_t
 agent_get_shadow_info (const unsigned char *shadowkey,
                        unsigned char const **shadow_info)
 {

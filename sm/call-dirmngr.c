@@ -32,9 +32,9 @@
 #include <gcrypt.h>
 #include <assuan.h>
 
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "keydb.h"
-#include "asshelp.h"
+#include "../common/asshelp.h"
 
 
 struct membuf {
@@ -175,6 +175,13 @@ warn_version_mismatch (ctrl_t ctrl, assuan_context_t ctx,
       else
         {
           log_info (_("WARNING: %s\n"), warn);
+          if (!opt.quiet)
+            {
+              log_info (_("Note: Outdated servers may lack important"
+                          " security fixes.\n"));
+              log_info (_("Note: Use the command \"%s\" to restart them.\n"),
+                        "gpgconf --kill all");
+            }
           gpgsm_status2 (ctrl, STATUS_WARNING, "server_version_mismatch 0",
                          warn, NULL);
           xfree (warn);
@@ -383,7 +390,7 @@ inq_certificate (void *opaque, const char *line)
     }
   else
     {
-      log_error ("unsupported inquiry '%s'\n", line);
+      log_error ("unsupported certificate inquiry '%s'\n", line);
       return gpg_error (GPG_ERR_ASS_UNKNOWN_INQUIRE);
     }
 
@@ -408,7 +415,7 @@ inq_certificate (void *opaque, const char *line)
       ksba_cert_t cert;
 
 
-      err = gpgsm_find_cert (parm->ctrl, line, ski, &cert);
+      err = gpgsm_find_cert (parm->ctrl, line, ski, &cert, 1);
       if (err)
         {
           log_error ("certificate not found: %s\n", gpg_strerror (err));
@@ -430,7 +437,7 @@ inq_certificate (void *opaque, const char *line)
 }
 
 
-/* Take a 20 byte hexencoded string and put it into the the provided
+/* Take a 20 byte hexencoded string and put it into the provided
    20 byte buffer FPR in binary format. */
 static int
 unhexify_fpr (const char *hexstr, unsigned char *fpr)
@@ -484,8 +491,8 @@ isvalid_status_cb (void *opaque, const char *line)
 
   Values for USE_OCSP:
      0 = Do CRL check.
-     1 = Do an OCSP check.
-     2 = Do an OCSP check using only the default responder.
+     1 = Do an OCSP check but fallback to CRL unless CRLS are disabled.
+     2 = Do only an OCSP check using only the default responder.
  */
 int
 gpgsm_dirmngr_isvalid (ctrl_t ctrl,
@@ -493,7 +500,7 @@ gpgsm_dirmngr_isvalid (ctrl_t ctrl,
 {
   static int did_options;
   int rc;
-  char *certid;
+  char *certid, *certfpr;
   char line[ASSUAN_LINELENGTH];
   struct inq_certificate_parm_s parm;
   struct isvalid_status_parm_s stparm;
@@ -502,19 +509,13 @@ gpgsm_dirmngr_isvalid (ctrl_t ctrl,
   if (rc)
     return rc;
 
-  if (use_ocsp)
+  certfpr = gpgsm_get_fingerprint_hexstring (cert, GCRY_MD_SHA1);
+  certid = gpgsm_get_certid (cert);
+  if (!certid)
     {
-      certid = gpgsm_get_fingerprint_hexstring (cert, GCRY_MD_SHA1);
-    }
-  else
-    {
-      certid = gpgsm_get_certid (cert);
-      if (!certid)
-        {
-          log_error ("error getting the certificate ID\n");
-	  release_dirmngr (ctrl);
-          return gpg_error (GPG_ERR_GENERAL);
-        }
+      log_error ("error getting the certificate ID\n");
+      release_dirmngr (ctrl);
+      return gpg_error (GPG_ERR_GENERAL);
     }
 
   if (opt.verbose > 1)
@@ -534,13 +535,8 @@ gpgsm_dirmngr_isvalid (ctrl_t ctrl,
   stparm.seen = 0;
   memset (stparm.fpr, 0, 20);
 
-  /* FIXME: If --disable-crl-checks has been set, we should pass an
-     option to dirmngr, so that no fallback CRL check is done after an
-     ocsp check.  It is not a problem right now as dirmngr does not
-     fallback to CRL checking.  */
-
   /* It is sufficient to send the options only once because we have
-     one connection per process only. */
+   * one connection per process only.  */
   if (!did_options)
     {
       if (opt.force_crl_refresh)
@@ -548,10 +544,14 @@ gpgsm_dirmngr_isvalid (ctrl_t ctrl,
                          NULL, NULL, NULL, NULL, NULL, NULL);
       did_options = 1;
     }
-  snprintf (line, DIM(line), "ISVALID%s %s",
-            use_ocsp == 2? " --only-ocsp --force-default-responder":"",
-            certid);
+  snprintf (line, DIM(line), "ISVALID%s%s %s%s%s",
+            use_ocsp == 2 || opt.no_crl_check ? " --only-ocsp":"",
+            use_ocsp == 2? " --force-default-responder":"",
+            certid,
+            use_ocsp? " ":"",
+            use_ocsp? certfpr:"");
   xfree (certid);
+  xfree (certfpr);
 
   rc = assuan_transact (dirmngr_ctx, line, NULL, NULL,
                         inq_certificate, &parm,
@@ -929,7 +929,7 @@ run_command_inq_cb (void *opaque, const char *line)
       if (!*line)
         return gpg_error (GPG_ERR_ASS_PARAMETER);
 
-      err = gpgsm_find_cert (parm->ctrl, line, NULL, &cert);
+      err = gpgsm_find_cert (parm->ctrl, line, NULL, &cert, 1);
       if (err)
         {
           log_error ("certificate not found: %s\n", gpg_strerror (err));
@@ -950,9 +950,33 @@ run_command_inq_cb (void *opaque, const char *line)
       line = s;
       log_info ("dirmngr: %s\n", line);
     }
+  else if ((s = has_leading_keyword (line, "ISTRUSTED")))
+    {
+      /* The server is asking us whether the certificate is a trusted
+         root certificate.  */
+      char fpr[41];
+      struct rootca_flags_s rootca_flags;
+      int n;
+
+      line = s;
+
+      for (s=line,n=0; hexdigitp (s); s++, n++)
+        ;
+      if (*s || n != 40)
+        return gpg_error (GPG_ERR_ASS_PARAMETER);
+      for (s=line, n=0; n < 40; s++, n++)
+        fpr[n] = (*s >= 'a')? (*s & 0xdf): *s;
+      fpr[n] = 0;
+
+      if (!gpgsm_agent_istrusted (parm->ctrl, NULL, fpr, &rootca_flags))
+        rc = assuan_send_data (parm->ctx, "1", 1);
+      else
+        rc = 0;
+      return rc;
+    }
   else
     {
-      log_error ("unsupported inquiry '%s'\n", line);
+      log_error ("unsupported command inquiry '%s'\n", line);
       rc = gpg_error (GPG_ERR_ASS_UNKNOWN_INQUIRE);
     }
 

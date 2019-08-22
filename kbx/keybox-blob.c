@@ -65,7 +65,7 @@
            1 = The only defined value
    - u16  Blob flags
           bit 0 = contains secret key material (not used)
-          bit 1 = ephemeral blob (e.g. used while quering external resources)
+          bit 1 = ephemeral blob (e.g. used while querying external resources)
    - u32  Offset to the OpenPGP keyblock or the X.509 DER encoded
           certificate
    - u32  The length of the keyblock or certificate
@@ -101,7 +101,9 @@
    - u16  [NSIGS] Number of signatures
    - u16  Size of signature information (4)
    - NSIGS times:
-      - u32  Expiration time of signature with some special values:
+      - u32  Expiration time of signature with some special values.
+             Since version 2.1.20 these special valuesare not anymore
+             used for OpenPGP:
              - 0x00000000 = not checked
              - 0x00000001 = missing key
              - 0x00000002 = bad signature
@@ -123,7 +125,7 @@
           IDs go here.
    - bN   Space for the keyblock or certificate.
    - bN   RFU.  This is the remaining space after keyblock and before
-          the checksum.  Is is not covered by the checksum.
+          the checksum.  It is not covered by the checksum.
    - b20  SHA-1 checksum (useful for KS syncronisation?)
           Note, that KBX versions before GnuPG 2.1 used an MD5
           checksum.  However it was only created but never checked.
@@ -227,7 +229,7 @@ struct keyboxblob {
 
 
 
-/* A simple implemention of a dynamic buffer.  Use init_membuf() to
+/* A simple implementation of a dynamic buffer.  Use init_membuf() to
    create a buffer, put_membuf to append bytes and get_membuf to
    release and return the buffer.  Allocation errors are detected but
    only returned at the final get_membuf(), this helps not to clutter
@@ -589,7 +591,7 @@ create_blob_header (KEYBOXBLOB blob, int blobtype, int as_ephemeral)
   put32 ( a, 0 );  /* size of reserved space */
   /* reserved space (which is currently of size 0) */
 
-  /* space where we write keyIDs and and other stuff so that the
+  /* space where we write keyIDs and other stuff so that the
      pointers can actually point to somewhere */
   if (blobtype == KEYBOX_BLOBTYPE_PGP)
     {
@@ -705,18 +707,12 @@ _keybox_create_openpgp_blob (KEYBOXBLOB *r_blob,
                              keybox_openpgp_info_t info,
                              const unsigned char *image,
                              size_t imagelen,
-                             u32 *sigstatus,
                              int as_ephemeral)
 {
   gpg_error_t err;
   KEYBOXBLOB blob;
 
   *r_blob = NULL;
-
-  /* If we have a signature status vector, check that the number of
-     elements matches the actual number of signatures.  */
-  if (sigstatus && sigstatus[0] != info->nsigs)
-    return gpg_error (GPG_ERR_INTERNAL);
 
   blob = xtrycalloc (1, sizeof *blob);
   if (!blob)
@@ -756,7 +752,7 @@ _keybox_create_openpgp_blob (KEYBOXBLOB *r_blob,
   if (err)
     goto leave;
   pgp_create_uid_part (blob, info);
-  pgp_create_sig_part (blob, sigstatus);
+  pgp_create_sig_part (blob, NULL);
 
   init_membuf (&blob->bufbuf, 1024);
   blob->buf = &blob->bufbuf;

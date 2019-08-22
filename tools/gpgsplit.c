@@ -32,16 +32,17 @@
 #ifdef HAVE_ZIP
 # include <zlib.h>
 #endif
-#ifdef HAVE_BZIP2
-# include <bzlib.h>
-#endif /* HAVE_BZIP2 */
 #if defined(__riscos__) && defined(USE_ZLIBRISCOS)
 # include "zlib-riscos.h"
 #endif
 
 #define INCLUDED_BY_MAIN_MODULE 1
-#include "util.h"
-#include "openpgpdefs.h"
+#include "../common/util.h"
+#include "../common/openpgpdefs.h"
+
+#ifdef HAVE_BZIP2
+# include <bzlib.h>
+#endif /* HAVE_BZIP2 */
 
 static int opt_verbose;
 static const char *opt_prefix = "";
@@ -74,7 +75,9 @@ static ARGPARSE_OPTS opts[] = {
     { oUncompress, "uncompress", 0, "uncompress a packet"},
     { oSecretToPublic, "secret-to-public", 0, "convert secret keys to public keys"},
     { oNoSplit, "no-split", 0, "write to stdout and don't actually split"},
-{0} };
+
+    ARGPARSE_end ()
+};
 
 
 static const char *

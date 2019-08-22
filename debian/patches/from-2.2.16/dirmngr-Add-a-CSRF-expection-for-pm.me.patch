@@ -1,0 +1,43 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Thu, 9 May 2019 14:49:59 +0200
+Subject: dirmngr: Add a CSRF expection for pm.me
+
+--
+
+Also comment typo fix.
+
+(cherry picked from commit 7c4029110ab45d02e746ddcc13a87952ca0099f5)
+---
+ agent/command.c | 4 ++--
+ dirmngr/http.c  | 3 ++-
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/agent/command.c b/agent/command.c
+index 41fb394..cf8a2e4 100644
+--- a/agent/command.c
++++ b/agent/command.c
+@@ -1231,8 +1231,8 @@ do_one_keyinfo (ctrl_t ctrl, const unsigned char *grip, assuan_context_t ctx,
+ }
+ 
+ 
+-/* Entry int for the command KEYINFO.  This function handles the
+-   command option processing.  For details see hlp_keyinfo above.  */
++/* Entry into the command KEYINFO.  This function handles the
++ * command option processing.  For details see hlp_keyinfo above.  */
+ static gpg_error_t
+ cmd_keyinfo (assuan_context_t ctx, char *line)
+ {
+diff --git a/dirmngr/http.c b/dirmngr/http.c
+index 7fdd06a..384f256 100644
+--- a/dirmngr/http.c
++++ b/dirmngr/http.c
+@@ -3530,7 +3530,8 @@ same_host_p (parsed_uri_t a, parsed_uri_t b)
+     { "protonmail.com", "api.protonmail.com" },
+     { NULL,             "api.protonmail.ch"  },
+     { "protonmail.ch",  "api.protonmail.com" },
+-    { NULL,             "api.protonmail.ch"  }
++    { NULL,             "api.protonmail.ch"  },
++    { "pm.me",          "api.protonmail.ch"  }
+   };
+   int i;
+   const char *from;

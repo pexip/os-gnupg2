@@ -62,24 +62,46 @@ ks_http_help (ctrl_t ctrl, parsed_uri_t uri)
 
 
 /* Get the key from URL which is expected to specify a http style
-   scheme.  On success R_FP has an open stream to read the data.  */
+ * scheme.  On success R_FP has an open stream to read the data.
+ * Despite its name this function is also used to retrieve arbitrary
+ * data via https or http.
+ */
 gpg_error_t
-ks_http_fetch (ctrl_t ctrl, const char *url, estream_t *r_fp)
+ks_http_fetch (ctrl_t ctrl, const char *url, unsigned int flags,
+               estream_t *r_fp)
 {
   gpg_error_t err;
   http_session_t session = NULL;
+  unsigned int session_flags;
   http_t http = NULL;
-  int redirects_left = MAX_REDIRECTS;
+  http_redir_info_t redirinfo = { MAX_REDIRECTS };
   estream_t fp = NULL;
   char *request_buffer = NULL;
+  parsed_uri_t uri = NULL;
+
+  err = http_parse_uri (&uri, url, 0);
+  if (err)
+    goto leave;
+  redirinfo.orig_url   = url;
+  redirinfo.orig_onion = uri->onion;
+  redirinfo.orig_https = uri->use_tls;
+  redirinfo.allow_downgrade = !!(flags & KS_HTTP_FETCH_ALLOW_DOWNGRADE);
+
+  /* By default we only use the system provided certificates with this
+   * fetch command.  */
+  session_flags = HTTP_FLAG_TRUST_SYS;
+  if ((flags & KS_HTTP_FETCH_NO_CRL) || ctrl->http_no_crl)
+    session_flags |= HTTP_FLAG_NO_CRL;
+  if ((flags & KS_HTTP_FETCH_TRUST_CFG))
+    session_flags |= HTTP_FLAG_TRUST_CFG;
 
  once_more:
-  /* Note that we only use the system provided certificates with the
-   * fetch command.  */
-  err = http_session_new (&session, NULL, NULL, HTTP_FLAG_TRUST_SYS);
+  err = http_session_new (&session, NULL, session_flags,
+                          gnupg_http_tls_verify_cb, ctrl);
   if (err)
     goto leave;
   http_session_set_log_cb (session, cert_log_cb);
+  http_session_set_timeout (session, ctrl->timeout);
 
   *r_fp = NULL;
   err = http_open (&http,
@@ -88,7 +110,10 @@ ks_http_fetch (ctrl_t ctrl, const char *url, estream_t *r_fp)
                    /* httphost */ NULL,
                    /* fixme: AUTH */ NULL,
                    ((opt.honor_http_proxy? HTTP_FLAG_TRY_PROXY:0)
-                    | (opt.use_tor? HTTP_FLAG_FORCE_TOR:0)),
+                    | (DBG_LOOKUP? HTTP_FLAG_LOG_RESP:0)
+                    | (dirmngr_use_tor ()? HTTP_FLAG_FORCE_TOR:0)
+                    | (opt.disable_ipv4? HTTP_FLAG_IGNORE_IPv4 : 0)
+                    | (opt.disable_ipv6? HTTP_FLAG_IGNORE_IPv6 : 0)),
                    ctrl->http_proxy,
                    session,
                    NULL,
@@ -97,10 +122,11 @@ ks_http_fetch (ctrl_t ctrl, const char *url, estream_t *r_fp)
     {
       fp = http_get_write_ptr (http);
       /* Avoid caches to get the most recent copy of the key.  We set
-         both the Pragma and Cache-Control versions of the header, so
-         we're good with both HTTP 1.0 and 1.1.  */
-      es_fputs ("Pragma: no-cache\r\n"
-                "Cache-Control: no-cache\r\n", fp);
+       * both the Pragma and Cache-Control versions of the header, so
+       * we're good with both HTTP 1.0 and 1.1.  */
+      if ((flags & KS_HTTP_FETCH_NOCACHE))
+        es_fputs ("Pragma: no-cache\r\n"
+                  "Cache-Control: no-cache\r\n", fp);
       http_start_data (http);
       if (es_ferror (fp))
         err = gpg_error_from_syserror ();
@@ -133,29 +159,20 @@ ks_http_fetch (ctrl_t ctrl, const char *url, estream_t *r_fp)
     case 302:
     case 307:
       {
-        const char *s = http_get_header (http, "Location");
+        xfree (request_buffer);
+        err = http_prepare_redirect (&redirinfo, http_get_status_code (http),
+                                     http_get_header (http, "Location"),
+                                     &request_buffer);
+        if (err)
+          goto leave;
 
-        log_info (_("URL '%s' redirected to '%s' (%u)\n"),
-                  url, s?s:"[none]", http_get_status_code (http));
-        if (s && *s && redirects_left-- )
-          {
-            xfree (request_buffer);
-            request_buffer = xtrystrdup (s);
-            if (request_buffer)
-              {
-                url = request_buffer;
-                http_close (http, 0);
-                http = NULL;
-                http_session_release (session);
-                goto once_more;
-              }
-            err = gpg_error_from_syserror ();
-          }
-        else
-          err = gpg_error (GPG_ERR_NO_DATA);
-        log_error (_("too many redirections\n"));
+        url = request_buffer;
+        http_close (http, 0);
+        http = NULL;
+        http_session_release (session);
+        session = NULL;
       }
-      goto leave;
+      goto once_more;
 
     default:
       log_error (_("error accessing '%s': http status %u\n"),
@@ -180,5 +197,6 @@ ks_http_fetch (ctrl_t ctrl, const char *url, estream_t *r_fp)
   http_close (http, 0);
   http_session_release (session);
   xfree (request_buffer);
+  http_release_parsed_uri (uri);
   return err;
 }

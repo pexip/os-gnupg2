@@ -384,7 +384,12 @@ gnupg_exec_tool_stream (const char *pgmname, const char *argv[],
       /* Now find the argument marker and replace by the pipe's fd.
          Yeah, that is an ugly non-thread safe hack but it safes us to
          create a copy of the array.  */
+#ifdef HAVE_W32_SYSTEM
+      snprintf (extrafdbuf, sizeof extrafdbuf, "-&%lu",
+                (unsigned long)(void*)_get_osfhandle (extrapipe[0]));
+#else
       snprintf (extrafdbuf, sizeof extrafdbuf, "-&%d", extrapipe[0]);
+#endif
       for (argsaveidx=0; argv[argsaveidx]; argsaveidx++)
         if (!strcmp (argv[argsaveidx], "-&@INEXTRA@"))
           {
@@ -425,7 +430,7 @@ gnupg_exec_tool_stream (const char *pgmname, const char *argv[],
 
   /* Now read as long as we have something to poll.  We continue
      reading even after EOF or error on stdout so that we get the
-     other error messages or remaining outut.  */
+     other error messages or remaining output.  */
   while (! (fds[1].ignore && fds[2].ignore))
     {
       count = es_poll (fds, DIM(fds), -1);

@@ -17,7 +17,7 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "defs.scm"))
+(load (in-srcdir "tests" "openpgp" "defs.scm"))
 (setup-legacy-environment)
 
 (define armored_key_8192 "-----BEGIN PGP PUBLIC KEY BLOCK-----
@@ -764,4 +764,4 @@ wg7Md81a5RI3F2FG8747t9gX
 (tr:do
  (tr:pipe-do
   (pipe:echo nopad_armored_msg)
-  (pipe:gpg '())))
+  (pipe:gpg '(--decrypt))))

@@ -44,7 +44,6 @@ extern "C" {
 # define USE_DL 0
 # define USE_PLIST 0
 # define USE_SMALL_INTEGERS 0
-# define USE_TAGS 0
 # define USE_HISTORY 0
 #endif
 
@@ -76,11 +75,6 @@ extern "C" {
 
 #ifndef USE_PLIST
 # define USE_PLIST 0
-#endif
-
-/* If set, then every object can be tagged.  */
-#ifndef USE_TAGS
-# define USE_TAGS 1
 #endif
 
 /* Keep a history of function calls.  This enables a feature similar
@@ -173,6 +167,8 @@ void scheme_set_output_port_string(scheme *sc, char *start, char *past_the_end);
 SCHEME_EXPORT void scheme_load_file(scheme *sc, FILE *fin);
 SCHEME_EXPORT void scheme_load_named_file(scheme *sc, FILE *fin, const char *filename);
 SCHEME_EXPORT void scheme_load_string(scheme *sc, const char *cmd);
+SCHEME_EXPORT void scheme_load_memory(scheme *sc, const char *buf, size_t len,
+                                      const char *filename);
 SCHEME_EXPORT pointer scheme_apply0(scheme *sc, const char *procname);
 SCHEME_EXPORT pointer scheme_call(scheme *sc, pointer func, pointer args);
 SCHEME_EXPORT pointer scheme_eval(scheme *sc, pointer obj);

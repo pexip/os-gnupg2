@@ -24,6 +24,10 @@
    correct value and may be of advantage if we ever have to do
    special things. */
 
+#ifdef HAVE_W32_SYSTEM
+# define WIN32_LEAN_AND_MEAN 1
+#endif
+
 #ifdef GPG_ERR_SOURCE_DEFAULT
 #error GPG_ERR_SOURCE_DEFAULT already defined
 #endif
@@ -59,20 +63,32 @@ struct server_local_s;
 struct dirmngr_local_s;
 typedef struct dirmngr_local_s *dirmngr_local_t;
 
-/* Object used to describe a keyblok node.  */
+/* Object used to describe a keyblock node.  */
 typedef struct kbnode_struct *KBNODE;   /* Deprecated use kbnode_t. */
 typedef struct kbnode_struct *kbnode_t;
+
+/* The handle for keydb operations.  */
+typedef struct keydb_handle *KEYDB_HANDLE;
 
 /* TOFU database meta object.  */
 struct tofu_dbs_s;
 typedef struct tofu_dbs_s *tofu_dbs_t;
 
 
+#if SIZEOF_UNSIGNED_LONG == 8
+# define SERVER_CONTROL_MAGIC 0x53616c696e676572
+#else
+# define SERVER_CONTROL_MAGIC 0x53616c69
+#endif
+
 /* Session control object.  This object is passed to most functions to
    convey the status of a session.  Note that the defaults are set by
    gpg_init_default_ctrl(). */
 struct server_control_s
 {
+  /* Always has the value SERVER_CONTROL_MAGIC.  */
+  unsigned long magic;
+
   /* Local data for server.c  */
   struct server_local_s *server_local;
 
@@ -85,6 +101,8 @@ struct server_control_s
     int batch_updated_wanted;
   } tofu;
 
+  /* This is used to cache a key data base handle.  */
+  KEYDB_HANDLE cached_getkey_kdb;
 };
 
 

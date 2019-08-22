@@ -25,6 +25,12 @@
 #include <errno.h>
 #include <assert.h>
 #include <sys/types.h>
+#ifdef HAVE_SYS_MKDEV_H
+#include <sys/mkdev.h>
+#endif
+#ifdef HAVE_SYS_SYSMACROS_H
+# include <sys/sysmacros.h>
+#endif
 #ifdef HAVE_STAT
 # include <sys/stat.h>
 #endif
@@ -32,9 +38,9 @@
 
 #include "g13-syshelp.h"
 #include <assuan.h>
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "g13tuple.h"
-#include "exectool.h"
+#include "../common/exectool.h"
 #include "keyblob.h"
 
 /* The standard disk block size (logical).  */

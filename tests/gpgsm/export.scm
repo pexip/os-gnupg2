@@ -17,7 +17,7 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "gpgsm-defs.scm"))
+(load (in-srcdir "tests" "gpgsm" "gpgsm-defs.scm"))
 (setup-gpgsm-environment)
 
 (for-each-p'
@@ -25,7 +25,7 @@
  (lambda (cert)
    (lettmp (exported)
      (call-check `(,@gpgsm --output ,exported --export ,cert::uid::CN))
-     (with-ephemeral-home-directory
+     (with-ephemeral-home-directory setup-gpgsm-environment-no-atexit stop-agent
       (call-check `(,@gpgsm --import ,exported))
       (assert (sm-have-public-key? cert)))))
  (lambda (cert) cert::uid::CN)

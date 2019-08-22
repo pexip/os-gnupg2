@@ -20,7 +20,7 @@
 #ifndef G10_TDBIO_H
 #define G10_TDBIO_H
 
-#include "host2net.h"
+#include "../common/host2net.h"
 
 #define TRUST_RECORD_LEN 40
 #define SIGS_PER_RECORD 	((TRUST_RECORD_LEN-10)/5)
@@ -92,25 +92,28 @@ struct trust_record {
 typedef struct trust_record TRUSTREC;
 
 /*-- tdbio.c --*/
-int tdbio_update_version_record(void);
-int tdbio_set_dbname( const char *new_dbname, int create, int *r_nofile);
+int tdbio_update_version_record (ctrl_t ctrl);
+int tdbio_set_dbname (ctrl_t ctrl, const char *new_dbname,
+                      int create, int *r_nofile);
 const char *tdbio_get_dbname(void);
 void tdbio_dump_record( TRUSTREC *rec, estream_t fp );
 int tdbio_read_record( ulong recnum, TRUSTREC *rec, int expected );
-int tdbio_write_record( TRUSTREC *rec );
+int tdbio_write_record (ctrl_t ctrl, TRUSTREC *rec);
 int tdbio_db_matches_options(void);
 byte tdbio_read_model(void);
 ulong tdbio_read_nextcheck (void);
-int tdbio_write_nextcheck (ulong stamp);
+int tdbio_write_nextcheck (ctrl_t ctrl, ulong stamp);
 int tdbio_is_dirty(void);
 int tdbio_sync(void);
 int tdbio_begin_transaction(void);
 int tdbio_end_transaction(void);
 int tdbio_cancel_transaction(void);
-int tdbio_delete_record( ulong recnum );
-ulong tdbio_new_recnum(void);
-gpg_error_t tdbio_search_trust_byfpr (const byte *fingerprint, TRUSTREC *rec);
-gpg_error_t tdbio_search_trust_bypk (PKT_public_key *pk, TRUSTREC *rec);
+int tdbio_delete_record (ctrl_t ctrl, ulong recnum);
+ulong tdbio_new_recnum (ctrl_t ctrl);
+gpg_error_t tdbio_search_trust_byfpr (ctrl_t ctrl, const byte *fingerprint,
+                                      TRUSTREC *rec);
+gpg_error_t tdbio_search_trust_bypk (ctrl_t ctrl, PKT_public_key *pk,
+                                     TRUSTREC *rec);
 
 void tdbio_how_to_fix (void);
 void tdbio_invalid(void);

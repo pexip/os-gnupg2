@@ -24,7 +24,7 @@
 #include <string.h>
 
 #include "gpg.h"
-#include "util.h"
+#include "../common/util.h"
 #include "packet.h"
 #include "../common/iobuf.h"
 #include "options.h"
@@ -127,6 +127,11 @@ release_public_key_parts (PKT_public_key *pk)
       xfree (pk->serialno);
       pk->serialno = NULL;
     }
+  if (pk->updateurl)
+    {
+      xfree (pk->updateurl);
+      pk->updateurl = NULL;
+    }
 }
 
 
@@ -219,6 +224,12 @@ copy_public_key (PKT_public_key *d, PKT_public_key *s)
     }
   else
     d->revkey = NULL;
+
+  if (s->serialno)
+    d->serialno = xstrdup (s->serialno);
+  if (s->updateurl)
+    d->updateurl = xstrdup (s->updateurl);
+
   return d;
 }
 
@@ -314,6 +325,7 @@ free_user_id (PKT_user_id *uid)
   free_attributes(uid);
   xfree (uid->prefs);
   xfree (uid->namehash);
+  xfree (uid->updateurl);
   xfree (uid->mbox);
   xfree (uid);
 }
@@ -394,56 +406,85 @@ free_plaintext( PKT_plaintext *pt )
   xfree (pt);
 }
 
+
 /****************
- * Free the packet in pkt.
+ * Free the packet in PKT.
  */
 void
-free_packet( PACKET *pkt )
+free_packet (PACKET *pkt, parse_packet_ctx_t parsectx)
 {
-    if( !pkt || !pkt->pkt.generic )
-	return;
-
-    if( DBG_MEMORY )
-	log_debug("free_packet() type=%d\n", pkt->pkttype );
-
-    switch( pkt->pkttype ) {
-      case PKT_SIGNATURE:
-	free_seckey_enc( pkt->pkt.signature );
-	break;
-      case PKT_PUBKEY_ENC:
-	free_pubkey_enc( pkt->pkt.pubkey_enc );
-	break;
-      case PKT_SYMKEY_ENC:
-	free_symkey_enc( pkt->pkt.symkey_enc );
-	break;
-      case PKT_PUBLIC_KEY:
-      case PKT_PUBLIC_SUBKEY:
-      case PKT_SECRET_KEY:
-      case PKT_SECRET_SUBKEY:
-	free_public_key (pkt->pkt.public_key);
-	break;
-      case PKT_COMMENT:
-	free_comment( pkt->pkt.comment );
-	break;
-      case PKT_USER_ID:
-	free_user_id( pkt->pkt.user_id );
-	break;
-      case PKT_COMPRESSED:
-	free_compressed( pkt->pkt.compressed);
-	break;
-      case PKT_ENCRYPTED:
-      case PKT_ENCRYPTED_MDC:
-	free_encrypted( pkt->pkt.encrypted );
-	break;
-      case PKT_PLAINTEXT:
-	free_plaintext( pkt->pkt.plaintext );
-	break;
-      default:
-	xfree( pkt->pkt.generic );
-	break;
+  if (!pkt || !pkt->pkt.generic)
+    {
+      if (parsectx && parsectx->last_pkt.pkt.generic)
+        {
+          if (parsectx->free_last_pkt)
+            {
+              free_packet (&parsectx->last_pkt, NULL);
+              parsectx->free_last_pkt = 0;
+            }
+          parsectx->last_pkt.pkttype = 0;
+          parsectx->last_pkt.pkt.generic = NULL;
+        }
+      return;
     }
-    pkt->pkt.generic = NULL;
+
+  if (DBG_MEMORY)
+    log_debug ("free_packet() type=%d\n", pkt->pkttype);
+
+  /* If we have a parser context holding PKT then do not free the
+   * packet but set a flag that the packet in the parser context is
+   * now a deep copy.  */
+  if (parsectx && !parsectx->free_last_pkt
+      && parsectx->last_pkt.pkttype == pkt->pkttype
+      && parsectx->last_pkt.pkt.generic == pkt->pkt.generic)
+    {
+      parsectx->last_pkt = *pkt;
+      parsectx->free_last_pkt = 1;
+      pkt->pkt.generic = NULL;
+      return;
+    }
+
+  switch (pkt->pkttype)
+    {
+    case PKT_SIGNATURE:
+      free_seckey_enc (pkt->pkt.signature);
+      break;
+    case PKT_PUBKEY_ENC:
+      free_pubkey_enc (pkt->pkt.pubkey_enc);
+      break;
+    case PKT_SYMKEY_ENC:
+      free_symkey_enc (pkt->pkt.symkey_enc);
+      break;
+    case PKT_PUBLIC_KEY:
+    case PKT_PUBLIC_SUBKEY:
+    case PKT_SECRET_KEY:
+    case PKT_SECRET_SUBKEY:
+      free_public_key (pkt->pkt.public_key);
+      break;
+    case PKT_COMMENT:
+      free_comment (pkt->pkt.comment);
+      break;
+    case PKT_USER_ID:
+      free_user_id (pkt->pkt.user_id);
+      break;
+    case PKT_COMPRESSED:
+      free_compressed (pkt->pkt.compressed);
+      break;
+    case PKT_ENCRYPTED:
+    case PKT_ENCRYPTED_MDC:
+      free_encrypted (pkt->pkt.encrypted);
+      break;
+    case PKT_PLAINTEXT:
+      free_plaintext (pkt->pkt.plaintext);
+      break;
+    default:
+      xfree (pkt->pkt.generic);
+      break;
+    }
+
+  pkt->pkt.generic = NULL;
 }
+
 
 /****************
  * returns 0 if they match.

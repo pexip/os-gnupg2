@@ -17,6 +17,8 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: GPL-3.0+
  */
 
 #ifndef DIRMNGR_H
@@ -91,13 +93,18 @@ struct
                                  program.  */
 
   int running_detached; /* We are running in detached mode.  */
-  int use_tor;          /* Tor mode has been enabled.  */
   int allow_version_check; /* --allow-version-check is active.  */
 
   int force;          /* Force loading outdated CRLs. */
 
+
+  unsigned int connect_timeout;       /* Timeout for connect.  */
+  unsigned int connect_quick_timeout; /* Shorter timeout for connect.  */
+
   int disable_http;       /* Do not use HTTP at all.  */
   int disable_ldap;       /* Do not use LDAP at all.  */
+  int disable_ipv4;       /* Do not use legacy IP addresses.  */
+  int disable_ipv6;       /* Do not use standard IP addresses.  */
   int honor_http_proxy;   /* Honor the http_proxy env variable. */
   const char *http_proxy; /* The default HTTP proxy.  */
   const char *ldap_proxy; /* Use given LDAP proxy.  */
@@ -144,6 +151,7 @@ struct
 #define DBG_IPC_VALUE     1024  /* debug assuan communication */
 #define DBG_NETWORK_VALUE 2048  /* debug network I/O.  */
 #define DBG_LOOKUP_VALUE  8192  /* debug lookup details */
+#define DBG_EXTPROG_VALUE 16384 /* debug external program calls */
 
 #define DBG_X509    (opt.debug & DBG_X509_VALUE)
 #define DBG_CRYPTO  (opt.debug & DBG_CRYPTO_VALUE)
@@ -154,8 +162,10 @@ struct
 #define DBG_IPC     (opt.debug & DBG_IPC_VALUE)
 #define DBG_NETWORK (opt.debug & DBG_NETWORK_VALUE)
 #define DBG_LOOKUP  (opt.debug & DBG_LOOKUP_VALUE)
+#define DBG_EXTPROG (opt.debug & DBG_EXTPROG_VALUE)
 
-/* A simple list of certificate references. */
+/* A simple list of certificate references.  FIXME: Better use
+   certlist_t also for references (Store NULL at .cert) */
 struct cert_ref_s
 {
   struct cert_ref_s *next;
@@ -163,15 +173,23 @@ struct cert_ref_s
 };
 typedef struct cert_ref_s *cert_ref_t;
 
+
 /* Forward references; access only through server.c.  */
 struct server_local_s;
+
+#if SIZEOF_UNSIGNED_LONG == 8
+# define SERVER_CONTROL_MAGIC 0x6469726d6e677220
+#else
+# define SERVER_CONTROL_MAGIC 0x6469726d
+#endif
 
 /* Connection control structure.  */
 struct server_control_s
 {
-  int refcount;      /* Count additional references to this object.  */
-  int no_server;     /* We are not running under server control. */
-  int status_fd;     /* Only for non-server mode. */
+  unsigned long magic;/* Always has SERVER_CONTROL_MAGIC.  */
+  int refcount;       /* Count additional references to this object.  */
+  int no_server;      /* We are not running under server control. */
+  int status_fd;      /* Only for non-server mode. */
   struct server_local_s *server_local;
   int force_crl_refresh; /* Always load a fresh CRL. */
 
@@ -181,6 +199,10 @@ struct server_control_s
 
   int audit_events;  /* Send audit events to client.  */
   char *http_proxy;  /* The used http_proxy or NULL.  */
+
+  unsigned int timeout; /* Timeout for connect calls in ms.  */
+
+  unsigned int http_no_crl:1;  /* Do not check CRLs for https.  */
 };
 
 
@@ -190,7 +212,7 @@ void dirmngr_init_default_ctrl (ctrl_t ctrl);
 void dirmngr_deinit_default_ctrl (ctrl_t ctrl);
 void dirmngr_sighup_action (void);
 const char* dirmngr_get_current_socket_name (void);
-
+int dirmngr_use_tor (void);
 
 /*-- Various housekeeping functions.  --*/
 void ks_hkp_housekeeping (time_t curtime);
@@ -206,14 +228,47 @@ ksba_cert_t get_cert_local_ski (ctrl_t ctrl,
 gpg_error_t get_istrusted_from_client (ctrl_t ctrl, const char *hexfpr);
 int dirmngr_assuan_log_monitor (assuan_context_t ctx, unsigned int cat,
                                 const char *msg);
-void start_command_handler (gnupg_fd_t fd);
+void start_command_handler (gnupg_fd_t fd, unsigned int session_id);
 gpg_error_t dirmngr_status (ctrl_t ctrl, const char *keyword, ...);
 gpg_error_t dirmngr_status_help (ctrl_t ctrl, const char *text);
+gpg_error_t dirmngr_status_helpf (ctrl_t ctrl, const char *format,
+                                  ...) GPGRT_ATTR_PRINTF(2,3);
+gpg_error_t dirmngr_status_printf (ctrl_t ctrl, const char *keyword,
+                                   const char *format,
+                                   ...) GPGRT_ATTR_PRINTF(3,4);
 gpg_error_t dirmngr_tick (ctrl_t ctrl);
+
+/*-- http-ntbtls.c --*/
+/* Note that we don't use a callback for gnutls.  */
+
+gpg_error_t gnupg_http_tls_verify_cb (void *opaque,
+                                      http_t http,
+                                      http_session_t session,
+                                      unsigned int flags,
+                                      void *tls_context);
 
 
 /*-- loadswdb.c --*/
 gpg_error_t dirmngr_load_swdb (ctrl_t ctrl, int force);
+
+
+/*-- domaininfo.c --*/
+void domaininfo_print_stats (void);
+int  domaininfo_is_wkd_not_supported (const char *domain);
+void domaininfo_set_no_name (const char *domain);
+void domaininfo_set_wkd_supported (const char *domain);
+void domaininfo_set_wkd_not_supported (const char *domain);
+void domaininfo_set_wkd_not_found (const char *domain);
+
+/*-- workqueue.c --*/
+typedef const char *(*wqtask_t)(ctrl_t ctrl, const char *args);
+
+void workqueue_dump_queue (ctrl_t ctrl);
+gpg_error_t workqueue_add_task (wqtask_t func, const char *args,
+                                unsigned int session_id, int need_network);
+void workqueue_run_global_tasks (ctrl_t ctrl, int with_network);
+void workqueue_run_post_session_tasks (unsigned int session_id);
+
 
 
 #endif /*DIRMNGR_H*/

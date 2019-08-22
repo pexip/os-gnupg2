@@ -29,12 +29,12 @@
 #endif
 
 #include "gpg.h"
-#include "util.h"
-#include "status.h"
-#include "ttyio.h"
+#include "../common/util.h"
+#include "../common/status.h"
+#include "../common/ttyio.h"
 #include "options.h"
 #include "main.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 
 #define CONTROL_D ('D' - 'A' + 1)
 
@@ -73,7 +73,7 @@ status_currently_allowed (int no)
     return 1; /* Yes. */
 
   /* We allow some statis anyway, so that import statistics are
-     correct and to avoid problems if the retriebval subsystem will
+     correct and to avoid problems if the retrieval subsystem will
      prompt the user. */
   switch (no)
     {
@@ -106,6 +106,9 @@ set_status_fd (int fd)
   statusfp = NULL;
   if (fd == -1)
     return;
+
+  if (! gnupg_fd_valid (fd))
+    log_fatal ("status-fd is invalid: %s\n", strerror (errno));
 
   if (fd == 1)
     statusfp = es_stdout;
@@ -242,9 +245,13 @@ write_status_errcode (const char *where, int errcode)
 void
 write_status_failure (const char *where, gpg_error_t err)
 {
+  static int any_failure_printed;
+
   if (!statusfp || !status_currently_allowed (STATUS_FAILURE))
     return;  /* Not enabled or allowed. */
-
+  if (any_failure_printed)
+    return;
+  any_failure_printed = 1;
   es_fprintf (statusfp, "[GNUPG:] %s %s %u\n",
               get_status_string (STATUS_FAILURE), where, err);
   if (es_fflush (statusfp) && opt.exit_on_status_write_error)
@@ -422,11 +429,17 @@ do_get_from_fd ( const char *keyword, int hidden, int getbool )
     {
       if (i >= len-1 )
         {
+          /* On the first iteration allocate a new buffer.  If that
+           * buffer is too short at further iterations do a poor man's
+           * realloc.  */
           char *save = string;
           len += 100;
           string = hidden? xmalloc_secure ( len ) : xmalloc ( len );
           if (save)
-            memcpy (string, save, i );
+            {
+              memcpy (string, save, i);
+              xfree (save);
+            }
           else
             i = 0;
 	}

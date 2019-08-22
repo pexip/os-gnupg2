@@ -208,9 +208,10 @@ flag names.  To get a list of all supported flags the single word
 @opindex debug-all
 Same as @code{--debug=0xffffffff}
 
-@item --gnutls-debug @var{level}
-@opindex gnutls-debug
-Enable debugging of GNUTLS at @var{level}.
+@item --tls-debug @var{level}
+@opindex tls-debug
+Enable debugging of the TLS layer at @var{level}.  The details of the
+debug level depend on the used TLS library and are not set in stone.
 
 @item --debug-wait @var{n}
 @opindex debug-wait
@@ -243,10 +244,16 @@ Enabling this option forces loading of expired CRLs; this is only
 useful for debugging.
 
 @item --use-tor
+@itemx --no-use-tor
 @opindex use-tor
-This option switches Dirmngr and thus GnuPG into ``Tor mode'' to route
-all network access via Tor (an anonymity network).  Certain other
-features are disabled if this mode is active.
+@opindex no-use-tor
+The option @option{--use-tor} switches Dirmngr and thus GnuPG into
+``Tor mode'' to route all network access via Tor (an anonymity
+network).  Certain other features are disabled in this mode.  The
+effect of @option{--use-tor} cannot be overridden by any other command
+or even be reloading gpg-agent.  The use of @option{--no-use-tor}
+disables the use of Tor.  The default is to use Tor if it is available
+on startup or after reloading dirmngr.
 
 @item --standard-resolver
 @opindex standard-resolver
@@ -260,14 +267,31 @@ Implemented'' if this function is used.
 When possible use a recursive resolver instead of a stub resolver.
 
 @item --resolver-timeout @var{n}
+@opindex resolver-timeout
 Set the timeout for the DNS resolver to N seconds.  The default are 30
 seconds.
+
+@item --connect-timeout @var{n}
+@item --connect-quick-timeout @var{n}
+@opindex connect-timeout
+@opindex connect-quick-timeout
+Set the timeout for HTTP and generic TCP connection attempts to N
+seconds.  The value set with the quick variant is used when the
+--quick option has been given to certain Assuan commands.  The quick
+value is capped at the value of the regular connect timeout.  The
+default values are 15 and 2 seconds.  Note that the timeout values are
+for each connection attempt; the connection code will attempt to
+connect all addresses listed for a server.
+
+@item --listen-backlog @var{n}
+@opindex listen-backlog
+Set the size of the queue for pending connections.  The default is 64.
 
 @item --allow-version-check
 @opindex allow-version-check
 Allow Dirmngr to connect to @code{https://versions.gnupg.org} to get
-the list of current software versions.  If this option is enabled, or
-if @option{use-tor} is active, the list is retrieved when the local
+the list of current software versions.  If this option is enabled
+the list is retrieved in case the local
 copy does not exist or is older than 5 to 7 days.  See the option
 @option{--query-swdb} of the command @command{gpgconf} for more
 details.  Note, that regardless of this option a version check can
@@ -312,6 +336,12 @@ names.  If the default public resolver, which is @code{8.8.8.8}, shall
 not be used a different one can be given using this option.  Note that
 a numerical IP address must be given (IPv6 or IPv4) and that no error
 checking is done for @var{ipaddr}.
+
+@item --disable-ipv4
+@item --disable-ipv6
+@opindex disable-ipv4
+@opindex disable-ipv6
+Disable the use of all IPv4 or IPv6 addresses.
 
 @item --disable-ldap
 @opindex disable-ldap
@@ -391,7 +421,7 @@ percent-escaped strings.}
 @item --ldaptimeout @var{secs}
 @opindex ldaptimeout
 Specify the number of seconds to wait for an LDAP query before timing
-out. The default is currently 100 seconds.  0 will never timeout.
+out.  The default are 15 seconds.  0 will never timeout.
 
 
 @item --add-servers
@@ -770,7 +800,7 @@ configuration.
 @end table
 
 If DirMngr has not enough information about the given certificate (which
-is the case for not yet cached certificates), it will will inquire the
+is the case for not yet cached certificates), it will inquire the
 missing data:
 
 @example
@@ -1033,7 +1063,7 @@ as a binary blob.
 @c  c) No authorityKeyIdentifier exits: The certificate is retrieved
 @c     using @code{find_cert_bysubject} without the key ID argument.  If
 @c     the certificate is in the certificate cache the first one with a
-@c     matching subject is is directly returned.  Then the requester is
+@c     matching subject is directly returned.  Then the requester is
 @c     asked via the Assuan inquiry ``SENDCERT'' and an exact
 @c     specification of the subject whether he can
 @c     provide this certificate.  If this succeed the returned
@@ -1110,7 +1140,7 @@ as a binary blob.
 @c respectively. The have already been described above under the
 @c description of @code{crl_cache_insert}.  If no certificate was found
 @c or with no authorityKeyIdentifier, only the cache is consulted using
-@c @code{get_cert_bysubject}.  The latter is is done under the assumption
+@c @code{get_cert_bysubject}.  The latter is done under the assumption
 @c that a matching certificate has explicitly been put into the
 @c certificate cache.  If the issuer's certificate could not be found,
 @c the validation terminates with the error code @code{GPG_ERR_MISSING_CERT}.
@@ -1135,7 +1165,7 @@ as a binary blob.
 @c recursive process because a CRL has to be checked for each certificate
 @c in the chain except for the root certificate, of which we already know
 @c that it is trusted and we avoid checking a CRL here due to common
-@c setup problems and the assumption that a revoked root certifcate has
+@c setup problems and the assumption that a revoked root certificate has
 @c been removed from the list of trusted certificates.
 @c
 @c

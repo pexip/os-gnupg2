@@ -79,10 +79,10 @@
 
 #include "scdaemon.h"
 
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "iso7816.h"
 #include "app-common.h"
-#include "tlv.h"
+#include "../common/tlv.h"
 
 
 static gpg_error_t
@@ -193,7 +193,7 @@ do_readcert (app_t app, const char *certid,
   /* Read the entire file.  fixme: This could be optimized by first
      reading the header to figure out how long the certificate
      actually is. */
-  err = iso7816_select_file (app->slot, fid, 0, NULL, NULL);
+  err = iso7816_select_file (app->slot, fid, 0);
   if (err)
     {
       log_error ("error selecting FID 0x%04X: %s\n", fid, gpg_strerror (err));
@@ -416,7 +416,7 @@ do_sign (app_t app, const char *keyidstr, int hashalgo,
     return gpg_error (GPG_ERR_INV_VALUE);
 
   /* Check that the provided ID is vaid.  This is not really needed
-     but we do it to to enforce correct usage by the caller. */
+     but we do it to enforce correct usage by the caller. */
   if (strncmp (keyidstr, "DINSIG.", 7) )
     return gpg_error (GPG_ERR_INV_ID);
   keyidstr += 7;
@@ -456,7 +456,6 @@ do_sign (app_t app, const char *keyidstr, int hashalgo,
           /* Fixme: This is a kludge.  A better solution is not to use
              SHA1 as default but use an autodetection.  However this
              needs changes in all app-*.c */
-          hashalgo = GCRY_MD_SHA256;
           datalen  = indatalen;
         }
       else

@@ -17,7 +17,7 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "defs.scm"))
+(load (in-srcdir "tests" "openpgp" "defs.scm"))
 (setup-legacy-environment)
 
 (for-each-p
@@ -26,6 +26,6 @@
    (tr:do
     (tr:open source)
     (tr:gpg usrpass1 `(--yes --passphrase-fd "0" -ea --recipient ,usrname2))
-    (tr:gpg "" '(--yes))
+    (tr:gpg "" '(--yes --decrypt))
     (tr:assert-identity source)))
  (append plain-files data-files))

@@ -31,16 +31,16 @@
 
 #include "gpg.h"
 #include <assuan.h>
-#include "util.h"
-#include "membuf.h"
+#include "../common/util.h"
+#include "../common/membuf.h"
 #include "options.h"
-#include "i18n.h"
-#include "asshelp.h"
-#include "sysutils.h"
+#include "../common/i18n.h"
+#include "../common/asshelp.h"
+#include "../common/sysutils.h"
 #include "call-agent.h"
-#include "status.h"
+#include "../common/status.h"
 #include "../common/shareddefs.h"
-#include "host2net.h"
+#include "../common/host2net.h"
 
 #define CONTROL_D ('D' - 'A' + 1)
 
@@ -160,7 +160,8 @@ default_inq_cb (void *opaque, const char *line)
           char buf[32];
 
           if (parm->keyinfo.keyid)
-            emit_status_need_passphrase (parm->keyinfo.keyid,
+            emit_status_need_passphrase (parm->ctrl,
+                                         parm->keyinfo.keyid,
                                          parm->keyinfo.mainkeyid,
                                          parm->keyinfo.pubkey_algo);
 
@@ -193,8 +194,10 @@ warn_version_mismatch (assuan_context_t ctx, const char *servername, int mode)
 
   err = get_assuan_server_version (ctx, mode, &serverversion);
   if (err)
-    log_error (_("error getting version from '%s': %s\n"),
-               servername, gpg_strerror (err));
+    log_log (gpg_err_code (err) == GPG_ERR_NOT_SUPPORTED?
+             GPGRT_LOG_INFO : GPGRT_LOG_ERROR,
+             _("error getting version from '%s': %s\n"),
+             servername, gpg_strerror (err));
   else if (compare_version_strings (serverversion, myversion) < 0)
     {
       char *warn;
@@ -206,6 +209,13 @@ warn_version_mismatch (assuan_context_t ctx, const char *servername, int mode)
       else
         {
           log_info (_("WARNING: %s\n"), warn);
+          if (!opt.quiet)
+            {
+              log_info (_("Note: Outdated servers may lack important"
+                          " security fixes.\n"));
+              log_info (_("Note: Use the command \"%s\" to restart them.\n"),
+                        "gpgconf --kill all");
+            }
           write_status_strings (STATUS_WARNING, "server_version_mismatch 0",
                                 " ", warn, NULL);
           xfree (warn);
@@ -216,10 +226,12 @@ warn_version_mismatch (assuan_context_t ctx, const char *servername, int mode)
 }
 
 
+#define FLAG_FOR_CARD_SUPPRESS_ERRORS 2
+
 /* Try to connect to the agent via socket or fork it off and work by
    pipes.  Handle the server's initial greeting */
 static int
-start_agent (ctrl_t ctrl, int for_card)
+start_agent (ctrl_t ctrl, int flag_for_card)
 {
   int rc;
 
@@ -276,22 +288,58 @@ start_agent (ctrl_t ctrl, int for_card)
                   write_status_error ("set_pinentry_mode", rc);
                 }
             }
+
+          /* Pass on the request origin.  */
+          if (opt.request_origin)
+            {
+              char *tmp = xasprintf ("OPTION pretend-request-origin=%s",
+                                     str_request_origin (opt.request_origin));
+              rc = assuan_transact (agent_ctx, tmp,
+                               NULL, NULL, NULL, NULL, NULL, NULL);
+              xfree (tmp);
+              if (rc)
+                {
+                  log_error ("setting request origin '%s' failed: %s\n",
+                             str_request_origin (opt.request_origin),
+                             gpg_strerror (rc));
+                  write_status_error ("set_request_origin", rc);
+                }
+            }
+
+          /* In DE_VS mode under Windows we require that the JENT RNG
+           * is active.  */
+#ifdef HAVE_W32_SYSTEM
+          if (!rc && opt.compliance == CO_DE_VS)
+            {
+              if (assuan_transact (agent_ctx, "GETINFO jent_active",
+                                   NULL, NULL, NULL, NULL, NULL, NULL))
+                {
+                  rc = gpg_error (GPG_ERR_FORBIDDEN);
+                  log_error (_("%s is not compliant with %s mode\n"),
+                             GPG_AGENT_NAME,
+                             gnupg_compliance_option_string (opt.compliance));
+                  write_status_error ("random-compliance", rc);
+                }
+            }
+#endif /*HAVE_W32_SYSTEM*/
+
         }
     }
 
-  if (!rc && for_card && !did_early_card_test)
+  if (!rc && flag_for_card && !did_early_card_test)
     {
       /* Request the serial number of the card for an early test.  */
       struct agent_card_info_s info;
 
       memset (&info, 0, sizeof info);
 
-      rc = warn_version_mismatch (agent_ctx, SCDAEMON_NAME, 2);
+      if (!(flag_for_card & FLAG_FOR_CARD_SUPPRESS_ERRORS))
+        rc = warn_version_mismatch (agent_ctx, SCDAEMON_NAME, 2);
       if (!rc)
         rc = assuan_transact (agent_ctx, "SCD SERIALNO openpgp",
                               NULL, NULL, NULL, NULL,
                               learn_status_cb, &info);
-      if (rc)
+      if (rc && !(flag_for_card & FLAG_FOR_CARD_SUPPRESS_ERRORS))
         {
           switch (gpg_err_code (rc))
             {
@@ -340,7 +388,7 @@ unescape_status_string (const unsigned char *s)
 }
 
 
-/* Take a 20 byte hexencoded string and put it into the the provided
+/* Take a 20 byte hexencoded string and put it into the provided
    20 byte buffer FPR in binary format. */
 static int
 unhexify_fpr (const char *hexstr, unsigned char *fpr)
@@ -350,10 +398,11 @@ unhexify_fpr (const char *hexstr, unsigned char *fpr)
 
   for (s=hexstr, n=0; hexdigitp (s); s++, n++)
     ;
-  if (*s || (n != 40))
+  if ((*s && *s != ' ') || (n != 40))
     return 0; /* no fingerprint (invalid or wrong length). */
-  for (s=hexstr, n=0; *s; s += 2, n++)
+  for (s=hexstr, n=0; *s && n < 20; s += 2, n++)
     fpr[n] = xtoi_2 (s);
+
   return 1; /* okay */
 }
 
@@ -559,6 +608,8 @@ learn_status_cb (void *opaque, const char *line)
                     parm->extcap.ki = abool;
                   else if (!strcmp (p, "aac"))
                     parm->extcap.aac = abool;
+                  else if (!strcmp (p, "kdf"))
+                    parm->extcap.kdf = abool;
                   else if (!strcmp (p, "si"))
                     parm->status_indicator = strtoul (p2, NULL, 10);
                 }
@@ -593,6 +644,24 @@ learn_status_cb (void *opaque, const char *line)
         parm->fpr2time = strtoul (line, NULL, 10);
       else if (no == 3)
         parm->fpr3time = strtoul (line, NULL, 10);
+    }
+  else if (keywordlen == 11 && !memcmp (keyword, "KEYPAIRINFO", keywordlen))
+    {
+      const char *hexgrp = line;
+      int no;
+
+      while (*line && !spacep (line))
+        line++;
+      while (spacep (line))
+        line++;
+      if (strncmp (line, "OPENPGP.", 8))
+        ;
+      else if ((no = atoi (line+8)) == 1)
+        unhexify_fpr (hexgrp, parm->grp1);
+      else if (no == 2)
+        unhexify_fpr (hexgrp, parm->grp2);
+      else if (no == 3)
+        unhexify_fpr (hexgrp, parm->grp3);
     }
   else if (keywordlen == 6 && !memcmp (keyword, "CA-FPR", keywordlen))
     {
@@ -635,6 +704,10 @@ learn_status_cb (void *opaque, const char *line)
       xfree (parm->private_do[no]);
       parm->private_do[no] = unescape_status_string (line);
     }
+  else if (keywordlen == 3 && !memcmp (keyword, "KDF", 3))
+    {
+      parm->kdf_do_enabled = 1;
+    }
 
   return 0;
 }
@@ -653,18 +726,6 @@ agent_scd_learn (struct agent_card_info_s *info, int force)
   memset (&parm, 0, sizeof parm);
 
   rc = start_agent (NULL, 1);
-  if (rc)
-    return rc;
-
-  /* Send the serialno command to initialize the connection.  We don't
-     care about the data returned.  If the card has already been
-     initialized, this is a very fast command.  The main reason we
-     need to do this here is to handle a card removed case so that an
-     "l" command in --edit-card can be used to show ta newly inserted
-     card.  We request the openpgp card because that is what we
-     expect. */
-  rc = assuan_transact (agent_ctx, "SCD SERIALNO openpgp",
-                        NULL, NULL, NULL, NULL, NULL, NULL);
   if (rc)
     return rc;
 
@@ -769,7 +830,7 @@ agent_keytocard (const char *hexgrip, int keyno, int force,
 
 /* Call the agent to retrieve a data object.  This function returns
    the data in the same structure as used by the learn command.  It is
-   allowed to update such a structure using this commmand. */
+   allowed to update such a structure using this command. */
 int
 agent_scd_getattr (const char *name, struct agent_card_info_s *info)
 {
@@ -1024,101 +1085,37 @@ agent_scd_genkey (int keyno, int force, u32 *createtime)
   status_sc_op_failure (rc);
   return rc;
 }
-
-
-
 
-/* Issue an SCD SERIALNO openpgp command and if SERIALNO is not NULL
-   ask the user to insert the requested card.  */
-gpg_error_t
-select_openpgp (const char *serialno)
+/* Return the serial number of the card or an appropriate error.  The
+   serial number is returned as a hexstring. */
+int
+agent_scd_serialno (char **r_serialno, const char *demand)
 {
-  gpg_error_t err;
+  int err;
+  char *serialno = NULL;
+  char line[ASSUAN_LINELENGTH];
 
-  /* Send the serialno command to initialize the connection.  Without
-     a given S/N we don't care about the data returned.  If the card
-     has already been initialized, this is a very fast command.  We
-     request the openpgp card because that is what we expect.
+  err = start_agent (NULL, 1 | FLAG_FOR_CARD_SUPPRESS_ERRORS);
+  if (err)
+    return err;
 
-     Note that an opt.limit_card_insert_tries of 1 means: No tries at
-     all whereas 0 means do not limit the number of tries.  Due to the
-     sue of a pinentry prompt with a cancel option we use it here in a
-     boolean sense.  */
-  if (!serialno || opt.limit_card_insert_tries == 1)
-    err = assuan_transact (agent_ctx, "SCD SERIALNO openpgp",
-                           NULL, NULL, NULL, NULL, NULL, NULL);
+  if (!demand)
+    strcpy (line, "SCD SERIALNO");
   else
+    snprintf (line, DIM(line), "SCD SERIALNO --demand=%s", demand);
+
+  err = assuan_transact (agent_ctx, line,
+                         NULL, NULL, NULL, NULL,
+                         get_serialno_cb, &serialno);
+  if (err)
     {
-      char *this_sn = NULL;
-      char *desc;
-      int ask;
-      char *want_sn;
-      char *p;
-
-      want_sn = xtrystrdup (serialno);
-      if (!want_sn)
-        return gpg_error_from_syserror ();
-      p = strchr (want_sn, '/');
-      if (p)
-        *p = 0;
-
-      do
-        {
-          ask = 0;
-          err = assuan_transact (agent_ctx, "SCD SERIALNO openpgp",
-                                 NULL, NULL, NULL, NULL,
-                                 get_serialno_cb, &this_sn);
-          if (gpg_err_code (err) == GPG_ERR_CARD_NOT_PRESENT)
-            ask = 1;
-          else if (gpg_err_code (err) == GPG_ERR_NOT_SUPPORTED)
-            ask = 2;
-          else if (err)
-            ;
-          else if (this_sn)
-            {
-              if (strcmp (want_sn, this_sn))
-                ask = 2;
-            }
-
-          xfree (this_sn);
-          this_sn = NULL;
-
-          if (ask)
-            {
-              char *formatted = NULL;
-              char *ocodeset = i18n_switchto_utf8 ();
-
-              if (!strncmp (want_sn, "D27600012401", 12)
-                  && strlen (want_sn) == 32 )
-                formatted = xtryasprintf ("(%.4s) %.8s",
-                                          want_sn + 16, want_sn + 20);
-
-              err = 0;
-              desc = xtryasprintf
-                ("%s:\n\n"
-                 "  \"%s\"",
-                 ask == 1
-                 ? _("Please insert the card with serial number")
-                 : _("Please remove the current card and "
-                     "insert the one with serial number"),
-                 formatted? formatted : want_sn);
-              if (!desc)
-                err = gpg_error_from_syserror ();
-              xfree (formatted);
-              i18n_switchback (ocodeset);
-              if (!err)
-                err = gpg_agent_get_confirmation (desc);
-              xfree (desc);
-            }
-        }
-      while (ask && !err);
-      xfree (want_sn);
+      xfree (serialno);
+      return err;
     }
 
-  return err;
+  *r_serialno = serialno;
+  return 0;
 }
-
-
 
 /* Send a READCERT command to the SCdaemon. */
 int
@@ -1158,8 +1155,72 @@ agent_scd_readcert (const char *certidstr,
 
   return 0;
 }
+
+struct card_cardlist_parm_s {
+  int error;
+  strlist_t list;
+};
 
 
+/* Callback function for agent_card_cardlist.  */
+static gpg_error_t
+card_cardlist_cb (void *opaque, const char *line)
+{
+  struct card_cardlist_parm_s *parm = opaque;
+  const char *keyword = line;
+  int keywordlen;
+
+  for (keywordlen=0; *line && !spacep (line); line++, keywordlen++)
+    ;
+  while (spacep (line))
+    line++;
+
+  if (keywordlen == 8 && !memcmp (keyword, "SERIALNO", keywordlen))
+    {
+      const char *s;
+      int n;
+
+      for (n=0,s=line; hexdigitp (s); s++, n++)
+        ;
+
+      if (!n || (n&1) || *s)
+        parm->error = gpg_error (GPG_ERR_ASS_PARAMETER);
+      else
+        add_to_strlist (&parm->list, line);
+    }
+
+  return 0;
+}
+
+/* Return cardlist.  */
+int
+agent_scd_cardlist (strlist_t *result)
+{
+  int err;
+  char line[ASSUAN_LINELENGTH];
+  struct card_cardlist_parm_s parm;
+
+  memset (&parm, 0, sizeof parm);
+  *result = NULL;
+  err = start_agent (NULL, 1);
+  if (err)
+    return err;
+
+  strcpy (line, "SCD GETINFO card_list");
+
+  err = assuan_transact (agent_ctx, line,
+                         NULL, NULL, NULL, NULL,
+                         card_cardlist_cb, &parm);
+  if (!err && parm.error)
+    err = parm.error;
+
+  if (!err)
+    *result = parm.list;
+  else
+    free_strlist (parm.list);
+
+  return 0;
+}
 
 /* Change the PIN of an OpenPGP card or reset the retry counter.
    CHVNO 1: Change the PIN
@@ -2084,7 +2145,8 @@ inq_import_key_parms (void *opaque, const char *line)
 /* Call the agent to import a key into the agent.  */
 gpg_error_t
 agent_import_key (ctrl_t ctrl, const char *desc, char **cache_nonce_addr,
-                  const void *key, size_t keylen, int unattended, int force)
+                  const void *key, size_t keylen, int unattended, int force,
+		  u32 *keyid, u32 *mainkeyid, int pubkey_algo)
 {
   gpg_error_t err;
   struct import_key_parm_s parm;
@@ -2094,6 +2156,9 @@ agent_import_key (ctrl_t ctrl, const char *desc, char **cache_nonce_addr,
 
   memset (&dfltparm, 0, sizeof dfltparm);
   dfltparm.ctrl = ctrl;
+  dfltparm.keyinfo.keyid       = keyid;
+  dfltparm.keyinfo.mainkeyid   = mainkeyid;
+  dfltparm.keyinfo.pubkey_algo = pubkey_algo;
 
   err = start_agent (ctrl, 0);
   if (err)
@@ -2140,7 +2205,8 @@ agent_import_key (ctrl_t ctrl, const char *desc, char **cache_nonce_addr,
 gpg_error_t
 agent_export_key (ctrl_t ctrl, const char *hexkeygrip, const char *desc,
                   int openpgp_protected, char **cache_nonce_addr,
-                  unsigned char **r_result, size_t *r_resultlen)
+                  unsigned char **r_result, size_t *r_resultlen,
+		  u32 *keyid, u32 *mainkeyid, int pubkey_algo)
 {
   gpg_error_t err;
   struct cache_nonce_parm_s cn_parm;
@@ -2152,6 +2218,9 @@ agent_export_key (ctrl_t ctrl, const char *hexkeygrip, const char *desc,
 
   memset (&dfltparm, 0, sizeof dfltparm);
   dfltparm.ctrl = ctrl;
+  dfltparm.keyinfo.keyid       = keyid;
+  dfltparm.keyinfo.mainkeyid   = mainkeyid;
+  dfltparm.keyinfo.pubkey_algo = pubkey_algo;
 
   *r_result = NULL;
 

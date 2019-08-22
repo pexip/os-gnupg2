@@ -1,3 +1,25 @@
+gnupg2 (2.2.12-1+deb10u1) buster; urgency=medium
+
+  In this version we adopt GnuPG's upstream approach of making keyserver
+  access default to self-sigs-only.  This defends against receiving
+  flooded OpenPGP certificates.  To revert to the previous behavior (not
+  recommended!), add the following directive to ~/.gnupg/gpg.conf:
+
+    keyserver-options no-self-sigs-only
+
+  We also adopt keys.openpgp.org as the default keyserver, since it avoids
+  the associated bandwidth waste of fetching third-party certifications
+  that will not be used.  To revert to the older SKS keyserver network (not
+  recommended!), add the following directive to ~/.gnupg/dirmngr.conf:
+
+    keyserver hkps://hkps.pool.sks-keyservers.net
+
+  Note: we do *not* adopt upstream's choice of import-clean for the
+  keyserver default, since it can lead to data loss, see
+  https://dev.gnupg.org/T4628 for more details.
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Wed, 21 Aug 2019 14:53:47 -0400
+
 gnupg2 (2.1.11-7+exp1) experimental; urgency=medium
 
   The gnupg package now provides the "modern" version of GnuPG.

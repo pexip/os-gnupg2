@@ -68,7 +68,8 @@ enum {
   VENDOR_REINER = 0x0c4b,
   VENDOR_KAAN   = 0x0d46,
   VENDOR_FSIJ   = 0x234b,
-  VENDOR_VASCO  = 0x1a44
+  VENDOR_VASCO  = 0x1a44,
+  VENDOR_NXP    = 0x1fc9,
 };
 
 
@@ -84,6 +85,7 @@ enum {
 #define GEMPC_CT30      0x3437
 #define VEGA_ALPHA      0x0008
 #define CYBERJACK_GO    0x0504
+#define CRYPTOUCAN      0x81e6
 
 #endif /*CCID_DRIVER_INCLUDE_USB_IDS*/
 
@@ -128,7 +130,7 @@ int ccid_shutdown_reader (ccid_driver_t handle);
 int ccid_close_reader (ccid_driver_t handle);
 int ccid_get_atr (ccid_driver_t handle,
                   unsigned char *atr, size_t maxatrlen, size_t *atrlen);
-int ccid_slot_status (ccid_driver_t handle, int *statusbits);
+int ccid_slot_status (ccid_driver_t handle, int *statusbits, int on_wire);
 int ccid_transceive (ccid_driver_t handle,
                      const unsigned char *apdu, size_t apdulen,
                      unsigned char *resp, size_t maxresplen, size_t *nresp);
@@ -140,7 +142,7 @@ int ccid_transceive_escape (ccid_driver_t handle,
                             const unsigned char *data, size_t datalen,
                             unsigned char *resp, size_t maxresplen,
                             size_t *nresp);
-
+int ccid_require_get_status (ccid_driver_t handle);
 
 
 #endif /*CCID_DRIVER_H*/

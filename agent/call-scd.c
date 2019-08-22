@@ -39,6 +39,7 @@
 
 #include "agent.h"
 #include <assuan.h>
+#include "../common/strlist.h"
 
 #ifdef _POSIX_OPEN_MAX
 #define MAX_OPEN_FDS _POSIX_OPEN_MAX
@@ -49,13 +50,13 @@
 /* Definition of module local data of the CTRL structure.  */
 struct scd_local_s
 {
-  /* We keep a list of all allocated context with a an achnor at
+  /* We keep a list of all allocated context with an anchor at
      SCD_LOCAL_LIST (see below). */
   struct scd_local_s *next_local;
 
   /* We need to get back to the ctrl object actually referencing this
-     structure.  This is really an awkward way of enumerint the lcoal
-     contects.  A much cleaner way would be to keep a global list of
+     structure.  This is really an awkward way of enumerating the local
+     contexts.  A much cleaner way would be to keep a global list of
      ctrl objects to enumerate them.  */
   ctrl_t ctrl_backlink;
 
@@ -78,14 +79,21 @@ struct learn_parm_s
   void *sinfo_cb_arg;
 };
 
-struct inq_needpin_s
+
+/* Callback parameter used by inq_getpin and inq_writekey_parms.  */
+struct inq_needpin_parm_s
 {
   assuan_context_t ctx;
-  int (*getpin_cb)(void *, const char *, char*, size_t);
+  int (*getpin_cb)(void *, const char *, const char *, char*, size_t);
   void *getpin_cb_arg;
+  const char *getpin_cb_desc;
   assuan_context_t passthru;  /* If not NULL, pass unknown inquiries
                                  up to the caller.  */
   int any_inq_seen;
+
+  /* The next fields are used by inq_writekey_parm.  */
+  const unsigned char *keydata;
+  size_t keydatalen;
 };
 
 
@@ -137,7 +145,7 @@ initialize_module_call_scd (void)
 }
 
 
-/* This function may be called to print infromation pertaining to the
+/* This function may be called to print information pertaining to the
    current state of this module to the log. */
 void
 agent_scd_dump_state (void)
@@ -298,7 +306,7 @@ start_scd (ctrl_t ctrl)
       log_error ("error flushing pending output: %s\n", strerror (errno));
       /* At least Windows XP fails here with EBADF.  According to docs
          and Wine an fflush(NULL) is the same as _flushall.  However
-         the Wime implementaion does not flush stdin,stdout and stderr
+         the Wime implementation does not flush stdin,stdout and stderr
          - see above.  Lets try to ignore the error. */
 #ifndef HAVE_W32_SYSTEM
       goto leave;
@@ -396,8 +404,8 @@ start_scd (ctrl_t ctrl)
       char buf[100];
 
 #ifdef HAVE_W32_SYSTEM
-      snprintf (buf, sizeof buf, "OPTION event-signal=%lx",
-                (unsigned long)get_agent_scd_notify_event ());
+      snprintf (buf, sizeof buf, "OPTION event-signal=%p",
+                get_agent_scd_notify_event ());
 #else
       snprintf (buf, sizeof buf, "OPTION event-signal=%d", SIGUSR2);
 #endif
@@ -713,7 +721,7 @@ agent_card_serialno (ctrl_t ctrl, char **r_serialno, const char *demand)
 static gpg_error_t
 inq_needpin (void *opaque, const char *line)
 {
-  struct inq_needpin_s *parm = opaque;
+  struct inq_needpin_parm_s *parm = opaque;
   const char *s;
   char *pin;
   size_t pinlen;
@@ -728,18 +736,21 @@ inq_needpin (void *opaque, const char *line)
       if (!pin)
         return out_of_core ();
 
-      rc = parm->getpin_cb (parm->getpin_cb_arg, line, pin, pinlen);
+      rc = parm->getpin_cb (parm->getpin_cb_arg, parm->getpin_cb_desc,
+                            line, pin, pinlen);
       if (!rc)
         rc = assuan_send_data (parm->ctx, pin, pinlen);
       xfree (pin);
     }
   else if ((s = has_leading_keyword (line, "POPUPPINPADPROMPT")))
     {
-      rc = parm->getpin_cb (parm->getpin_cb_arg, s, NULL, 1);
+      rc = parm->getpin_cb (parm->getpin_cb_arg, parm->getpin_cb_desc,
+                            s, NULL, 1);
     }
   else if ((s = has_leading_keyword (line, "DISMISSPINPADPROMPT")))
     {
-      rc = parm->getpin_cb (parm->getpin_cb_arg, "", NULL, 0);
+      rc = parm->getpin_cb (parm->getpin_cb_arg, parm->getpin_cb_desc,
+                            "", NULL, 0);
     }
   else if (parm->passthru)
     {
@@ -823,13 +834,17 @@ cancel_inquire (ctrl_t ctrl, gpg_error_t rc)
   return rc;
 }
 
+
 /* Create a signature using the current card.  MDALGO is either 0 or
-   gives the digest algorithm.  */
+ * gives the digest algorithm.  DESC_TEXT is an additional parameter
+ * passed to GETPIN_CB. */
 int
 agent_card_pksign (ctrl_t ctrl,
                    const char *keyid,
-                   int (*getpin_cb)(void *, const char *, char*, size_t),
+                   int (*getpin_cb)(void *, const char *,
+                                    const char *, char*, size_t),
                    void *getpin_cb_arg,
+                   const char *desc_text,
                    int mdalgo,
                    const unsigned char *indata, size_t indatalen,
                    unsigned char **r_buf, size_t *r_buflen)
@@ -837,7 +852,7 @@ agent_card_pksign (ctrl_t ctrl,
   int rc;
   char line[ASSUAN_LINELENGTH];
   membuf_t data;
-  struct inq_needpin_s inqparm;
+  struct inq_needpin_parm_s inqparm;
 
   *r_buf = NULL;
   rc = start_scd (ctrl);
@@ -858,8 +873,12 @@ agent_card_pksign (ctrl_t ctrl,
   inqparm.ctx = ctrl->scd_local->ctx;
   inqparm.getpin_cb = getpin_cb;
   inqparm.getpin_cb_arg = getpin_cb_arg;
+  inqparm.getpin_cb_desc = desc_text;
   inqparm.passthru = 0;
   inqparm.any_inq_seen = 0;
+  inqparm.keydata = NULL;
+  inqparm.keydatalen = 0;
+
   if (ctrl->use_auth_call)
     snprintf (line, sizeof line, "PKAUTH %s", keyid);
   else
@@ -905,21 +924,24 @@ padding_info_cb (void *opaque, const char *line)
 
 
 /* Decipher INDATA using the current card.  Note that the returned
-   value is not an s-expression but the raw data as returned by
-   scdaemon.  The padding information is stored at R_PADDING with -1
-   for not known.  */
+ * value is not an s-expression but the raw data as returned by
+ * scdaemon.  The padding information is stored at R_PADDING with -1
+ * for not known.  DESC_TEXT is an additional parameter passed to
+ * GETPIN_CB.  */
 int
 agent_card_pkdecrypt (ctrl_t ctrl,
                       const char *keyid,
-                      int (*getpin_cb)(void *, const char *, char*, size_t),
+                      int (*getpin_cb)(void *, const char *,
+                                       const char *, char*, size_t),
                       void *getpin_cb_arg,
+                      const char *desc_text,
                       const unsigned char *indata, size_t indatalen,
                       char **r_buf, size_t *r_buflen, int *r_padding)
 {
   int rc, i;
   char *p, line[ASSUAN_LINELENGTH];
   membuf_t data;
-  struct inq_needpin_s inqparm;
+  struct inq_needpin_parm_s inqparm;
   size_t len;
 
   *r_buf = NULL;
@@ -950,8 +972,11 @@ agent_card_pkdecrypt (ctrl_t ctrl,
   inqparm.ctx = ctrl->scd_local->ctx;
   inqparm.getpin_cb = getpin_cb;
   inqparm.getpin_cb_arg = getpin_cb_arg;
+  inqparm.getpin_cb_desc = desc_text;
   inqparm.passthru = 0;
   inqparm.any_inq_seen = 0;
+  inqparm.keydata = NULL;
+  inqparm.keydatalen = 0;
   snprintf (line, DIM(line), "PKDECRYPT %s", keyid);
   rc = assuan_transact (ctrl->scd_local->ctx, line,
                         put_membuf_cb, &data,
@@ -1050,24 +1075,12 @@ agent_card_readkey (ctrl_t ctrl, const char *id, unsigned char **r_buf)
 }
 
 
-struct writekey_parm_s
-{
-  assuan_context_t ctx;
-  int (*getpin_cb)(void *, const char *, char*, size_t);
-  void *getpin_cb_arg;
-  assuan_context_t passthru;
-  int any_inq_seen;
-  /**/
-  const unsigned char *keydata;
-  size_t keydatalen;
-};
-
 /* Handle a KEYDATA inquiry.  Note, we only send the data,
    assuan_transact takes care of flushing and writing the end */
 static gpg_error_t
 inq_writekey_parms (void *opaque, const char *line)
 {
-  struct writekey_parm_s *parm = opaque;
+  struct inq_needpin_parm_s *parm = opaque;
 
   if (has_leading_keyword (line, "KEYDATA"))
     return assuan_send_data (parm->ctx, parm->keydata, parm->keydatalen);
@@ -1079,12 +1092,13 @@ inq_writekey_parms (void *opaque, const char *line)
 int
 agent_card_writekey (ctrl_t ctrl,  int force, const char *serialno,
                      const char *id, const char *keydata, size_t keydatalen,
-                     int (*getpin_cb)(void *, const char *, char*, size_t),
+                     int (*getpin_cb)(void *, const char *,
+                                      const char *, char*, size_t),
                      void *getpin_cb_arg)
 {
   int rc;
   char line[ASSUAN_LINELENGTH];
-  struct writekey_parm_s parms;
+  struct inq_needpin_parm_s parms;
 
   (void)serialno;
   rc = start_scd (ctrl);
@@ -1095,6 +1109,7 @@ agent_card_writekey (ctrl_t ctrl,  int force, const char *serialno,
   parms.ctx = ctrl->scd_local->ctx;
   parms.getpin_cb = getpin_cb;
   parms.getpin_cb_arg = getpin_cb_arg;
+  parms.getpin_cb_desc= NULL;
   parms.passthru = 0;
   parms.any_inq_seen = 0;
   parms.keydata = keydata;
@@ -1107,6 +1122,8 @@ agent_card_writekey (ctrl_t ctrl,  int force, const char *serialno,
     rc = cancel_inquire (ctrl, rc);
   return unlock_scd (ctrl, rc);
 }
+
+
 
 /* Type used with the card_getattr_cb.  */
 struct card_getattr_parm_s {
@@ -1191,6 +1208,75 @@ agent_card_getattr (ctrl_t ctrl, const char *name, char **result)
 }
 
 
+
+struct card_cardlist_parm_s {
+  int error;
+  strlist_t list;
+};
+
+/* Callback function for agent_card_cardlist.  */
+static gpg_error_t
+card_cardlist_cb (void *opaque, const char *line)
+{
+  struct card_cardlist_parm_s *parm = opaque;
+  const char *keyword = line;
+  int keywordlen;
+
+  for (keywordlen=0; *line && !spacep (line); line++, keywordlen++)
+    ;
+  while (spacep (line))
+    line++;
+
+  if (keywordlen == 8 && !memcmp (keyword, "SERIALNO", keywordlen))
+    {
+      const char *s;
+      int n;
+
+      for (n=0,s=line; hexdigitp (s); s++, n++)
+        ;
+
+      if (!n || (n&1) || *s)
+        parm->error = gpg_error (GPG_ERR_ASS_PARAMETER);
+      else
+        add_to_strlist (&parm->list, line);
+    }
+
+  return 0;
+}
+
+/* Call the scdaemon to retrieve list of available cards. On success
+   the allocated strlist is stored at RESULT.  On error an error code is
+   returned and NULL stored at RESULT. */
+gpg_error_t
+agent_card_cardlist (ctrl_t ctrl, strlist_t *result)
+{
+  int err;
+  struct card_cardlist_parm_s parm;
+  char line[ASSUAN_LINELENGTH];
+
+  *result = NULL;
+
+  memset (&parm, 0, sizeof parm);
+  strcpy (line, "GETINFO card_list");
+
+  err = start_scd (ctrl);
+  if (err)
+    return err;
+
+  err = assuan_transact (ctrl->scd_local->ctx, line,
+                         NULL, NULL, NULL, NULL,
+                         card_cardlist_cb, &parm);
+  if (!err && parm.error)
+    err = parm.error;
+
+  if (!err)
+    *result = parm.list;
+  else
+    free_strlist (parm.list);
+
+  return unlock_scd (ctrl, err);
+}
+
 
 
 static gpg_error_t
@@ -1241,11 +1327,12 @@ pass_data_thru (void *opaque, const void *buffer, size_t length)
    inquiry is handled inside gpg-agent.  */
 int
 agent_card_scd (ctrl_t ctrl, const char *cmdline,
-                int (*getpin_cb)(void *, const char *, char*, size_t),
+                int (*getpin_cb)(void *, const char *,
+                                 const char *, char*, size_t),
                 void *getpin_cb_arg, void *assuan_context)
 {
   int rc;
-  struct inq_needpin_s inqparm;
+  struct inq_needpin_parm_s inqparm;
   int saveflag;
 
   rc = start_scd (ctrl);
@@ -1255,8 +1342,12 @@ agent_card_scd (ctrl_t ctrl, const char *cmdline,
   inqparm.ctx = ctrl->scd_local->ctx;
   inqparm.getpin_cb = getpin_cb;
   inqparm.getpin_cb_arg = getpin_cb_arg;
+  inqparm.getpin_cb_desc = NULL;
   inqparm.passthru = assuan_context;
   inqparm.any_inq_seen = 0;
+  inqparm.keydata = NULL;
+  inqparm.keydatalen = 0;
+
   saveflag = assuan_get_flag (ctrl->scd_local->ctx, ASSUAN_CONVEY_COMMENTS);
   assuan_set_flag (ctrl->scd_local->ctx, ASSUAN_CONVEY_COMMENTS, 1);
   rc = assuan_transact (ctrl->scd_local->ctx, cmdline,

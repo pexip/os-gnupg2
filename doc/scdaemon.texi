@@ -225,7 +225,7 @@ This option appends a thread ID to the PID in the log output.
 @efindex ASSUAN_DEBUG
 Changes the active Libassuan logging categories to @var{cats}.  The
 value for @var{cats} is an unsigned integer given in usual C-Syntax.
-A value of of 0 switches to a default category.  If this option is not
+A value of 0 switches to a default category.  If this option is not
 used the categories are taken from the environment variable
 @code{ASSUAN_DEBUG}.  Note that this option has only an effect if the
 Assuan debug flag has also been with the option @option{--debug}.  For
@@ -235,6 +235,12 @@ a list of categories see the Libassuan manual.
 @opindex no-detach
 Don't detach the process from the console.  This is mainly useful for
 debugging.
+
+@item --listen-backlog @var{n}
+@opindex listen-backlog
+Set the size of the queue for pending connections.  The default is 64.
+This option has an effect only if @option{--multi-server} is also
+used.
 
 @item --log-file @var{file}
 @opindex log-file
@@ -393,7 +399,7 @@ comes with almost all German banking cards.
 This application adds read-only support for keys and certificates
 stored on a @uref{http://www.smartcard-hsm.com, SmartCard-HSM}.
 
-To generate keys and store certifiates you may use
+To generate keys and store certificates you may use
 @uref{https://github.com/OpenSC/OpenSC/wiki/SmartCardHSM, OpenSC} or
 the tools from @uref{http://www.openscdp.org, OpenSCDP}.
 

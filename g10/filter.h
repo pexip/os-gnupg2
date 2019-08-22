@@ -20,7 +20,7 @@
 #ifndef G10_FILTER_H
 #define G10_FILTER_H
 
-#include "types.h"
+#include "../common/types.h"
 #include "dek.h"
 
 typedef struct {
@@ -92,10 +92,11 @@ typedef struct {
     DEK *dek;
     u32 datalen;
     gcry_cipher_hd_t cipher_hd;
-    int header;
+    unsigned int wrote_header : 1;
+    unsigned int short_blklen_warn : 1;
+    unsigned long short_blklen_count;
     gcry_md_hd_t mdc_hash;
     byte enchash[20];
-    int create_mdc; /* flag will be set by the cipher filter */
 } cipher_filter_context_t;
 
 
@@ -139,9 +140,10 @@ void        unarmor_pump_release (UnarmorPump x);
 int         unarmor_pump (UnarmorPump x, int c);
 
 /*-- compress.c --*/
-void push_compress_filter(iobuf_t out,compress_filter_context_t *zfx,int algo);
-void push_compress_filter2(iobuf_t out,compress_filter_context_t *zfx,
-			   int algo,int rel);
+gpg_error_t push_compress_filter (iobuf_t out, compress_filter_context_t *zfx,
+                                  int algo);
+gpg_error_t push_compress_filter2 (iobuf_t out,compress_filter_context_t *zfx,
+                                   int algo, int rel);
 
 /*-- cipher.c --*/
 int cipher_filter( void *opaque, int control,

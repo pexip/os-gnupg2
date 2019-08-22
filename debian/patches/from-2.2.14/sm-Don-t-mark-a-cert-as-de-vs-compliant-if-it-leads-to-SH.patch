@@ -1,0 +1,66 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Thu, 28 Feb 2019 14:43:42 +0100
+Subject: sm: Don't mark a cert as de-vs compliant if it leads to SHA-1 sigs.
+
+* sm/keylist.c (print_compliance_flags): Also check the digest_algo.
+Add new arg 'cert'.
+--
+
+A certificate with algorithm sha1WithRSAEncryption can be de-vs
+compliant (e.g. if the next in the chain used sha256WithRSAEncryption
+to sign it and RSA is long enough) but flagging it as such is useless
+because that certificate can't be used because it will create
+signatures using the non-compliant SHA-1 algorithm.
+
+Well, it could be used for encryption.  But also evaluating the
+key-usage flags here would make it harder for the user to understand
+why certain certificates are listed as de-vs compliant and others are
+not.
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 2c75af9f65d15653ed1bc191f1098ae316607041)
+
+Reworked to also pass the CERT.  Note that 2.2 won't get the PK
+Screening feature.
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit be69bf0cbd11cb8c0d452e07066669aacc6caafa)
+---
+ sm/keylist.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/sm/keylist.c b/sm/keylist.c
+index 9997da8..3fe75a1 100644
+--- a/sm/keylist.c
++++ b/sm/keylist.c
+@@ -348,10 +348,19 @@ email_kludge (const char *name)
+ /* Print the compliance flags to field 18.  ALGO is the gcrypt algo
+  * number.  NBITS is the length of the key in bits.  */
+ static void
+-print_compliance_flags (int algo, unsigned int nbits, estream_t fp)
++print_compliance_flags (ksba_cert_t cert, int algo, unsigned int nbits,
++                        estream_t fp)
+ {
++  int hashalgo;
++
+   if (gnupg_pk_is_compliant (CO_DE_VS, algo, NULL, nbits, NULL))
+-    es_fputs (gnupg_status_compliance_flag (CO_DE_VS), fp);
++    {
++      hashalgo = gcry_md_map_name (ksba_cert_get_digest_algo (cert));
++      if (gnupg_digest_is_compliant (CO_DE_VS, hashalgo))
++        {
++          es_fputs (gnupg_status_compliance_flag (CO_DE_VS), fp);
++        }
++    }
+ }
+ 
+ 
+@@ -526,7 +535,7 @@ list_cert_colon (ctrl_t ctrl, ksba_cert_t cert, unsigned int validity,
+   es_putc (':', fp);  /* End of field 15. */
+   es_putc (':', fp);  /* End of field 16. */
+   es_putc (':', fp);  /* End of field 17. */
+-  print_compliance_flags (algo, nbits, fp);
++  print_compliance_flags (cert, algo, nbits, fp);
+   es_putc (':', fp);  /* End of field 18. */
+   es_putc ('\n', fp);
+ 

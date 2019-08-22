@@ -69,6 +69,18 @@ Copyright: 2000, Dimitrios Souflis
            2016, Justus Winter, Werner Koch
 License: TinySCHEME
 
+Files: debian/*
+Copyright: 1998-2018 Debian GnuPG packagers, including
+ Eric Dorland <eric@debian.org>
+ Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+ NIIBE Yutaka <gniibe@fsij.org>
+License: GPL-3+
+
+Files: debian/org.gnupg.scdaemon.metainfo.xml
+Copyright: 2017 Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Comment: This file is licensed permissively for the sake of AppStream
+License: CC0-1.0
+
 License: TinySCHEME
  Redistribution and use in source and binary forms, with or without
  modification, are permitted provided that the following conditions are
@@ -231,3 +243,11 @@ License: Expat
  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
  USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+License: CC0-1.0
+ To the extent possible under law, the author(s) have dedicated all
+ copyright and related and neighboring rights to this software to the public
+ domain worldwide. This software is distributed without any warranty.
+ .
+ On Debian systems, the complete text of the CC0 license, version 1.0,
+ can be found in /usr/share/common-licenses/CC0-1.0.

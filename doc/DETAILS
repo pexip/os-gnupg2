@@ -59,6 +59,7 @@ described here.
     - uat :: User attribute (same as user id except for field 10).
     - sig :: Signature
     - rev :: Revocation signature
+    - rvs :: Recocation signature (standalone) [since 2.2.9]
     - fpr :: Fingerprint (fingerprint is in field 10)
     - pkd :: Public key data [*]
     - grp :: Keygrip
@@ -105,6 +106,19 @@ described here.
     certificate (i.e. for the trust anchor) and an 'f' for all other
     valid certificates.
 
+    In "sig" records, this field may have one of these values as first
+    character:
+
+    - ! :: Signature is good.
+    - - :: Signature is bad.
+    - ? :: No public key to verify signature or public key is not usable.
+    - % :: Other error verifying a signature
+
+    More values may be added later.  The field may also be empty if
+    gpg has been invoked in a non-checking mode (--list-sigs) or in a
+    fast checking mode.  Since 2.2.7 '?' will also be printed by the
+    command --list-sigs if the key is not in the local keyring.
+
 *** Field 3 - Key length
 
     The length of key in bits.
@@ -149,6 +163,7 @@ described here.
     the regular expression value, quoted as in field 10.
 
 *** Field 10 - User-ID
+
     The value is quoted like a C string to avoid control characters
     (the colon is quoted =\x3a=).  For a "pub" record this field is
     not used on --fixed-list-mode.  A UAT record puts the attribute
@@ -156,6 +171,7 @@ described here.
     subpacket size.  In gpgsm the issuer name comes here.  A FPR
     record stores the fingerprint here.  The fingerprint of a
     revocation key is stored here.
+
 *** Field 11 - Signature class
 
     Signature class as per RFC-4880.  This is a 2 digit hexnumber
@@ -163,6 +179,9 @@ described here.
     the letter 'l' for a local-only signature.  The class byte of an
     revocation key is also given here, 'x' and 'l' is used the same
     way.  This field if not used for X.509.
+
+    "rev" and "rvs" may be followed by a comma and a 2 digit hexnumber
+    with the revocation reason.
 
 *** Field 12 - Key capabilities
 
@@ -187,15 +206,18 @@ described here.
     only filled if the issuer certificate is available. The root has
     been reached if this is the same string as the fingerprint. The
     advantage of using this value is that it is guaranteed to have
-    been been build by the same lookup algorithm as gpgsm uses.
+    been built by the same lookup algorithm as gpgsm uses.
 
     For "uid" records this field lists the preferences in the same way
     gpg's --edit-key menu does.
 
-    For "sig" records, this is the fingerprint of the key that issued
-    the signature.  Note that this is only filled in if the signature
-    verified correctly.  Note also that for various technical reasons,
-    this fingerprint is only available if --no-sig-cache is used.
+    For "sig", "rev" and "rvs" records, this is the fingerprint of the
+    key that issued the signature.  Note that this may only be filled
+    if the signature verified correctly.  Note also that for various
+    technical reasons, this fingerprint is only available if
+    --no-sig-cache is used.  Since 2.2.7 this field will also be set
+    if the key is missing but the signature carries an issuer
+    fingerprint as meta data.
 
 *** Field 14 - Flag field
 
@@ -217,6 +239,35 @@ described here.
 
     For pub, sub, sec, and ssb records this field is used for the ECC
     curve name.
+
+*** Field 18 - Compliance flags
+
+    Space separated list of asserted compliance modes for this key.
+
+    Valid values are:
+
+    - 8  :: The key is compliant with RFC4880bis
+    - 23 :: The key is compliant with compliance mode "de-vs".
+
+*** Field 19 - Last update
+
+    The timestamp of the last update of a key or user ID.  The update
+    time of a key is defined a lookup of the key via its unique
+    identifier (fingerprint); the field is empty if not known.  The
+    update time of a user ID is defined by a lookup of the key using a
+    trusted mapping from mail address to key.
+
+*** Field 20 - Origin
+
+    The origin of the key or the user ID.  This is an integer
+    optionally followed by a space and an URL.  This goes along with
+    the previous field.  The URL is quoted in C style.
+
+*** Field 21 - Comment
+
+    This is currently only used in "rev" and "rvs" records to carry
+    the the comment field of the recocation reason.  The value is
+    quoted in C style.
 
 ** Special fields
 
@@ -369,9 +420,8 @@ pkd:0:1024:B665B1435F4C2 .... FF26ABB:
 *** NEWSIG [<signers_uid>]
     Is issued right before a signature verification starts.  This is
     useful to define a context for parsing ERROR status messages.
-    arguments are currently defined.  If SIGNERS_UID is given and is
-    not "-" this is the percent escape value of the OpenPGP Signer's
-    User ID signature sub-packet.
+    If SIGNERS_UID is given and is not "-" this is the percent-escaped
+    value of the OpenPGP Signer's User ID signature sub-packet.
 
 *** GOODSIG  <long_keyid_or_fpr>  <username>
     The signature with the keyid is good.  For each signature only one
@@ -411,14 +461,17 @@ pkd:0:1024:B665B1435F4C2 .... FF26ABB:
     available.  This is the case with CMS and might eventually also be
     available for OpenPGP.
 
-*** ERRSIG  <keyid>  <pkalgo> <hashalgo> <sig_class> <time> <rc>
+*** ERRSIG  <keyid>  <pkalgo> <hashalgo> <sig_class> <time> <rc> <fpr>
     It was not possible to check the signature.  This may be caused by
     a missing public key or an unsupported algorithm.  A RC of 4
     indicates unknown algorithm, a 9 indicates a missing public
     key. The other fields give more information about this signature.
     sig_class is a 2 byte hex-value.  The fingerprint may be used
-    instead of the keyid if it is available.  This is the case with
-    gpgsm and might eventually also be available for OpenPGP.
+    instead of the long_keyid_or_fpr if it is available.  This is the
+    case with gpgsm and might eventually also be available for
+    OpenPGP.  The ERRSIG line has FPR filed which is only available
+    since 2.2.7; that FPR may either be missing or - if the signature
+    has no fingerprint as meta data.
 
     Note, that TIME may either be the number of seconds since Epoch or
     an ISO 8601 string.  The latter can be detected by the presence of
@@ -486,6 +539,12 @@ pkd:0:1024:B665B1435F4C2 .... FF26ABB:
 *** END_DECRYPTION
     Mark the end of the actual decryption process.  This are also
     emitted when in --list-only mode.
+*** DECRYPTION_KEY <fpr> <fpr2> <otrust>
+    This line is emitted when a public key decryption succeeded in
+    providing a session key.  <fpr> is the hexified fingerprint of the
+    actual key used for descryption.  <fpr2> is the fingerprint of the
+    primary key.  <otrust> is the letter with the ownertrust; this is
+    in general a 'u' which stands for ultimately trusted.
 *** DECRYPTION_INFO <mdc_method> <sym_algo>
     Print information about the symmetric encryption algorithm and the
     MDC method.  This will be emitted even if the decryption fails.
@@ -606,6 +665,23 @@ pkd:0:1024:B665B1435F4C2 .... FF26ABB:
     This indicates that a signature subpacket was seen.  The format is
     the same as the "spk" record above.
 
+*** ENCRYPTION_COMPLIANCE_MODE <flags>
+    Indicates that the current encryption operation was in compliance
+    with the given set of modes for all recipients.  "flags" is a
+    space separated list of numerical flags, see "Field 18 -
+    Compliance flags" above.
+
+*** DECRYPTION_COMPLIANCE_MODE <flags>
+    Indicates that the current decryption operation is in compliance
+    with the given set of modes.  "flags" is a space separated list of
+    numerical flags, see "Field 18 - Compliance flags" above.
+
+*** VERIFICATION_COMPLIANCE_MODE <flags>
+    Indicates that the current signature verification operation is in
+    compliance with the given set of modes.  "flags" is a space
+    separated list of numerical flags, see "Field 18 - Compliance
+    flags" above.
+
 ** Key related
 *** INV_RECP, INV_SGNR
     The two similar status codes:
@@ -670,7 +746,9 @@ pkd:0:1024:B665B1435F4C2 .... FF26ABB:
     The used key has been revoked by its owner.  No arguments yet.
 
 *** NO_PUBKEY  <long keyid>
-    The public key is not available
+    The public key is not available.  Note the arg should in general
+    not be used because it is better to take it from the ERRSIG
+    status line which is printed right before this one.
 
 *** NO_SECKEY  <long keyid>
     The secret key is not available
@@ -702,7 +780,7 @@ pkd:0:1024:B665B1435F4C2 .... FF26ABB:
 
     VALIDATION_MODEL describes the algorithm used to check the
     validity of the key.  The defaults are the standard Web of Trust
-    model for gpg and the the standard X.509 model for gpgsm.  The
+    model for gpg and the standard X.509 model for gpgsm.  The
     defined values are
 
        - pgp   :: The standard PGP WoT.
@@ -796,7 +874,7 @@ pkd:0:1024:B665B1435F4C2 .... FF26ABB:
     recent message was verified 4 seconds ago.'
 
 *** PKA_TRUST_
-    This is is one:
+    This is one of:
 
     - PKA_TRUST_GOOD <addr-spec>
     - PKA_TRUST_BAD  <addr-spec>
@@ -993,15 +1071,16 @@ pkd:0:1024:B665B1435F4C2 .... FF26ABB:
     - 4 :: Key is stored on a smartcard.
 
 *** PROGRESS <what> <char> <cur> <total> [<units>]
-    Used by the primegen and Public key functions to indicate
+    Used by the primegen and public key functions to indicate
     progress.  <char> is the character displayed with no --status-fd
     enabled, with the linefeed replaced by an 'X'.  <cur> is the
     current amount done and <total> is amount to be done; a <total> of
-    0 indicates that the total amount is not known. The condition
+    0 indicates that the total amount is not known. Both are
+    non-negative integers.  The condition
       :       TOTAL && CUR == TOTAL
     may be used to detect the end of an operation.
 
-    Well known values for WHAT are:
+    Well known values for <what> are:
 
            - pk_dsa   :: DSA key generation
            - pk_elg   :: Elgamal key generation
@@ -1016,7 +1095,9 @@ pkd:0:1024:B665B1435F4C2 .... FF26ABB:
                           the data of a smartcard.
            - card_busy :: A smartcard is still working
 
-    <units> is sometines used to describe the units for <current> and
+    When <what> refers to a file path, it may be truncated.
+
+    <units> is sometimes used to describe the units for <current> and
     <total>.  For example "B", "KiB", or "MiB".
 
 *** BACKUP_KEY_CREATED <fingerprint> <fname>
@@ -1279,6 +1360,44 @@ CREATE TABLE signatures (
   S2K Specifier with an offset of 1000.
 
 
+* Format of the OpenPGP TRUST packet
+
+  According to RFC4880 (5.10), the trust packet (aka ring trust) is
+  only used within keyrings and contains data that records the user's
+  specifications of which key holds trusted introducers.  The RFC also
+  states that the format of this packet is implementation defined and
+  SHOULD NOT be emitted to output streams or should be ignored on
+  import.  GnuPG uses this packet in several additional ways:
+
+  - 1 octet :: Trust-Value (only used by Subtype SIG)
+  - 1 octet :: Signature-Cache (only used by Subtype SIG; value must
+               be less than 128)
+  - 3 octets :: Fixed value: "gpg"
+  - 1 octet  :: Subtype
+               - 0 :: Signature cache (SIG)
+               - 1 :: Key source on the primary key (KEY)
+               - 2 :: Key source on a user id (UID)
+  - 1 octet :: Key Source; i.e. the origin of the key:
+               - 0 :: Unknown source.
+               - 1 :: Public keyserver.
+               - 2 :: Preferred keyserver.
+               - 3 :: OpenPGP DANE.
+               - 4 :: Web Key Directory.
+               - 5 :: Import from a trusted URL.
+               - 6 :: Import from a trusted file.
+               - 7 :: Self generated.
+  - 4 octets :: Time of last update.  This is a a four-octet scalar
+                with the seconds since Epoch.
+  - 1 octet  :: Scalar with the length of the following field.
+  - N octets :: String with the URL of the source.  This may be a
+                zero-length string.
+
+  If the packets contains only two octets a Subtype of 0 is assumed;
+  this is the only format recognized by GnuPG versions < 2.1.18.
+  Trust-Value and Signature-Cache must be zero for all subtypes other
+  than SIG.
+
+
 * Keyserver helper message format
 
   *This information is obsolete*
@@ -1451,5 +1570,5 @@ Description of some debug flags:
    If one of the "foo/*" names are used a "keygen.flags" prompt needs
    to be answered as well.  Instead of toggling the predefined flags,
    it is also possible to set them direct: Use a "=" character
-   directly followed by a comination of "a" (for authentication), "s"
+   directly followed by a combination of "a" (for authentication), "s"
    (for signing), or "c" (for certification).

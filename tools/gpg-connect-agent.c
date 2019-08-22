@@ -29,7 +29,7 @@
 #include <unistd.h>
 #include <assert.h>
 
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "../common/util.h"
 #include "../common/asshelp.h"
 #include "../common/sysutils.h"
@@ -187,7 +187,7 @@ static assuan_context_t start_agent (void);
 
 
 
-/* Print usage information and and provide strings for help. */
+/* Print usage information and provide strings for help. */
 static const char *
 my_strusage( int level )
 {
@@ -839,7 +839,7 @@ add_definq (char *line, int is_var, int is_prog)
 }
 
 
-/* Show all inquiry defintions. */
+/* Show all inquiry definitions. */
 static void
 show_definq (void)
 {
@@ -983,7 +983,7 @@ do_open (char *line)
                  name, mode, strerror (errno));
       return;
     }
-  fd = fileno (fp);
+  fd = dup (fileno (fp));
   if (fd >= 0 && fd < DIM (open_fd_table))
     {
       open_fd_table[fd].inuse = 1;
@@ -1030,8 +1030,10 @@ do_open (char *line)
   else
     {
       log_error ("can't put fd %d into table\n", fd);
-      close (fd);
+      if (fd != -1)
+        close (fd); /* Table was full.  */
     }
+  fclose (fp);
 }
 
 
@@ -1155,7 +1157,7 @@ main (int argc, char **argv)
   int rc;
   int cmderr;
   const char *opt_run = NULL;
-  FILE *script_fp = NULL;
+  gpgrt_stream_t script_fp = NULL;
   int use_tty, keep_line;
   struct {
     int collecting;
@@ -1271,7 +1273,7 @@ main (int argc, char **argv)
                 "--tcp-socket", "--raw-socket");
     }
 
-  if (opt_run && !(script_fp = fopen (opt_run, "r")))
+  if (opt_run && !(script_fp = gpgrt_fopen (opt_run, "r")))
     {
       log_error ("cannot open run file '%s': %s\n",
                  opt_run, strerror (errno));
@@ -1425,15 +1427,15 @@ main (int argc, char **argv)
               linesize = 0;
               keep_line = 1;
             }
-          n = read_line (script_fp? script_fp:stdin,
-                         &line, &linesize, &maxlength);
+          n = gpgrt_read_line (script_fp ? script_fp : gpgrt_stdin,
+                               &line, &linesize, &maxlength);
         }
       if (n < 0)
         {
           log_error (_("error reading input: %s\n"), strerror (errno));
           if (script_fp)
             {
-              fclose (script_fp);
+              gpgrt_fclose (script_fp);
               script_fp = NULL;
               log_error ("stopping script execution\n");
               continue;
@@ -1445,7 +1447,7 @@ main (int argc, char **argv)
           /* EOF */
           if (script_fp)
             {
-              fclose (script_fp);
+              gpgrt_fclose (script_fp);
               script_fp = NULL;
               if (opt.verbose)
                 log_info ("end of script\n");
@@ -1683,17 +1685,17 @@ main (int argc, char **argv)
                   log_error ("syntax error in run command\n");
                   if (script_fp)
                     {
-                      fclose (script_fp);
+                      gpgrt_fclose (script_fp);
                       script_fp = NULL;
                     }
                 }
               else if (script_fp)
                 {
                   log_error ("cannot nest run commands - stop\n");
-                  fclose (script_fp);
+                  gpgrt_fclose (script_fp);
                   script_fp = NULL;
                 }
-              else if (!(script_fp = fopen (p, "r")))
+              else if (!(script_fp = gpgrt_fopen (p, "r")))
                 {
                   log_error ("cannot open run file '%s': %s\n",
                              p, strerror (errno));
@@ -1864,7 +1866,7 @@ main (int argc, char **argv)
       if ((rc || cmderr) && script_fp)
         {
           log_error ("stopping script execution\n");
-          fclose (script_fp);
+          gpgrt_fclose (script_fp);
           script_fp = NULL;
         }
 
@@ -2237,7 +2239,7 @@ start_agent (void)
     {
       if (!opt.autostart
           && (gpg_err_code (err)
-              == opt.use_dirmngr? GPG_ERR_NO_DIRMNGR : GPG_ERR_NO_AGENT))
+              == (opt.use_dirmngr? GPG_ERR_NO_DIRMNGR : GPG_ERR_NO_AGENT)))
         {
           /* In the no-autostart case we don't make gpg-connect-agent
              fail on a missing server.  */

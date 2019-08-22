@@ -1,0 +1,38 @@
+From: NIIBE Yutaka <gniibe@fsij.org>
+Date: Fri, 25 Jan 2019 10:15:39 +0900
+Subject: dirmngr: Fix initialization of assuan's nPth hook.
+
+* dirmngr/dirmngr.c (main): Move assuan_set_system_hooks to...
+(thread_init): ... here.
+
+--
+
+Cherry picked master commit of:
+	1f8817475f59ede3f28f57edc10ba56bbdd08b49
+
+Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
+(cherry picked from commit 7f4c3eb0a039621c564b6095ab5f810524843157)
+---
+ dirmngr/dirmngr.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/dirmngr/dirmngr.c b/dirmngr/dirmngr.c
+index 76843bd..ffbb108 100644
+--- a/dirmngr/dirmngr.c
++++ b/dirmngr/dirmngr.c
+@@ -802,6 +802,7 @@ static void
+ thread_init (void)
+ {
+   npth_init ();
++  assuan_set_system_hooks (ASSUAN_SYSTEM_NPTH);
+   gpgrt_set_syscall_clamp (npth_unprotect, npth_protect);
+ 
+   /* Now with NPth running we can set the logging callback.  Our
+@@ -877,7 +878,6 @@ main (int argc, char **argv)
+   assuan_set_malloc_hooks (&malloc_hooks);
+   assuan_set_assuan_log_prefix (log_get_prefix (NULL));
+   assuan_set_gpg_err_source (GPG_ERR_SOURCE_DEFAULT);
+-  assuan_set_system_hooks (ASSUAN_SYSTEM_NPTH);
+   assuan_sock_init ();
+   setup_libassuan_logging (&opt.debug, dirmngr_assuan_log_monitor);
+ 

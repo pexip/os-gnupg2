@@ -33,7 +33,7 @@
 #include "../common/argparse.h"
 #include "../common/stringhelp.h"
 #include "../common/utf8conv.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "keybox-defs.h"
 #include "../common/init.h"
 #include <gcrypt.h>
@@ -92,7 +92,7 @@ static ARGPARSE_OPTS opts[] = {
   { oDebug, "debug"     ,4|16, N_("set debugging flags")},
   { oDebugAll, "debug-all" ,0, N_("enable full debugging")},
 
-  {0} /* end of list */
+  ARGPARSE_end () /* end of list */
 };
 
 
@@ -411,8 +411,7 @@ import_openpgp (const char *filename, int dryrun)
             dump_openpgp_key (&info, p);
           else
             {
-              err = _keybox_create_openpgp_blob (&blob, &info, p, nparsed,
-                                                 NULL, 0);
+              err = _keybox_create_openpgp_blob (&blob, &info, p, nparsed, 0);
               if (err)
                 {
                   fflush (stdout);
@@ -465,7 +464,6 @@ main( int argc, char **argv )
   /*create_dotlock(NULL); register locking cleanup */
 
   /* We need to use the gcry malloc function because jnlib uses them.  */
-  keybox_set_malloc_hooks (gcry_malloc, gcry_realloc, gcry_free);
   ksba_set_malloc_hooks (gcry_malloc, gcry_realloc, gcry_free );
 
 

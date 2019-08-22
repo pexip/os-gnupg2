@@ -1,11 +1,11 @@
 This is gnupg.info, produced by makeinfo version 6.3 from gnupg.texi.
 
-This is the 'The GNU Privacy Guard Manual' (version 2.1.18, January
-2017).
+This is the 'The GNU Privacy Guard Manual' (version 2.2.12-beta25,
+December 2018).
 
    (C) 2002, 2004, 2005, 2006, 2007, 2010 Free Software Foundation, Inc.
 (C) 2013, 2014, 2015 Werner Koch.
-(C) 2015 g10 Code GmbH.
+(C) 2015, 2016, 2017 g10 Code GmbH.
 
      Permission is granted to copy, distribute and/or modify this
      document under the terms of the GNU General Public License as
@@ -27,12 +27,12 @@ File: gnupg.info,  Node: Top,  Next: Installation,  Up: (dir)
 Using the GNU Privacy Guard
 ***************************
 
-This is the 'The GNU Privacy Guard Manual' (version 2.1.18, January
-2017).
+This is the 'The GNU Privacy Guard Manual' (version 2.2.12-beta25,
+December 2018).
 
    (C) 2002, 2004, 2005, 2006, 2007, 2010 Free Software Foundation, Inc.
 (C) 2013, 2014, 2015 Werner Koch.
-(C) 2015 g10 Code GmbH.
+(C) 2015, 2016, 2017 g10 Code GmbH.
 
      Permission is granted to copy, distribute and/or modify this
      document under the terms of the GNU General Public License as
@@ -53,8 +53,10 @@ as the administration and the architecture.
 * Invoking GPGSM::      Using the S/MIME protocol.
 * Invoking SCDAEMON::   How to handle Smartcards.
 * Specify a User ID::   How to Specify a User Id.
+* Trust Values::        How GnuPG displays trust values.
 
 * Helper Tools::        Description of small helper tools
+* Web Key Service::     Tools for the Web Key Service
 
 * Howtos::              How to do certain things.
 * System Notes::        Notes pertaining to certain OSes.
@@ -227,11 +229,15 @@ File: gnupg.info,  Node: Agent Options,  Next: Agent Configuration,  Prev: Agent
 2.2 Option Summary
 ==================
 
+Options may either be used on the command line or, after stripping off
+the two leading dashes, in the configuration file.
+
 '--options FILE'
      Reads configuration from FILE instead of from the default per-user
      configuration file.  The default configuration file is named
      'gpg-agent.conf' and expected in the '.gnupg' directory directly
-     below the home directory of the user.
+     below the home directory of the user.  This option is ignored if
+     used in an options file.
 
 '--homedir DIR'
      Set the name of the home directory to DIR.  If this option is not
@@ -257,8 +263,8 @@ File: gnupg.info,  Node: Agent Options,  Next: Agent Configuration,  Prev: Agent
 '-v'
 '--verbose'
      Outputs additional information while running.  You can increase the
-     verbosity by giving several verbose commands to 'gpgsm', such as
-     '-vv'.
+     verbosity by giving several verbose commands to 'gpg-agent', such
+     as '-vv'.
 
 '-q'
 '--quiet'
@@ -360,9 +366,12 @@ File: gnupg.info,  Node: Agent Options,  Next: Agent Configuration,  Prev: Agent
      it based on the environment variable 'SHELL' which is correct in
      almost all cases.
 
+'--grab'
 '--no-grab'
-     Tell the pinentry not to grab the keyboard and mouse.  This option
-     should in general not be used to avoid X-sniffing attacks.
+     Tell the pinentry to grab the keyboard and mouse.  This option
+     should be used on X-Servers to avoid X-sniffing attacks.  Any use
+     of the option '--grab' overrides an used option '--no-grab'.  The
+     default is '--no-grab'.
 
 '--log-file FILE'
      Append all logging output to FILE.  This is very helpful in seeing
@@ -415,7 +424,10 @@ File: gnupg.info,  Node: Agent Options,  Next: Agent Configuration,  Prev: Agent
      Set the time a cache entry is valid to N seconds.  The default is
      600 seconds.  Each time a cache entry is accessed, the entry's
      timer is reset.  To set an entry's maximum lifetime, use
-     'max-cache-ttl'.
+     'max-cache-ttl'.  Note that a cached passphrase may not evicted
+     immediately from memory if no client requests a cache operation.
+     This is due to an internal housekeeping function which is only run
+     every few seconds.
 
 '--default-cache-ttl-ssh N'
      Set the time a cache entry used for SSH keys is valid to N seconds.
@@ -543,6 +555,10 @@ File: gnupg.info,  Node: Agent Options,  Next: Agent Configuration,  Prev: Agent
      'DISPLAY' variable respectively.  This is useful to lock the
      pinentry to pop up at the 'tty' or display you started the agent.
 
+'--listen-backlog N'
+     Set the size of the queue for pending connections.  The default is
+     64.
+
 '--extra-socket NAME'
      The extra socket is created by default, you may use this option to
      change the name of the socket.  To disable the creation of the
@@ -555,6 +571,15 @@ File: gnupg.info,  Node: Agent Options,  Next: Agent Configuration,  Prev: Agent
      the local gpg-agent and use its private keys.  This enables
      decrypting or signing data on a remote machine without exposing the
      private keys to the remote machine.
+
+'--enable-extended-key-format'
+     This option creates keys in the extended private key format.
+     Changing the passphrase of a key will also convert the key to that
+     new format.  Using this option makes the private keys unreadable
+     for gpg-agent versions before 2.1.12.  The advantage of the
+     extended private key format is that it is text based and can carry
+     additional meta data.  Note that this option also changes the key
+     protection format to use OCB mode.
 
 '--enable-ssh-support'
 '--enable-putty-support'
@@ -605,8 +630,44 @@ File: gnupg.info,  Node: Agent Options,  Next: Agent Configuration,  Prev: Agent
      This is similar to the regular ssh-agent support but makes use of
      Windows message queue as required by 'putty'.
 
-   All the long options may also be given in the configuration file
-after stripping off the two leading dashes.
+'--ssh-fingerprint-digest'
+
+     Select the digest algorithm used to compute ssh fingerprints that
+     are communicated to the user, e.g.  in pinentry dialogs.  OpenSSH
+     has transitioned from using MD5 to the more secure SHA256.
+
+'--auto-expand-secmem N'
+     Allow Libgcrypt to expand its secure memory area as required.  The
+     optional value N is a non-negative integer with a suggested size in
+     bytes of each additionally allocated secure memory area.  The value
+     is rounded up to the next 32 KiB; usual C style prefixes are
+     allowed.  For an heavy loaded gpg-agent with many concurrent
+     connection this option avoids sign or decrypt errors due to out of
+     secure memory error returns.
+
+'--s2k-calibration MILLISECONDS'
+     Change the default calibration time to MILLISECONDS.  The given
+     value is capped at 60 seconds; a value of 0 resets to the
+     compiled-in default.  This option is re-read on a SIGHUP (or
+     'gpgconf --reload gpg-agent') and the S2K count is then
+     re-calibrated.
+
+'--s2k-count N'
+     Specify the iteration count used to protect the passphrase.  This
+     option can be used to override the auto-calibration done by
+     default.  The auto-calibration computes a count which requires by
+     default 100ms to mangle a given passphrase.  See also
+     '--s2k-calibration'.
+
+     To view the actually used iteration count and the milliseconds
+     required for an S2K operation use:
+
+          gpg-connect-agent 'GETINFO s2k_count' /bye
+          gpg-connect-agent 'GETINFO s2k_time' /bye
+
+     To view the auto-calibrated count use:
+
+          gpg-connect-agent 'GETINFO s2k_count_cal' /bye
 
 
 File: gnupg.info,  Node: Agent Configuration,  Next: Agent Signals,  Prev: Agent Options,  Up: Invoking GPG-AGENT
@@ -741,7 +802,7 @@ A running 'gpg-agent' may be controlled by signals, i.e.  using the
      read again.  Only certain options are honored: 'quiet', 'verbose',
      'debug', 'debug-all', 'debug-level', 'debug-pinentry', 'no-grab',
      'pinentry-program', 'pinentry-invisible-char', 'default-cache-ttl',
-     'max-cache-ttl', 'ignore-cache-for-signing',
+     'max-cache-ttl', 'ignore-cache-for-signing', 's2k-count',
      'no-allow-external-cache', 'allow-emacs-pinentry',
      'no-allow-mark-trusted', 'disable-scdaemon', and
      'disable-check-own-socket'.  'scdaemon-program' is also supported
@@ -1194,7 +1255,7 @@ This command adds a passphrase to the cache for the specified KEYGRIP.
 
        PRESET_PASSPHRASE [--inquire] <string_or_keygrip> <timeout> [<hexstring>]
 
-   The passphrase is a hexidecimal string when specified.  When not
+   The passphrase is a hexadecimal string when specified.  When not
 specified, the passphrase will be retrieved from the pinentry module
 unless the '--inquire' option was specified in which case the passphrase
 will be retrieved from the client.
@@ -1291,7 +1352,7 @@ numbers in the range '0' to 'UINT_MAX' and wrapping around to 0.  The
 actual values should not be relied upon; they shall only be used to
 detect a change.
 
-   The currently defined counters are are:
+   The currently defined counters are:
 'ANY'
      Incremented with any change of any of the other counters.
 'KEY'
@@ -1381,7 +1442,7 @@ Supported KEYs are:
 
 'cache-ttl-opt-preset'
      This option sets the cache TTL for new entries created by GENKEY
-     and PASSWD commands when using the '--preset' option.  It it is not
+     and PASSWD commands when using the '--preset' option.  It is not
      used a default value is used.
 
 's2k-count'
@@ -1391,6 +1452,25 @@ Supported KEYs are:
      This option is valid for the entire session or until reset to 0.
      This option is useful if the key is later used on boxes which are
      either much slower or faster than the actual box.
+
+'pretend-request-origin'
+     This option switches the connection into a restricted mode which
+     handles all further commands in the same way as they would be
+     handled when originating from the extra or browser socket.  Note
+     that this option is not available in the restricted mode.  Valid
+     values for this option are:
+
+     'none'
+     'local'
+          This is a NOP and leaves the connection in the standard way.
+
+     'remote'
+          Pretend to come from a remote origin in the same way as
+          connections from the '--extra-socket'.
+
+     'browser'
+          Pretend to come from a local web browser in the same way as
+          connections from the '--browser-socket'.
 
 
 File: gnupg.info,  Node: Invoking DIRMNGR,  Next: Invoking GPG,  Prev: Invoking GPG-AGENT,  Up: Top
@@ -1549,8 +1629,10 @@ off the two leading dashes.
 '--debug-all'
      Same as '--debug=0xffffffff'
 
-'--gnutls-debug LEVEL'
-     Enable debugging of GNUTLS at LEVEL.
+'--tls-debug LEVEL'
+     Enable debugging of the TLS layer at LEVEL.  The details of the
+     debug level depend on the used TLS library and are not set in
+     stone.
 
 '--debug-wait N'
      When running in server mode, wait N seconds before entering the
@@ -1576,9 +1658,14 @@ off the two leading dashes.
      useful for debugging.
 
 '--use-tor'
-     This option switches Dirmngr and thus GnuPG into "Tor mode" to
-     route all network access via Tor (an anonymity network).  Certain
-     other features are disabled if this mode is active.
+'--no-use-tor'
+     The option '--use-tor' switches Dirmngr and thus GnuPG into "Tor
+     mode" to route all network access via Tor (an anonymity network).
+     Certain other features are disabled in this mode.  The effect of
+     '--use-tor' cannot be overridden by any other command or even be
+     reloading gpg-agent.  The use of '--no-use-tor' disables the use of
+     Tor.  The default is to use Tor if it is available on startup or
+     after reloading dirmngr.
 
 '--standard-resolver'
      This option forces the use of the system's standard DNS resolver
@@ -1593,14 +1680,27 @@ off the two leading dashes.
      Set the timeout for the DNS resolver to N seconds.  The default are
      30 seconds.
 
+'--connect-timeout N'
+'--connect-quick-timeout N'
+     Set the timeout for HTTP and generic TCP connection attempts to N
+     seconds.  The value set with the quick variant is used when the
+     -quick option has been given to certain Assuan commands.  The quick
+     value is capped at the value of the regular connect timeout.  The
+     default values are 15 and 2 seconds.  Note that the timeout values
+     are for each connection attempt; the connection code will attempt
+     to connect all addresses listed for a server.
+
+'--listen-backlog N'
+     Set the size of the queue for pending connections.  The default is
+     64.
+
 '--allow-version-check'
      Allow Dirmngr to connect to 'https://versions.gnupg.org' to get the
-     list of current software versions.  If this option is enabled, or
-     if 'use-tor' is active, the list is retrieved when the local copy
-     does not exist or is older than 5 to 7 days.  See the option
-     '--query-swdb' of the command 'gpgconf' for more details.  Note,
-     that regardless of this option a version check can always be
-     triggered using this command:
+     list of current software versions.  If this option is enabled the
+     list is retrieved in case the local copy does not exist or is older
+     than 5 to 7 days.  See the option '--query-swdb' of the command
+     'gpgconf' for more details.  Note, that regardless of this option a
+     version check can always be triggered using this command:
 
                  gpg-connect-agent --dirmngr 'loadswdb --force' /bye
 
@@ -1636,6 +1736,10 @@ off the two leading dashes.
      not be used a different one can be given using this option.  Note
      that a numerical IP address must be given (IPv6 or IPv4) and that
      no error checking is done for IPADDR.
+
+'--disable-ipv4'
+'--disable-ipv6'
+     Disable the use of all IPv4 or IPv6 addresses.
 
 '--disable-ldap'
      Entirely disables the use of LDAP.
@@ -1699,8 +1803,7 @@ off the two leading dashes.
 
 '--ldaptimeout SECS'
      Specify the number of seconds to wait for an LDAP query before
-     timing out.  The default is currently 100 seconds.  0 will never
-     timeout.
+     timing out.  The default are 15 seconds.  0 will never timeout.
 
 '--add-servers'
      This option makes dirmngr add any servers it discovers when
@@ -2026,8 +2129,8 @@ Common return values are:
      configuration.
 
    If DirMngr has not enough information about the given certificate
-(which is the case for not yet cached certificates), it will will
-inquire the missing data:
+(which is the case for not yet cached certificates), it will inquire the
+missing data:
 
        S: INQUIRE SENDCERT <CertID>
        C: D <DER encoded certificate>
@@ -2208,7 +2311,8 @@ File: gnupg.info,  Node: General GPG Commands,  Next: Operational GPG Commands, 
 '--help'
 '-h'
      Print a usage message summarizing the most useful command-line
-     options.  Note that you cannot abbreviate this command.
+     options.  Note that you cannot arbitrarily abbreviate this command
+     (though you can use its short form '-h').
 
 '--warranty'
      Print warranty information.
@@ -2249,11 +2353,13 @@ File: gnupg.info,  Node: Operational GPG Commands,  Next: OpenPGP Key Management
 
 '--encrypt'
 '-e'
-     Encrypt data.  This command may be combined with '--sign' (to sign
-     and encrypt a message), '--symmetric' (to encrypt a message that
-     can decrypted using a secret key or a passphrase), or '--sign' and
-     '--symmetric' together (for a signed message that can be decrypted
-     using a secret key or a passphrase).
+     Encrypt data to one or more public keys.  This command may be
+     combined with '--sign' (to sign and encrypt a message),
+     '--symmetric' (to encrypt a message that can decrypted using a
+     secret key or a passphrase), or '--sign' and '--symmetric' together
+     (for a signed message that can be decrypted using a secret key or a
+     passphrase).  '--recipient' and related options specify which
+     public keys to use for encryption.
 
 '--symmetric'
 '-c'
@@ -2264,6 +2370,10 @@ File: gnupg.info,  Node: Operational GPG Commands,  Next: OpenPGP Key Management
      (for a message that may be decrypted via a secret key or a
      passphrase), or '--sign' and '--encrypt' together (for a signed
      message that may be decrypted via a secret key or a passphrase).
+     'gpg' caches the passphrase used for symmetric encryption so that a
+     decrypt operation may not require that the user needs to enter the
+     passphrase.  The option '--no-symkey-cache' can be used to disable
+     this feature.
 
 '--store'
      Store only (make a simple literal data packet).
@@ -2342,42 +2452,42 @@ File: gnupg.info,  Node: Operational GPG Commands,  Next: OpenPGP Key Management
 '--list-secret-keys'
 '-K'
      List the specified secret keys.  If no keys are specified, then all
-     known secret keys are listed.  A '#' after the letters 'sec' means
-     that the secret key is not usable (for example, if it was exported
-     using '--export-secret-subkeys').  See also '--list-keys'.
-
-'--list-signatures'
-'--list-sigs'
-     Same as '--list-keys', but the signatures are listed too.  This
-     command has the same effect as using '--list-keys' with
-     '--with-sig-list'.
-
-     For each signature listed, there are several flags in between the
-     "sig" tag and keyid.  These flags give additional information about
-     each signature.  From left to right, they are the numbers 1-3 for
-     certificate check level (see '--ask-cert-level'), "L" for a local
-     or non-exportable signature (see '--lsign-key'), "R" for a
-     nonRevocable signature (see the '--edit-key' command "nrsign"), "P"
-     for a signature that contains a policy URL (see
-     '--cert-policy-url'), "N" for a signature that contains a notation
-     (see '--cert-notation'), "X" for an eXpired signature (see
-     '--ask-cert-expire'), and the numbers 1-9 or "T" for 10 and above
-     to indicate trust signature levels (see the '--edit-key' command
-     "tsign").
+     known secret keys are listed.  A '#' after the initial tags 'sec'
+     or 'ssb' means that the secret key or subkey is currently not
+     usable.  We also say that this key has been taken offline (for
+     example, a primary key can be taken offline by exporting the key
+     using the command '--export-secret-subkeys').  A '>' after these
+     tags indicate that the key is stored on a smartcard.  See also
+     '--list-keys'.
 
 '--check-signatures'
 '--check-sigs'
-     Same as '--list-signatures', but the signatures are verified.  Note
-     that for performance reasons the revocation status of a signing key
-     is not shown.  This command has the same effect as using
-     '--list-keys' with '--with-sig-check'.
+     Same as '--list-keys', but the key signatures are verified and
+     listed too.  Note that for performance reasons the revocation
+     status of a signing key is not shown.  This command has the same
+     effect as using '--list-keys' with '--with-sig-check'.
 
      The status of the verification is indicated by a flag directly
-     following the "sig" tag (and thus before the flags described above
-     for '--list-signatures').  A "!"  indicates that the signature has
-     been successfully verified, a "-" denotes a bad signature and a "%"
-     is used if an error occurred while checking the signature (e.g.  a
-     non supported algorithm).
+     following the "sig" tag (and thus before the flags described below.
+     A "!"  indicates that the signature has been successfully verified,
+     a "-" denotes a bad signature and a "%" is used if an error
+     occurred while checking the signature (e.g.  a non supported
+     algorithm).  Signatures where the public key is not available are
+     not listed; to see their keyids the command '--list-sigs' can be
+     used.
+
+     For each signature listed, there are several flags in between the
+     signature status flag and keyid.  These flags give additional
+     information about each key signature.  From left to right, they are
+     the numbers 1-3 for certificate check level (see
+     '--ask-cert-level'), "L" for a local or non-exportable signature
+     (see '--lsign-key'), "R" for a nonRevocable signature (see the
+     '--edit-key' command "nrsign"), "P" for a signature that contains a
+     policy URL (see '--cert-policy-url'), "N" for a signature that
+     contains a notation (see '--cert-notation'), "X" for an eXpired
+     signature (see '--ask-cert-expire'), and the numbers 1-9 or "T" for
+     10 and above to indicate trust signature levels (see the
+     '--edit-key' command "tsign").
 
 '--locate-keys'
      Locate the keys given as arguments.  This command basically uses
@@ -2386,14 +2496,23 @@ File: gnupg.info,  Node: Operational GPG Commands,  Next: OpenPGP Key Management
      particular external methods as defined by '--auto-key-locate' may
      be used to locate a key.  Only public keys are listed.
 
+'--show-keys'
+     This commands takes OpenPGP keys as input and prints information
+     about them in the same way the command '--list-keys' does for
+     locally stored key.  In addition the list options
+     'show-unusable-uids', 'show-unusable-subkeys', 'show-notations' and
+     'show-policy-urls' are also enabled.  As usual for automated
+     processing, this command should be combined with the option
+     '--with-colons'.
+
 '--fingerprint'
      List all keys (or the specified ones) along with their
      fingerprints.  This is the same output as '--list-keys' but with
      the additional output of a line with the fingerprint.  May also be
-     combined with '--list-signatures' or '--check-signatures'.  If this
-     command is given twice, the fingerprints of all secondary keys are
-     listed too.  This command also forces pretty printing of
-     fingerprints if the keyid format has been set to "none".
+     combined with '--check-signatures'.  If this command is given
+     twice, the fingerprints of all secondary keys are listed too.  This
+     command also forces pretty printing of fingerprints if the keyid
+     format has been set to "none".
 
 '--list-packets'
      List only the sequence of packets.  This command is only useful for
@@ -2416,20 +2535,19 @@ File: gnupg.info,  Node: Operational GPG Commands,  Next: OpenPGP Key Management
      functionality is also available as the subcommand "passwd" with the
      '--edit-card' command.
 
-'--delete-keys name'
-'--delete-keys name'
+'--delete-keys NAME'
      Remove key from the public keyring.  In batch mode either '--yes'
      is required or the key must be specified by fingerprint.  This is a
      safeguard against accidental deletion of multiple keys.
 
-'--delete-secret-keys name'
+'--delete-secret-keys NAME'
      Remove key from the secret keyring.  In batch mode the key must be
      specified by fingerprint.  The option '--yes' can be used to advice
      gpg-agent not to request a confirmation.  This extra pre-caution is
      done because 'gpg' can't be sure that the secret key (as controlled
      by gpg-agent) is only used for the given OpenPGP public key.
 
-'--delete-secret-and-public-key name'
+'--delete-secret-and-public-key NAME'
      Same as '--delete-key', but if a secret key exists, it will be
      removed first.  In batch mode the key must be specified by
      fingerprint.  The option '--yes' can be used to advice gpg-agent
@@ -2442,13 +2560,12 @@ File: gnupg.info,  Node: Operational GPG Commands,  Next: OpenPGP Key Management
      to STDOUT or to the file given with option '--output'.  Use
      together with '--armor' to mail those keys.
 
-'--send-keys key IDs'
+'--send-keys KEYIDS'
      Similar to '--export' but sends the keys to a keyserver.
      Fingerprints may be used instead of key IDs.  Option '--keyserver'
      must be used to give the name of this keyserver.  Don't send your
      complete keyring to a keyserver -- select only those keys which are
-     new or changed by you.  If no key IDs are given, 'gpg' does
-     nothing.
+     new or changed by you.  If no KEYIDS are given, 'gpg' does nothing.
 
 '--export-secret-keys'
 '--export-secret-subkeys'
@@ -2496,9 +2613,9 @@ File: gnupg.info,  Node: Operational GPG Commands,  Next: OpenPGP Key Management
      does not insert new keys but does only the merging of new
      signatures, user-IDs and subkeys.
 
-'--receive-keys key IDs'
-'--recv-keys key IDs'
-     Import the keys with the given key IDs from a keyserver.  Option
+'--receive-keys KEYIDS'
+'--recv-keys KEYIDS'
+     Import the keys with the given KEYIDS from a keyserver.  Option
      '--keyserver' must be used to give the name of this keyserver.
 
 '--refresh-keys'
@@ -2510,8 +2627,8 @@ File: gnupg.info,  Node: Operational GPG Commands,  Next: OpenPGP Key Management
      preferred keyservers set (see '--keyserver-options
      honor-keyserver-url').
 
-'--search-keys names'
-     Search the keyserver for the given names.  Multiple names given
+'--search-keys NAMES'
+     Search the keyserver for the given NAMES.  Multiple names given
      here will be joined together to create the search string for the
      keyserver.  Option '--keyserver' must be used to give the name of
      this keyserver.  Keyservers that support different search methods
@@ -2519,8 +2636,8 @@ File: gnupg.info,  Node: Operational GPG Commands,  Next: OpenPGP Key Management
      below.  Note that different keyserver types support different
      search methods.  Currently only LDAP supports them all.
 
-'--fetch-keys URIs'
-     Retrieve keys located at the specified URIs.  Note that different
+'--fetch-keys URIS'
+     Retrieve keys located at the specified URIS.  Note that different
      installations of GnuPG may support different protocols (HTTP, FTP,
      LDAP, etc.).  When using HTTPS the system provided root
      certificates are used by this command.
@@ -2571,22 +2688,22 @@ File: gnupg.info,  Node: Operational GPG Commands,  Next: OpenPGP Key Management
      used to create signature caches in the keyring.  It might be handy
      in other situations too.
 
-'--print-md algo'
+'--print-md ALGO'
 '--print-mds'
      Print message digest of algorithm ALGO for all given files or
-     STDIN. With the second form (or a deprecated "*" as algo) digests
+     STDIN. With the second form (or a deprecated "*" for ALGO) digests
      for all available algorithms are printed.
 
-'--gen-random 0|1|2 count'
+'--gen-random 0|1|2 COUNT'
      Emit COUNT random bytes of the given quality level 0, 1 or 2.  If
      COUNT is not given or zero, an endless sequence of random bytes
      will be emitted.  If used with '--armor' the output will be base64
      encoded.  PLEASE, don't use this command unless you know what you
      are doing; it may remove precious entropy from the system!
 
-'--gen-prime mode bits'
-     Use the source, Luke :-).  The output format is still subject to
-     change.
+'--gen-prime MODE BITS'
+     Use the source, Luke :-).  The output format is subject to change
+     with ant release.
 
 '--enarmor'
 '--dearmor'
@@ -2594,10 +2711,10 @@ File: gnupg.info,  Node: Operational GPG Commands,  Next: OpenPGP Key Management
      This is a GnuPG extension to OpenPGP and in general not very
      useful.
 
-'--tofu-policy auto|good|unknown|bad|ask key...'
+'--tofu-policy {auto|good|unknown|bad|ask} KEYS'
      Set the TOFU policy for all the bindings associated with the
-     specified keys.  For more information about the meaning of the
-     policies, *note trust-model-tofu::.  The keys may be specified
+     specified KEYS.  For more information about the meaning of the
+     policies, *note trust-model-tofu::.  The KEYS may be specified
      either by their fingerprint (preferred) or their keyid.
 
 
@@ -2608,7 +2725,8 @@ File: gnupg.info,  Node: OpenPGP Key Management,  Prev: Operational GPG Commands
 
 This section explains the main commands for key management.
 
-'--quick-generate-key user-id [algo [usage [expire]]]'
+'--quick-generate-key USER-ID [ALGO [USAGE [EXPIRE]]]'
+'--quick-gen-key'
      This is a simple command to generate a standard key with one user
      id.  In contrast to '--generate-key' the key is generated directly
      without the need to answer a bunch of prompts.  Unless the option
@@ -2620,20 +2738,23 @@ This section explains the main commands for key management.
      case the user id already exists in the keyring a second prompt to
      force the creation of the key will show up.
 
-     If 'algo' or 'usage' are given, only the primary key is created and
-     no prompts are shown.  To specify an expiration date but still
-     create a primary and subkey use "default" or "future-default" for
-     'algo' and "default" for 'usage'.  For a description of these
-     optional arguments see the command '--quick-add-key'.  The 'usage'
-     accepts also the value "cert" which can be used to create a
-     certification only primary key; the default is to a create
-     certification and signing key.
+     If ALGO or USAGE are given, only the primary key is created and no
+     prompts are shown.  To specify an expiration date but still create
+     a primary and subkey use "default" or "future-default" for ALGO and
+     "default" for USAGE.  For a description of these optional arguments
+     see the command '--quick-add-key'.  The USAGE accepts also the
+     value "cert" which can be used to create a certification only
+     primary key; the default is to a create certification and signing
+     key.
 
-     The 'expire' argument can be used to specify an expiration date for
-     the key.  Several formats are supported; commonly the ISO
-     YYYY-MM-DD format is used.  The values "never", "none" can be used
-     for no expiration date.  Not specifying a value, or using "-"
-     results in a key expiring in a reasonable default interval.
+     The EXPIRE argument can be used to specify an expiration date for
+     the key.  Several formats are supported; commonly the ISO formats
+     "YYYY-MM-DD" or "YYYYMMDDThhmmss" are used.  To make the key expire
+     in N seconds, N days, N weeks, N months, or N years use
+     "seconds=N", "Nd", "Nw", "Nm", or "Ny" respectively.  Not
+     specifying a value, or using "-" results in a key expiring in a
+     reasonable default interval.  The values "never", "none" can be
+     used for no expiration date.
 
      If this command is used with '--batch', '--pinentry-mode' has been
      set to 'loopback', and one of the passphrase options
@@ -2642,39 +2763,52 @@ This section explains the main commands for key management.
      not ask for it.  To create a key without any protection
      '--passphrase ''' may be used.
 
-'--quick-set-expire fpr expire'
-     Directly set the expiration time of the primary key to 'expire'.
-     To remove the expiration time '0' can be used.
+     Note that it is possible to create a primary key and a subkey using
+     non-default algorithms by using "default" and changing the default
+     parameters using the option '--default-new-key-algo'.
 
-'--quick-add-key fpr [algo [usage [expire]]]'
-     Directly add a subkey to the key identified by the fingerprint
-     'fpr'.  Without the optional arguments an encryption subkey is
-     added.  If any of the arguments are given a more specific subkey is
-     added.
+'--quick-set-expire FPR EXPIRE [*|SUBFPRS]'
+     With two arguments given, directly set the expiration time of the
+     primary key identified by FPR to EXPIRE.  To remove the expiration
+     time '0' can be used.  With three arguments and the third given as
+     an asterisk, the expiration time of all non-revoked and not yet
+     expired subkeys are set to EXPIRE.  With more than two arguments
+     and a list of fingerprints given for SUBFPRS, all non-revoked
+     subkeys matching these fingerprints are set to EXPIRE.
 
-     'algo' may be any of the supported algorithms or curve names given
-     in the format as used by key listings.  To use the default
-     algorithm the string "default" or "-" can be used.  Supported
-     algorithms are "rsa", "dsa", "elg", "ed25519", "cv25519", and other
-     ECC curves.  For example the string "rsa" adds an RSA key with the
-     default key length; a string "rsa4096" requests that the key length
-     is 4096 bits.  The string "future-default" is an alias for the
-     algorithm which will likely be used as default algorithm in future
-     versions of gpg.
+'--quick-add-key FPR [ALGO [USAGE [EXPIRE]]]'
+     Directly add a subkey to the key identified by the fingerprint FPR.
+     Without the optional arguments an encryption subkey is added.  If
+     any of the arguments are given a more specific subkey is added.
 
-     Depending on the given 'algo' the subkey may either be an
-     encryption subkey or a signing subkey.  If an algorithm is capable
-     of signing and encryption and such a subkey is desired, a 'usage'
-     string must be given.  This string is either "default" or "-" to
-     keep the default or a comma delimited list of keywords: "sign" for
-     a signing subkey, "auth" for an authentication subkey, and "encr"
-     for an encryption subkey ("encrypt" can be used as alias for
-     "encr").  The valid combinations depend on the algorithm.
+     ALGO may be any of the supported algorithms or curve names given in
+     the format as used by key listings.  To use the default algorithm
+     the string "default" or "-" can be used.  Supported algorithms are
+     "rsa", "dsa", "elg", "ed25519", "cv25519", and other ECC curves.
+     For example the string "rsa" adds an RSA key with the default key
+     length; a string "rsa4096" requests that the key length is 4096
+     bits.  The string "future-default" is an alias for the algorithm
+     which will likely be used as default algorithm in future versions
+     of gpg.  To list the supported ECC curves the command 'gpg
+     --with-colons --list-config curve' can be used.
 
-     The 'expire' argument can be used to specify an expiration date for
-     the subkey.  Several formats are supported; commonly the ISO
-     YYYY-MM-DD format is used.  The values "never", "none", or "-" can
-     be used for no expiration date.
+     Depending on the given ALGO the subkey may either be an encryption
+     subkey or a signing subkey.  If an algorithm is capable of signing
+     and encryption and such a subkey is desired, a USAGE string must be
+     given.  This string is either "default" or "-" to keep the default
+     or a comma delimited list (or space delimited list) of keywords:
+     "sign" for a signing subkey, "auth" for an authentication subkey,
+     and "encr" for an encryption subkey ("encrypt" can be used as alias
+     for "encr").  The valid combinations depend on the algorithm.
+
+     The EXPIRE argument can be used to specify an expiration date for
+     the key.  Several formats are supported; commonly the ISO formats
+     "YYYY-MM-DD" or "YYYYMMDDThhmmss" are used.  To make the key expire
+     in N seconds, N days, N weeks, N months, or N years use
+     "seconds=N", "Nd", "Nw", "Nm", or "Ny" respectively.  Not
+     specifying a value, or using "-" results in a key expiring in a
+     reasonable default interval.  The values "never", "none" can be
+     used for no expiration date.
 
 '--generate-key'
 '--gen-key'
@@ -2692,8 +2826,8 @@ This section explains the main commands for key management.
      mode.  See the manual section "Unattended key generation" on how to
      use this.
 
-'--generate-revocation name'
-'--gen-revoke name'
+'--generate-revocation NAME'
+'--gen-revoke NAME'
      Generate a revocation certificate for the complete key.  To only
      revoke a subkey or a key signature, use the '--edit' command.
 
@@ -2706,8 +2840,8 @@ This section explains the main commands for key management.
      keyserver (command '--send-key') and by exporting ('--export') it
      to a file which is then send to frequent communication partners.
 
-'--generate-designated-revocation name'
-'--desig-revoke name'
+'--generate-designated-revocation NAME'
+'--desig-revoke NAME'
      Generate a designated revocation certificate for a key.  This
      allows a user (with the permission of the keyholder) to revoke
      someone else's key.
@@ -2717,13 +2851,13 @@ This section explains the main commands for key management.
      related tasks.  It expects the specification of a key on the
      command line.
 
-     uid 'n'
+     uid N
           Toggle selection of user ID or photographic user ID with index
-          'n'.  Use '*' to select all and '0' to deselect all.
+          N.  Use '*' to select all and '0' to deselect all.
 
-     key 'n'
-          Toggle selection of subkey with index 'n' or key ID 'n'.  Use
-          '*' to select all and '0' to deselect all.
+     key N
+          Toggle selection of subkey with index N or key ID N.  Use '*'
+          to select all and '0' to deselect all.
 
      sign
           Make a signature on key of user 'name'.  If the key is not yet
@@ -2828,17 +2962,16 @@ This section explains the main commands for key management.
           preference list.  In addition, the preferred keyserver and
           signature notations (if any) are shown.
 
-     setpref 'string'
-          Set the list of user ID preferences to 'string' for all (or
-          just the selected) user IDs.  Calling setpref with no
-          arguments sets the preference list to the default (either
-          built-in or set via '--default-preference-list'), and calling
-          setpref with "none" as the argument sets an empty preference
-          list.  Use 'gpg --version' to get a list of available
-          algorithms.  Note that while you can change the preferences on
-          an attribute user ID (aka "photo ID"), GnuPG does not select
-          keys via attribute user IDs so these preferences will not be
-          used by GnuPG.
+     setpref STRING
+          Set the list of user ID preferences to STRING for all (or just
+          the selected) user IDs.  Calling setpref with no arguments
+          sets the preference list to the default (either built-in or
+          set via '--default-preference-list'), and calling setpref with
+          "none" as the argument sets an empty preference list.  Use
+          'gpg --version' to get a list of available algorithms.  Note
+          that while you can change the preferences on an attribute user
+          ID (aka "photo ID"), GnuPG does not select keys via attribute
+          user IDs so these preferences will not be used by GnuPG.
 
           When setting preferences, you should list the algorithms in
           the order which you'd like to see them used by someone else
@@ -2869,8 +3002,8 @@ This section explains the main commands for key management.
           card - if the card gets broken your secret key will be lost
           unless you have a backup somewhere.
 
-     bkuptocard 'file'
-          Restore the given file to a card.  This command may be used to
+     bkuptocard FILE
+          Restore the given FILE to a card.  This command may be used to
           restore a backup key (as generated during card initialization)
           to a new card.  In almost all cases this will be the
           encryption key.  You should use this command only with the
@@ -2931,6 +3064,15 @@ This section explains the main commands for key management.
           signatures from each user ID except for the most recent
           self-signature.
 
+     change-usage
+          Change the usage flags (capabilities) of the primary key or of
+          subkeys.  These usage flags (e.g.  Certify, Sign,
+          Authenticate, Encrypt) are set during key creation.  Sometimes
+          it is useful to have the opportunity to change them (for
+          example to add Authenticate) after they have been created.
+          Please take care when doing this; the allowed usage flags
+          depend on the key algorithm.
+
      cross-certify
           Add cross-certification signatures to signing subkeys that may
           not currently have them.  Cross-certification signatures
@@ -2946,50 +3088,30 @@ This section explains the main commands for key management.
           Quit the program without updating the keyrings.
 
      The listing shows you the key with its secondary keys and all user
-     ids.  The primary user id is indicated by a dot, and selected keys
-     or user ids are indicated by an asterisk.  The trust value is
-     displayed with the primary key: the first is the assigned owner
-     trust and the second is the calculated trust value.  Letters are
-     used for the values:
+     IDs.  The primary user ID is indicated by a dot, and selected keys
+     or user IDs are indicated by an asterisk.  The trust value is
+     displayed with the primary key: "trust" is the assigned owner trust
+     and "validity" is the calculated validity of the key.  Validity
+     values are also displayed for all user IDs.  For possible values of
+     trust, *note trust-values::.
 
-     -
-          No ownertrust assigned / not yet calculated.
-
-     e
-          Trust calculation has failed; probably due to an expired key.
-
-     q
-          Not enough information for calculation.
-
-     n
-          Never trust this key.
-
-     m
-          Marginally trusted.
-
-     f
-          Fully trusted.
-
-     u
-          Ultimately trusted.
-
-'--sign-key name'
+'--sign-key NAME'
      Signs a public key with your secret key.  This is a shortcut
      version of the subcommand "sign" from '--edit'.
 
-'--lsign-key name'
+'--lsign-key NAME'
      Signs a public key with your secret key but marks it as
      non-exportable.  This is a shortcut version of the subcommand
      "lsign" from '--edit-key'.
 
-'--quick-sign-key fpr [names]'
-'--quick-lsign-key fpr [names]'
+'--quick-sign-key FPR [NAMES]'
+'--quick-lsign-key FPR [NAMES]'
      Directly sign a key from the passphrase without any further user
-     interaction.  The 'fpr' must be the verified primary fingerprint of
-     a key in the local keyring.  If no 'names' are given, all useful
-     user ids are signed; with given ['names'] only useful user ids
-     matching one of theses names are signed.  By default, or if a name
-     is prefixed with a '*', a case insensitive substring match is used.
+     interaction.  The FPR must be the verified primary fingerprint of a
+     key in the local keyring.  If no NAMES are given, all useful user
+     ids are signed; with given [NAMES] only useful user ids matching
+     one of theses names are signed.  By default, or if a name is
+     prefixed with a '*', a case insensitive substring match is used.
      If a name is prefixed with a '=' a case sensitive exact match is
      done.
 
@@ -3010,18 +3132,27 @@ This section explains the main commands for key management.
      its form are applied.
 
 '--quick-revoke-uid USER-ID USER-ID-TO-REVOKE'
-     This command revokes a User ID on an existing key.  It cannot be
-     used to revoke the last User ID on key (some non-revoked User ID
+     This command revokes a user ID on an existing key.  It cannot be
+     used to revoke the last user ID on key (some non-revoked user ID
      must remain), with revocation reason "User ID is no longer valid".
      If you want to specify a different revocation reason, or to supply
      supplementary revocation text, you should use the interactive
      sub-command 'revuid' of '--edit-key'.
 
-'--change-passphrase USER_ID'
-'--passwd USER_ID'
+'--quick-set-primary-uid USER-ID PRIMARY-USER-ID'
+     This command sets or updates the primary user ID flag on an
+     existing key.  USER-ID specifies the key and PRIMARY-USER-ID the
+     user ID which shall be flagged as the primary user ID. The primary
+     user ID flag is removed from all other user ids and the timestamp
+     of all affected self-signatures is set one second ahead.
+
+'--change-passphrase USER-ID'
+'--passwd USER-ID'
      Change the passphrase of the secret key belonging to the
-     certificate specified as USER_ID.  This is a shortcut for the
-     sub-command 'passwd' of the edit key menu.
+     certificate specified as USER-ID.  This is a shortcut for the
+     sub-command 'passwd' of the edit key menu.  When using together
+     with the option '--dry-run' this will not actually change the
+     passphrase but check that the current passphrase is correct.
 
 
 File: gnupg.info,  Node: GPG Options,  Next: GPG Configuration,  Prev: GPG Commands,  Up: Invoking GPG
@@ -3107,7 +3238,7 @@ in the option file.
      g'/dev/null'.
 
      It is highly recommended to use this option along with the options
-     '--status-fd' and '--with-colons' for any unattended of 'gpg'.
+     '--status-fd' and '--with-colons' for any unattended use of 'gpg'.
 
 '--no-tty'
      Make sure that the TTY (terminal) is never used for any output.
@@ -3120,16 +3251,16 @@ in the option file.
 '--no'
      Assume "no" on most questions.
 
-'--list-options parameters'
+'--list-options PARAMETERS'
      This is a space or comma delimited string that gives options used
      when listing keys and signatures (that is, '--list-keys',
-     '--list-signatures', '--list-public-keys', '--list-secret-keys',
+     '--check-signatures', '--list-public-keys', '--list-secret-keys',
      and the '--edit-key' functions).  Options can be prepended with a
      'no-' (after the two dashes) to give the opposite meaning.  The
      options are:
 
      show-photos
-          Causes '--list-keys', '--list-signatures',
+          Causes '--list-keys', '--check-signatures',
           '--list-public-keys', and '--list-secret-keys' to display any
           photo IDs attached to the key.  Defaults to no.  See also
           '--photo-viewer'.  Does not work with '--with-colons': see
@@ -3143,19 +3274,18 @@ in the option file.
           'C'=certification, 'A'=authentication).  Defaults to yes.
 
      show-policy-urls
-          Show policy URLs in the '--list-signatures' or
-          '--check-signatures' listings.  Defaults to no.
+          Show policy URLs in the '--check-signatures' listings.
+          Defaults to no.
 
      show-notations
      show-std-notations
      show-user-notations
           Show all, IETF standard, or user-defined signature notations
-          in the '--list-signatures' or '--check-signatures' listings.
-          Defaults to no.
+          in the '--check-signatures' listings.  Defaults to no.
 
      show-keyserver-urls
-          Show any preferred keyserver URL in the '--list-signatures' or
-          '--check-signatures' listings.  Defaults to no.
+          Show any preferred keyserver URL in the '--check-signatures'
+          listings.  Defaults to no.
 
      show-uid-validity
           Display the calculated validity of user IDs during key
@@ -3175,17 +3305,20 @@ in the option file.
 
      show-sig-expire
           Show signature expiration dates (if any) during
-          '--list-signatures' or '--check-signatures' listings.
-          Defaults to no.
+          '--check-signatures' listings.  Defaults to no.
 
      show-sig-subpackets
           Include signature subpackets in the key listing.  This option
           can take an optional argument list of the subpackets to list.
           If no argument is passed, list all subpackets.  Defaults to
           no.  This option is only meaningful when using '--with-colons'
-          along with '--list-signatures' or '--check-signatures'.
+          along with '--check-signatures'.
 
-'--verify-options parameters'
+     show-only-fpr-mbox
+          For each valid user-id which also has a valid mail address
+          print only the fingerprint and the mail address.
+
+'--verify-options PARAMETERS'
      This is a space or comma delimited string that gives options used
      when verifying signatures.  Options can be prepended with a 'no-'
      to give the opposite meaning.  The options are:
@@ -3249,7 +3382,7 @@ in the option file.
      older versions of GnuPG also required this flag to allow the
      generation of DSA larger than 1024 bit.
 
-'--photo-viewer string'
+'--photo-viewer STRING'
      This is the command line that should be run to view a photo ID.
      "%i" will be expanded to a filename containing the photo.  "%I"
      does the same, except the file will not be deleted once the viewer
@@ -3267,16 +3400,16 @@ in the option file.
      STDIN". Note that if your image viewer program is not secure, then
      executing it from GnuPG does not make it secure.
 
-'--exec-path string'
+'--exec-path STRING'
      Sets a list of directories to search for photo viewers and
      keyserver helpers.  If not provided, keyserver helpers use the
      compiled-in default directory, and photo viewers use the 'PATH'
      environment variable.  Note, that on W32 system this value is
      ignored when searching for keyserver helpers.
 
-'--keyring file'
-     Add 'file' to the current list of keyrings.  If 'file' begins with
-     a tilde and a slash, these are replaced by the $HOME directory.  If
+'--keyring FILE'
+     Add FILE to the current list of keyrings.  If FILE begins with a
+     tilde and a slash, these are replaced by the $HOME directory.  If
      the filename does not contain a slash, it is assumed to be in the
      GnuPG home directory ("~/.gnupg" if '--homedir' or $GNUPGHOME is
      not used).
@@ -3285,21 +3418,21 @@ in the option file.
      is to use the specified keyring alone, use '--keyring' along with
      '--no-default-keyring'.
 
-     If the the option '--no-keyring' has been used no keyrings will be
-     used at all.
+     If the option '--no-keyring' has been used no keyrings will be used
+     at all.
 
-'--secret-keyring file'
+'--secret-keyring FILE'
      This is an obsolete option and ignored.  All secret keys are stored
      in the 'private-keys-v1.d' directory below the GnuPG home
      directory.
 
-'--primary-keyring file'
-     Designate 'file' as the primary public keyring.  This means that
+'--primary-keyring FILE'
+     Designate FILE as the primary public keyring.  This means that
      newly imported keys (via '--import' or keyserver '--recv-from')
      will go to this keyring.
 
-'--trustdb-name file'
-     Use 'file' instead of the default trustdb.  If 'file' begins with a
+'--trustdb-name FILE'
+     Use FILE instead of the default trustdb.  If FILE begins with a
      tilde and a slash, these are replaced by the $HOME directory.  If
      the filename does not contain a slash, it is assumed to be in the
      GnuPG home directory ('~/.gnupg' if '--homedir' or $GNUPGHOME is
@@ -3326,14 +3459,14 @@ in the option file.
      'ROOT/home' for the GnuPG home and 'ROOT/usr/local/var/cache/gnupg'
      for internal cache files.
 
-'--display-charset name'
+'--display-charset NAME'
      Set the name of the native character set.  This is used to convert
      some informational strings like user IDs to the proper UTF-8
      encoding.  Note that this has nothing to do with the character set
      of data to be encrypted or signed; GnuPG does not recode
      user-supplied data.  If this option is not used, the default
      character set is determined from the current locale.  A verbosity
-     level of 3 shows the chosen set.  Valid values for 'name' are:
+     level of 3 shows the chosen set.  Valid values for NAME are:
 
      iso-8859-1
           This is the Latin 1 set.
@@ -3359,26 +3492,26 @@ in the option file.
      These options affect all following arguments.  Both options may be
      used multiple times.
 
-'--options file'
-     Read options from 'file' and do not try to read them from the
-     default options file in the homedir (see '--homedir').  This option
-     is ignored if used in an options file.
+'--options FILE'
+     Read options from FILE and do not try to read them from the default
+     options file in the homedir (see '--homedir').  This option is
+     ignored if used in an options file.
 
 '--no-options'
      Shortcut for '--options /dev/null'.  This option is detected before
      an attempt to open an option file.  Using this option will also
      prevent the creation of a '~/.gnupg' homedir.
 
-'-z n'
-'--compress-level n'
-'--bzip2-compress-level n'
-     Set compression level to 'n' for the ZIP and ZLIB compression
+'-z N'
+'--compress-level N'
+'--bzip2-compress-level N'
+     Set compression level to N for the ZIP and ZLIB compression
      algorithms.  The default is to use the default compression level of
      zlib (normally 6).  '--bzip2-compress-level' sets the compression
      level for the BZIP2 compression algorithm (defaulting to 6 as
      well).  This is a different option from '--compress-level' since
      BZIP2 uses a significant amount of memory for each additional
-     compression level.  '-z' sets both.  A value of 0 for 'n' disables
+     compression level.  '-z' sets both.  A value of 0 for N disables
      compression.
 
 '--bzip2-decompress-lowmem'
@@ -3405,7 +3538,7 @@ in the option file.
      '--no-ask-cert-level' disables this option.  This option defaults
      to no.
 
-'--default-cert-level n'
+'--default-cert-level N'
      The default to use for the check level when signing a key.
 
      0 means you make no particular claim as to how carefully you
@@ -3440,14 +3573,14 @@ in the option file.
      disregards level 1 signatures.  Note that level 0 "no particular
      claim" signatures are always accepted.
 
-'--trusted-key long key ID'
+'--trusted-key LONG KEY ID'
      Assume that the specified key (which must be given as a full 8 byte
      key ID) is as trustworthy as one of your own secret keys.  This
      option is useful if you don't want to keep your secret keys (or one
      of them) online but still want to be able to check the validity of
      a given recipient's or signator's key.
 
-'--trust-model pgp|classic|tofu|tofu+pgp|direct|always|auto'
+'--trust-model {pgp|classic|tofu|tofu+pgp|direct|always|auto}'
      Set what trust model GnuPG should follow.  The models are:
 
      pgp
@@ -3461,10 +3594,14 @@ in the option file.
      tofu
           TOFU stands for Trust On First Use.  In this trust model, the
           first time a key is seen, it is memorized.  If later another
-          key is seen with a user id with the same email address, a
-          warning is displayed indicating that there is a conflict and
-          that the key might be a forgery and an attempt at a
-          man-in-the-middle attack.
+          key with a user id with the same email address is seen, both
+          keys are marked as suspect.  In that case, the next time
+          either is used, a warning is displayed describing the
+          conflict, why it might have occurred (either the user
+          generated a new key and failed to cross sign the old and new
+          keys, the key is forgery, or a man-in-the-middle attack is
+          being attempted), and the user is prompted to manually confirm
+          the validity of the key in question.
 
           Because a potential attacker is able to control the email
           address and thereby circumvent the conflict detection
@@ -3518,7 +3655,11 @@ in the option file.
 
      direct
           Key validity is set directly by the user and not calculated
-          via the Web of Trust.
+          via the Web of Trust.  This model is solely based on the key
+          and does not distinguish user IDs.  Note that when changing to
+          another trust model the trust values assigned to a key are
+          transformed into ownertrust values, which also indicate how
+          you trust the owner of the key to sign other keys.
 
      always
           Skip key validation and assume that used keys are always fully
@@ -3532,15 +3673,20 @@ in the option file.
      auto
           Select the trust model depending on whatever the internal
           trust database says.  This is the default model if such a
-          database already exists.
+          database already exists.  Note that a tofu trust model is not
+          considered here and must be enabled explicitly.
 
-'--auto-key-locate parameters'
+'--auto-key-locate MECHANISMS'
 '--no-auto-key-locate'
      GnuPG can automatically locate and retrieve keys as needed using
      this option.  This happens when encrypting to an email address (in
-     the "user@example.com" form), and there are no user@example.com
+     the "user@example.com" form), and there are no "user@example.com"
      keys on the local keyring.  This option takes any number of the
-     following mechanisms, in the order they are to be tried:
+     mechanisms listed below, in the order they are to be tried.
+     Instead of listing the mechanisms as comma delimited arguments, the
+     option may also be given several times to add more mechanism.  The
+     option '--no-auto-key-locate' or the mechanism "clear" resets the
+     list.  The default is "local,wkd".
 
      cert
           Locate a key using DNS CERT, as specified in RFC-4398.
@@ -3553,8 +3699,7 @@ in the option file.
           draft-ietf-dane-openpgpkey-05.txt.
 
      wkd
-          Locate a key using the Web Key Directory protocol.  This is an
-          experimental method and semantics may change.
+          Locate a key using the Web Key Directory protocol.
 
      ldap
           Using DNS Service Discovery, check the domain in question for
@@ -3584,16 +3729,18 @@ in the option file.
 
      clear
           Clear all defined mechanisms.  This is useful to override
-          mechanisms given in a config file.
+          mechanisms given in a config file.  Note that a 'nodefault' in
+          MECHANISMS will also be cleared unless it is given after the
+          'clear'.
 
 '--auto-key-retrieve'
 '--no-auto-key-retrieve'
-     This option enables the automatic retrieving of keys from a
-     keyserver when verifying signatures made by keys that are not on
-     the local keyring.
+     These options enable or disable the automatic retrieving of keys
+     from a keyserver when verifying signatures made by keys that are
+     not on the local keyring.  The default is '--no-auto-key-retrieve'.
 
      If the method "wkd" is included in the list of methods given to
-     'auto-key-locate', the Signer's User ID is part of the signature,
+     'auto-key-locate', the signer's user ID is part of the signature,
      and the option '--disable-signer-uid' is not used, the "wkd" method
      may also be used to retrieve a key.
 
@@ -3604,7 +3751,7 @@ in the option file.
      operator can tell both your IP address and the time when you
      verified the signature.
 
-'--keyid-format none|short|0xshort|long|0xlong'
+'--keyid-format {none|short|0xshort|long|0xlong}'
      Select how to display key IDs.  "none" does not show the key ID at
      all but shows the fingerprint in a separate line.  "short" is the
      traditional 8-character key ID. "long" is the more accurate (but
@@ -3613,14 +3760,14 @@ in the option file.
      Note that this option is ignored if the option '--with-colons' is
      used.
 
-'--keyserver name'
+'--keyserver NAME'
      This option is deprecated - please use the '--keyserver' in
      'dirmngr.conf' instead.
 
-     Use 'name' as your keyserver.  This is the server that
+     Use NAME as your keyserver.  This is the server that
      '--receive-keys', '--send-keys', and '--search-keys' will
      communicate with to receive keys from, send keys to, and search for
-     keys on.  The format of the 'name' is a URI:
+     keys on.  The format of the NAME is a URI:
      'scheme:[//]keyservername[:port]' The scheme is the type of
      keyserver: "hkp" for the HTTP (or compatible) keyservers, "ldap"
      for the LDAP keyservers, or "mailto" for the Graff email keyserver.
@@ -3636,7 +3783,7 @@ in the option file.
      'hkp://keys.gnupg.net' uses round robin DNS to give a different
      keyserver each time you use it.
 
-'--keyserver-options name=value'
+'--keyserver-options {NAME=VALUE}'
      This is a space or comma delimited string that gives options for
      the keyserver.  Options can be prefixed with a 'no-' to give the
      opposite meaning.  Valid import-options or export-options may be
@@ -3660,7 +3807,8 @@ in the option file.
           option is not used with HKP keyservers.
 
      auto-key-retrieve
-          This is the same as the option 'auto-key-retrieve'.
+          This is an obsolete alias for the option 'auto-key-retrieve'.
+          Please do not use it; it will be removed in future versions..
 
      honor-keyserver-url
           When using '--refresh-keys', if the key in question has a
@@ -3691,7 +3839,7 @@ in the option file.
           key retrieval, and not to the '--receive-keys' command as a
           whole.  Defaults to 30 seconds.
 
-     http-proxy='value'
+     http-proxy=VALUE
           This option is deprecated.  Set the proxy to use for HTTP and
           HKP keyservers.  This overrides any proxy defined in
           'dirmngr.conf'.
@@ -3712,19 +3860,19 @@ in the option file.
           This option has no more function since GnuPG 2.1.  Use the
           'dirmngr' configuration options instead.
 
-'--completes-needed n'
+'--completes-needed N'
      Number of completely trusted users to introduce a new key signer
      (defaults to 1).
 
-'--marginals-needed n'
+'--marginals-needed N'
      Number of marginally trusted users to introduce a new key signer
      (defaults to 3)
 
-'--tofu-default-policy auto|good|unknown|bad|ask'
+'--tofu-default-policy {auto|good|unknown|bad|ask}'
      The default TOFU policy (defaults to 'auto').  For more information
      about the meaning of this option, *note trust-model-tofu::.
 
-'--max-cert-depth n'
+'--max-cert-depth N'
      Maximum depth of a certification chain (default is 5).
 
 '--no-sig-cache'
@@ -3761,6 +3909,9 @@ in the option file.
      Specify a dirmngr program to be used for keyserver access.  The
      default value is '/usr/local/bin/dirmngr'.
 
+'--disable-dirmngr'
+     Entirely disable the use of the Dirmngr.
+
 '--no-autostart'
      Do not start the gpg-agent or the dirmngr if it has not yet been
      started and its service is required.  This option is mostly useful
@@ -3792,8 +3943,8 @@ in the option file.
      '--enable-progress-filter' may be used to cleanly cancel long
      running gpg operations.
 
-'--limit-card-insert-tries n'
-     With 'n' greater than 0 the number of prompts asking to insert a
+'--limit-card-insert-tries N'
+     With N greater than 0 the number of prompts asking to insert a
      smartcard gets limited to N-1.  Thus with a value of 1 gpg won't at
      all ask to insert a card if none has been inserted at startup.
      This option is useful in the configuration file in case an
@@ -3824,9 +3975,6 @@ in the option file.
      place an unsafe gpg.conf file in place, and use this file to
      suppress warnings about itself.  The '--homedir' permissions
      warning may only be suppressed on the command line.
-
-'--no-mdc-warning'
-     Suppress the warning about missing MDC integrity protection.
 
 '--require-secmem'
 '--no-require-secmem'
@@ -3884,7 +4032,7 @@ File: gnupg.info,  Node: GPG Key related Options,  Next: GPG Input and Output,  
      of a file containing exactly one key.  'gpg' assumes that the key
      in this file is fully valid.
 
-'--encrypt-to name'
+'--encrypt-to NAME'
      Same as '--recipient' but this one is intended for use in the
      options file and may be used with your own user-id as an
      "encrypt-to-self".  These keys are only used when there are other
@@ -3892,7 +4040,7 @@ File: gnupg.info,  Node: GPG Key related Options,  Next: GPG Input and Output,  
      user id.  No trust checking is performed for these user ids and
      even disabled keys can be used.
 
-'--hidden-encrypt-to name'
+'--hidden-encrypt-to NAME'
      Same as '--hidden-recipient' but this one is intended for use in
      the options file and may be used with your own user-id as a hidden
      "encrypt-to-self".  These keys are only used when there are other
@@ -3904,7 +4052,7 @@ File: gnupg.info,  Node: GPG Key related Options,  Next: GPG Input and Output,  
      Disable the use of all '--encrypt-to' and '--hidden-encrypt-to'
      keys.
 
-'--group name=value'
+'--group {NAME=VALUE}'
      Sets up a named group, which is similar to aliases in email
      programs.  Any time the group name is a recipient ('-r' or
      '--recipient'), it will be expanded to the values specified.
@@ -3919,7 +4067,7 @@ File: gnupg.info,  Node: GPG Key related Options,  Next: GPG Input and Output,  
      argument to this option to prevent the shell from treating it as
      multiple arguments.
 
-'--ungroup name'
+'--ungroup NAME'
      Remove a given entry from the '--group' list.
 
 '--no-groups'
@@ -3960,9 +4108,9 @@ File: gnupg.info,  Node: GPG Key related Options,  Next: GPG Input and Output,  
 '--no-skip-hidden-recipients'
      During decryption skip all anonymous recipients.  This option helps
      in the case that people use the hidden recipients feature to hide
-     there own encrypt-to key from others.  If oneself has many secret
-     keys this may lead to a major annoyance because all keys are tried
-     in turn to decrypt something which was not really intended for it.
+     their own encrypt-to key from others.  If one has many secret keys
+     this may lead to a major annoyance because all keys are tried in
+     turn to decrypt something which was not really intended for it.
      The drawback of this option is that it is currently not possible to
      decrypt a message which includes real anonymous recipients.
 
@@ -3984,7 +4132,7 @@ File: gnupg.info,  Node: GPG Input and Output,  Next: OpenPGP Options,  Prev: GP
 '-o FILE'
      Write output to FILE.  To write to stdout use '-' as the filename.
 
-'--max-output n'
+'--max-output N'
      This option sets a limit on the number of bytes that will be
      generated when processing a file.  Since OpenPGP supports various
      levels of compression, it is possible that the plaintext of a given
@@ -4002,7 +4150,15 @@ File: gnupg.info,  Node: GPG Input and Output,  Next: OpenPGP Options,  Prev: GP
      by the '--status-fd' line "PROGRESS" to provide a value for "total"
      if that is not available by other means.
 
-'--import-options parameters'
+'--key-origin STRING[,URL]'
+     gpg can track the origin of a key.  Certain origins are implicitly
+     known (e.g.  keyserver, web key directory) and set.  For a standard
+     import the origin of the keys imported can be set with this option.
+     To list the possible values use "help" for STRING.  Some origins
+     can store an optional URL argument.  That URL can appended to
+     STRING after a comma.
+
+'--import-options PARAMETERS'
      This is a space or comma delimited string that gives options for
      importing keys.  Options can be prepended with a 'no-' to give the
      opposite meaning.  The options are:
@@ -4031,9 +4187,13 @@ File: gnupg.info,  Node: GPG Input and Output,  Next: OpenPGP Options,  Prev: GP
           '--receive-keys'.
 
      import-show
+     show-only
           Show a listing of the key as imported right before it is
           stored.  This can be combined with the option '--dry-run' to
-          only look at keys.
+          only look at keys; the option 'show-only' is a shortcut for
+          this combination.  The command '--show-keys' is another
+          shortcut for this.  Note that suffixes like '#' for "sec" and
+          "sbb" lines may or may not be printed.
 
      import-export
           Run the entire import code but instead of storing the key to
@@ -4055,6 +4215,10 @@ File: gnupg.info,  Node: GPG Input and Output,  Next: OpenPGP Options,  Prev: GP
           as running the '--edit-key' command "clean" after import.
           Defaults to no.
 
+     repair-keys. After import, fix various problems with the
+          keys.  For example, this reorders signatures, and strips
+          duplicate signatures.  Defaults to yes.
+
      import-minimal
           Import the smallest key possible.  This removes all signatures
           except the most recent self-signature on each user ID. This
@@ -4067,8 +4231,8 @@ File: gnupg.info,  Node: GPG Input and Output,  Next: OpenPGP Options,  Prev: GP
           usually skipped during import; including all GnuPG specific
           data.  All other contradicting options are overridden.
 
-'--import-filter NAME=EXPR'
-'--export-filter NAME=EXPR'
+'--import-filter {NAME=EXPR}'
+'--export-filter {NAME=EXPR}'
      These options define an import/export filter which are applied to
      the imported/exported keyblock right before it will be
      stored/written.  NAME defines the type of filter to use, EXPR the
@@ -4117,14 +4281,32 @@ File: gnupg.info,  Node: GPG Input and Output,  Next: OpenPGP Options,  Prev: GP
           Boolean indicating whether the user id is the primary one.
           (keep-uid)
 
+     expired
+          Boolean indicating whether a user id (keep-uid), a key
+          (drop-subkey), or a signature (drop-sig) expired.
+
+     revoked
+          Boolean indicating whether a user id (keep-uid) or a key
+          (drop-subkey) has been revoked.
+
+     disabled
+          Boolean indicating whether a primary key is disabled.  (not
+          used)
+
      secret
           Boolean indicating whether a key or subkey is a secret one.
-          drop-subkey)
+          (drop-subkey)
+
+     usage
+          A string indicating the usage flags for the subkey, from the
+          sequence "ecsa?".  For example, a subkey capable of just
+          signing and authentication would be an exact match for "sa".
+          (drop-subkey)
 
      sig_created
      sig_created_d
           The first is the timestamp a signature packet was created.
-          The second is the same but given as an ISO string, e.g.
+          The second is the same but given as an ISO date string, e.g.
           "2016-08-17".  (drop-sig)
 
      sig_algo
@@ -4135,7 +4317,7 @@ File: gnupg.info,  Node: GPG Input and Output,  Next: OpenPGP Options,  Prev: GP
           A number with the digest algorithm of a signature packet.
           (drop-sig)
 
-'--export-options parameters'
+'--export-options PARAMETERS'
      This is a space or comma delimited string that gives options for
      exporting keys.  Options can be prepended with a 'no-' to give the
      opposite meaning.  The options are:
@@ -4146,10 +4328,10 @@ File: gnupg.info,  Node: GPG Input and Output,  Next: OpenPGP Options,  Prev: GP
           Defaults to no.
 
      export-attributes
-          Include attribute user IDs (photo IDs) while exporting.  This
-          is useful to export keys if they are going to be used by an
-          OpenPGP program that does not accept attribute user IDs.
-          Defaults to yes.
+          Include attribute user IDs (photo IDs) while exporting.  Not
+          including attribute user IDs is useful to export keys that are
+          going to be used by an OpenPGP program that does not accept
+          attribute user IDs.  Defaults to yes.
 
      export-sensitive-revkeys
           Include designated revoker information that was marked as
@@ -4230,6 +4412,12 @@ File: gnupg.info,  Node: GPG Input and Output,  Next: OpenPGP Options,  Prev: GP
      Include the keygrip in the key listings.  In '--with-colons' mode
      this is implicitly enable for secret keys.
 
+'--with-key-origin'
+     Include the locally held information on the origin and last update
+     of a key in a key listing.  In '--with-colons' mode this is always
+     printed.  This data is currently experimental and shall not be
+     considered part of the stable API.
+
 '--with-wkd-hash'
      Print a Web Key Directory identifier along with each user ID in key
      listings.  This is an experimental feature and semantics may
@@ -4263,15 +4451,11 @@ File: gnupg.info,  Node: OpenPGP Options,  Next: Compliance Options,  Prev: GPG 
      These options are obsolete and have no effect since GnuPG 2.1.
 
 '--force-mdc'
-     Force the use of encryption with a modification detection code.
-     This is always used with the newer ciphers (those with a blocksize
-     greater than 64 bits), or if all of the recipient keys indicate MDC
-     support in their feature flags.
-
 '--disable-mdc'
-     Disable the use of the modification detection code.  Note that by
-     using this option, the encrypted message becomes vulnerable to a
-     message modification attack.
+     These options are obsolete and have no effect since GnuPG 2.2.8.
+     The MDC is always used.  But note: If the creation of a legacy
+     non-MDC message is exceptionally required, the option '--rfc2440'
+     allows for this.
 
 '--disable-signer-uid'
      By default the user ID of the signing key is embedded in the data
@@ -4280,8 +4464,8 @@ File: gnupg.info,  Node: OpenPGP Options,  Next: Compliance Options,  Prev: GPG 
      can be helpful for verifier to locate the key; see option
      '--auto-key-retrieve'.
 
-'--personal-cipher-preferences string'
-     Set the list of personal cipher preferences to 'string'.  Use 'gpg
+'--personal-cipher-preferences STRING'
+     Set the list of personal cipher preferences to STRING.  Use 'gpg
      --version' to get a list of available algorithms, and use 'none' to
      set no preference at all.  This allows the user to safely override
      the algorithm chosen by the recipient key preferences, as GPG will
@@ -4289,8 +4473,8 @@ File: gnupg.info,  Node: OpenPGP Options,  Next: Compliance Options,  Prev: GPG 
      most highly ranked cipher in this list is also used for the
      '--symmetric' encryption command.
 
-'--personal-digest-preferences string'
-     Set the list of personal digest preferences to 'string'.  Use 'gpg
+'--personal-digest-preferences STRING'
+     Set the list of personal digest preferences to STRING.  Use 'gpg
      --version' to get a list of available algorithms, and use 'none' to
      set no preference at all.  This allows the user to safely override
      the algorithm chosen by the recipient key preferences, as GPG will
@@ -4298,8 +4482,8 @@ File: gnupg.info,  Node: OpenPGP Options,  Next: Compliance Options,  Prev: GPG 
      most highly ranked digest algorithm in this list is also used when
      signing without encryption (e.g.  '--clear-sign' or '--sign').
 
-'--personal-compress-preferences string'
-     Set the list of personal compression preferences to 'string'.  Use
+'--personal-compress-preferences STRING'
+     Set the list of personal compression preferences to STRING.  Use
      'gpg --version' to get a list of available algorithms, and use
      'none' to set no preference at all.  This allows the user to safely
      override the algorithm chosen by the recipient key preferences, as
@@ -4308,23 +4492,23 @@ File: gnupg.info,  Node: OpenPGP Options,  Next: Compliance Options,  Prev: GPG 
      used when there are no recipient keys to consider (e.g.
      '--symmetric').
 
-'--s2k-cipher-algo name'
-     Use 'name' as the cipher algorithm for symmetric encryption with a
+'--s2k-cipher-algo NAME'
+     Use NAME as the cipher algorithm for symmetric encryption with a
      passphrase if '--personal-cipher-preferences' and '--cipher-algo'
      are not given.  The default is AES-128.
 
-'--s2k-digest-algo name'
-     Use 'name' as the digest algorithm used to mangle the passphrases
-     for symmetric encryption.  The default is SHA-1.
+'--s2k-digest-algo NAME'
+     Use NAME as the digest algorithm used to mangle the passphrases for
+     symmetric encryption.  The default is SHA-1.
 
-'--s2k-mode n'
-     Selects how passphrases for symmetric encryption are mangled.  If
-     'n' is 0 a plain passphrase (which is in general not recommended)
-     will be used, a 1 adds a salt (which should not be used) to the
+'--s2k-mode N'
+     Selects how passphrases for symmetric encryption are mangled.  If N
+     is 0 a plain passphrase (which is in general not recommended) will
+     be used, a 1 adds a salt (which should not be used) to the
      passphrase and a 3 (the default) iterates the whole process a
      number of times (see '--s2k-count').
 
-'--s2k-count n'
+'--s2k-count N'
      Specify how many times the passphrases mangling for symmetric
      encryption is repeated.  This value may range between 1024 and
      65011712 inclusive.  The default is inquired from gpg-agent.  Note
@@ -4371,7 +4555,10 @@ OPENPGP PROGRAMS section below before using one of these options.
 
 '--rfc2440'
      Reset all packet, cipher and digest options to strict RFC-2440
-     behavior.
+     behavior.  Note that by using this option encryption packets are
+     created in a legacy mode without MDC protection.  This is dangerous
+     and should thus only be used for experiments.  See also option
+     '--ignore-mdc-error'.
 
 '--pgp6'
      Set up all options to be as PGP 6 compliant as possible.  This
@@ -4381,7 +4568,7 @@ OPENPGP PROGRAMS section below before using one of these options.
      '--throw-keyids', and making signatures with signing subkeys as PGP
      6 does not understand signatures made by signing subkeys.
 
-     This option implies '--disable-mdc --escape-from-lines'.
+     This option implies '--escape-from-lines'.
 
 '--pgp7'
      Set up all options to be as PGP 7 compliant as possible.  This is
@@ -4474,35 +4661,35 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
      frontends to display a progress indicator while gpg is processing
      larger files.  There is a slight performance overhead using it.
 
-'--status-fd n'
-     Write special status strings to the file descriptor 'n'.  See the
+'--status-fd N'
+     Write special status strings to the file descriptor N.  See the
      file DETAILS in the documentation for a listing of them.
 
-'--status-file file'
+'--status-file FILE'
      Same as '--status-fd', except the status data is written to file
-     'file'.
+     FILE.
 
-'--logger-fd n'
-     Write log output to file descriptor 'n' and not to STDERR.
+'--logger-fd N'
+     Write log output to file descriptor N and not to STDERR.
 
-'--log-file file'
-'--logger-file file'
+'--log-file FILE'
+'--logger-file FILE'
      Same as '--logger-fd', except the logger data is written to file
-     'file'.  Use 'socket://' to log to socket.
+     FILE.  Use 'socket://' to log to s socket.
 
-'--attribute-fd n'
-     Write attribute subpackets to the file descriptor 'n'.  This is
-     most useful for use with '--status-fd', since the status messages
-     are needed to separate out the various subpackets from the stream
+'--attribute-fd N'
+     Write attribute subpackets to the file descriptor N.  This is most
+     useful for use with '--status-fd', since the status messages are
+     needed to separate out the various subpackets from the stream
      delivered to the file descriptor.
 
-'--attribute-file file'
+'--attribute-file FILE'
      Same as '--attribute-fd', except the attribute data is written to
-     file 'file'.
+     file FILE.
 
-'--comment string'
+'--comment STRING'
 '--no-comments'
-     Use 'string' as a comment string in cleartext signatures and ASCII
+     Use STRING as a comment string in cleartext signatures and ASCII
      armored messages or keys (see '--armor').  The default behavior is
      not to use a comment string.  '--comment' may be repeated multiple
      times to get multiple comment strings.  '--no-comments' removes all
@@ -4520,22 +4707,21 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
      identification is also emitted.  '--no-emit-version' (default)
      disables the version line.
 
-'--sig-notation name=value'
-'--cert-notation name=value'
-'-N, --set-notation name=value'
-     Put the name value pair into the signature as notation data.
-     'name' must consist only of printable characters or spaces, and
-     must contain a '@' character in the form keyname@domain.example.com
+'--sig-notation {NAME=VALUE}'
+'--cert-notation {NAME=VALUE}'
+'-N, --set-notation {NAME=VALUE}'
+     Put the name value pair into the signature as notation data.  NAME
+     must consist only of printable characters or spaces, and must
+     contain a '@' character in the form keyname@domain.example.com
      (substituting the appropriate keyname and domain name, of course).
      This is to help prevent pollution of the IETF reserved notation
-     namespace.  The '--expert' flag overrides the '@' check.  'value'
-     may be any printable string; it will be encoded in UTF-8, so you
-     should check that your '--display-charset' is set correctly.  If
-     you prefix 'name' with an exclamation mark (!), the notation data
-     will be flagged as critical (rfc4880:5.2.3.16).  '--sig-notation'
-     sets a notation for data signatures.  '--cert-notation' sets a
-     notation for key signatures (certifications).  '--set-notation'
-     sets both.
+     namespace.  The '--expert' flag overrides the '@' check.  VALUE may
+     be any printable string; it will be encoded in UTF-8, so you should
+     check that your '--display-charset' is set correctly.  If you
+     prefix NAME with an exclamation mark (!), the notation data will be
+     flagged as critical (rfc4880:5.2.3.16).  '--sig-notation' sets a
+     notation for data signatures.  '--cert-notation' sets a notation
+     for key signatures (certifications).  '--set-notation' sets both.
 
      There are special codes that may be used in notation names.  "%k"
      will be expanded into the key ID of the key being signed, "%K" into
@@ -4550,10 +4736,17 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
      signature (certification), and %c is only meaningful when using the
      OpenPGP smartcard.
 
-'--sig-policy-url string'
-'--cert-policy-url string'
-'--set-policy-url string'
-     Use 'string' as a Policy URL for signatures (rfc4880:5.2.3.20).  If
+'--known-notation NAME'
+     Adds NAME to a list of known critical signature notations.  The
+     effect of this is that gpg will not mark a signature with a
+     critical signature notation of that name as bad.  Note that gpg
+     already knows by default about a few critical signatures notation
+     names.
+
+'--sig-policy-url STRING'
+'--cert-policy-url STRING'
+'--set-policy-url STRING'
+     Use STRING as a Policy URL for signatures (rfc4880:5.2.3.20).  If
      you prefix it with an exclamation mark (!), the policy URL packet
      will be flagged as critical.  '--sig-policy-url' sets a policy url
      for data signatures.  '--cert-policy-url' sets a policy url for key
@@ -4562,18 +4755,18 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
      The same %-expandos used for notation data are available here as
      well.
 
-'--sig-keyserver-url string'
-     Use 'string' as a preferred keyserver URL for data signatures.  If
+'--sig-keyserver-url STRING'
+     Use STRING as a preferred keyserver URL for data signatures.  If
      you prefix it with an exclamation mark (!), the keyserver URL
      packet will be flagged as critical.
 
      The same %-expandos used for notation data are available here as
      well.
 
-'--set-filename string'
-     Use 'string' as the filename which is stored inside messages.  This
+'--set-filename STRING'
+     Use STRING as the filename which is stored inside messages.  This
      overrides the default, which is to use the actual filename of the
-     file being encrypted.  Using the empty string for 'string'
+     file being encrypted.  Using the empty string for STRING
      effectively removes the filename from the output.
 
 '--for-your-eyes-only'
@@ -4591,24 +4784,24 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
      be a dangerous option as it enables overwriting files.  Defaults to
      no.
 
-'--cipher-algo name'
-     Use 'name' as cipher algorithm.  Running the program with the
-     command '--version' yields a list of supported algorithms.  If this
-     is not used the cipher algorithm is selected from the preferences
-     stored with the key.  In general, you do not want to use this
-     option as it allows you to violate the OpenPGP standard.
+'--cipher-algo NAME'
+     Use NAME as cipher algorithm.  Running the program with the command
+     '--version' yields a list of supported algorithms.  If this is not
+     used the cipher algorithm is selected from the preferences stored
+     with the key.  In general, you do not want to use this option as it
+     allows you to violate the OpenPGP standard.
      '--personal-cipher-preferences' is the safe way to accomplish the
      same thing.
 
-'--digest-algo name'
-     Use 'name' as the message digest algorithm.  Running the program
-     with the command '--version' yields a list of supported algorithms.
-     In general, you do not want to use this option as it allows you to
+'--digest-algo NAME'
+     Use NAME as the message digest algorithm.  Running the program with
+     the command '--version' yields a list of supported algorithms.  In
+     general, you do not want to use this option as it allows you to
      violate the OpenPGP standard.  '--personal-digest-preferences' is
      the safe way to accomplish the same thing.
 
-'--compress-algo name'
-     Use compression algorithm 'name'.  "zlib" is RFC-1950 ZLIB
+'--compress-algo NAME'
+     Use compression algorithm NAME.  "zlib" is RFC-1950 ZLIB
      compression.  "zip" is RFC-1951 ZIP compression which is used by
      PGP. "bzip2" is a more modern compression scheme that can compress
      some things better than zip or zlib, but at the cost of more memory
@@ -4630,21 +4823,21 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
      '--personal-compress-preferences' is the safe way to accomplish the
      same thing.
 
-'--cert-digest-algo name'
-     Use 'name' as the message digest algorithm used when signing a key.
+'--cert-digest-algo NAME'
+     Use NAME as the message digest algorithm used when signing a key.
      Running the program with the command '--version' yields a list of
      supported algorithms.  Be aware that if you choose an algorithm
      that GnuPG supports but other OpenPGP implementations do not, then
      some users will not be able to use the key signatures you make, or
      quite possibly your entire key.
 
-'--disable-cipher-algo name'
-     Never allow the use of 'name' as cipher algorithm.  The given name
+'--disable-cipher-algo NAME'
+     Never allow the use of NAME as cipher algorithm.  The given name
      will not be checked so that a later loaded algorithm will still get
      disabled.
 
-'--disable-pubkey-algo name'
-     Never allow the use of 'name' as public key algorithm.  The given
+'--disable-pubkey-algo NAME'
+     Never allow the use of NAME as public key algorithm.  The given
      name will not be checked so that a later loaded algorithm will
      still get disabled.
 
@@ -4675,39 +4868,44 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
      signature.  Note that all other PGP versions do it this way too.
      Enabled by default.  '--no-escape-from-lines' disables this option.
 
-'--passphrase-repeat n'
+'--passphrase-repeat N'
      Specify how many times 'gpg' will request a new passphrase be
      repeated.  This is useful for helping memorize a passphrase.
      Defaults to 1 repetition.
 
-'--passphrase-fd n'
-     Read the passphrase from file descriptor 'n'.  Only the first line
-     will be read from file descriptor 'n'.  If you use 0 for 'n', the
+'--passphrase-fd N'
+     Read the passphrase from file descriptor N.  Only the first line
+     will be read from file descriptor N.  If you use 0 for N, the
      passphrase will be read from STDIN. This can only be used if only
      one passphrase is supplied.
 
-     Note that this passphrase is only used if the option '--batch' has
-     also been given.  This is different from GnuPG version 1.x.
+     Note that since Version 2.0 this passphrase is only used if the
+     option '--batch' has also been given.  Since Version 2.1 the
+     '--pinentry-mode' also needs to be set to 'loopback'.
 
-'--passphrase-file file'
-     Read the passphrase from file 'file'.  Only the first line will be
-     read from file 'file'.  This can only be used if only one
-     passphrase is supplied.  Obviously, a passphrase stored in a file
-     is of questionable security if other users can read this file.
-     Don't use this option if you can avoid it.  Note that this
-     passphrase is only used if the option '--batch' has also been
-     given.  This is different from GnuPG version 1.x.
+'--passphrase-file FILE'
+     Read the passphrase from file FILE.  Only the first line will be
+     read from file FILE.  This can only be used if only one passphrase
+     is supplied.  Obviously, a passphrase stored in a file is of
+     questionable security if other users can read this file.  Don't use
+     this option if you can avoid it.
 
-'--passphrase string'
-     Use 'string' as the passphrase.  This can only be used if only one
+     Note that since Version 2.0 this passphrase is only used if the
+     option '--batch' has also been given.  Since Version 2.1 the
+     '--pinentry-mode' also needs to be set to 'loopback'.
+
+'--passphrase STRING'
+     Use STRING as the passphrase.  This can only be used if only one
      passphrase is supplied.  Obviously, this is of very questionable
      security on a multi-user system.  Don't use this option if you can
-     avoid it.  Note that this passphrase is only used if the option
-     '--batch' has also been given.  This is different from GnuPG
-     version 1.x.
+     avoid it.
 
-'--pinentry-mode mode'
-     Set the pinentry mode to 'mode'.  Allowed values for 'mode' are:
+     Note that since Version 2.0 this passphrase is only used if the
+     option '--batch' has also been given.  Since Version 2.1 the
+     '--pinentry-mode' also needs to be set to 'loopback'.
+
+'--pinentry-mode MODE'
+     Set the pinentry mode to MODE.  Allowed values for MODE are:
      default
           Use the default of the agent, which is 'ask'.
      ask
@@ -4721,16 +4919,29 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
           contrast to Pinentry the user is not prompted again if he
           enters a bad password.
 
-'--command-fd n'
+'--no-symkey-cache'
+     Disable the passphrase cache used for symmetrical en- and
+     decryption.  This cache is based on the message specific salt value
+     (cf.  '--s2k-mode').
+
+'--request-origin ORIGIN'
+     Tell gpg to assume that the operation ultimately originated at
+     ORIGIN.  Depending on the origin certain restrictions are applied
+     and the Pinentry may include an extra note on the origin.
+     Supported values for ORIGIN are: 'local' which is the default,
+     'remote' to indicate a remote origin or 'browser' for an operation
+     requested by a web browser.
+
+'--command-fd N'
      This is a replacement for the deprecated shared-memory IPC mode.
      If this option is enabled, user input on questions is not expected
      from the TTY but from the given file descriptor.  It should be used
      together with '--status-fd'.  See the file doc/DETAILS in the
      source distribution for details on how to use it.
 
-'--command-file file'
+'--command-file FILE'
      Same as '--command-fd', except the commands are read out of file
-     'file'
+     FILE
 
 '--allow-non-selfsigned-uid'
 '--no-allow-non-selfsigned-uid'
@@ -4767,11 +4978,12 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
 
 '--ignore-mdc-error'
      This option changes a MDC integrity protection failure into a
-     warning.  This can be useful if a message is partially corrupt, but
-     it is necessary to get as much data as possible out of the corrupt
-     message.  However, be aware that a MDC protection failure may also
-     mean that the message was tampered with intentionally by an
-     attacker.
+     warning.  It is required to decrypt old messages which did not use
+     an MDC. It may also be useful if a message is partially garbled,
+     but it is necessary to get as much data as possible out of that
+     garbled message.  Be aware that a missing or failed MDC can be an
+     indication of an attack.  Use with great caution; see also option
+     '--rfc2440'.
 
 '--allow-weak-digest-algos'
      Signatures made with known-weak digest algorithms are normally
@@ -4781,7 +4993,7 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
      default.  See also '--weak-digest' to reject other digest
      algorithms.
 
-'--weak-digest name'
+'--weak-digest NAME'
      Treat the specified digest algorithm as weak.  Signatures made over
      weak digests algorithms are normally rejected.  This option can be
      supplied multiple times if multiple algorithms should be considered
@@ -4806,6 +5018,18 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
 '--with-key-data'
      Print key listings delimited by colons (like '--with-colons') and
      print the public key data.
+
+'--list-signatures'
+'--list-sigs'
+     Same as '--list-keys', but the signatures are listed too.  This
+     command has the same effect as using '--list-keys' with
+     '--with-sig-list'.  Note that in contrast to '--check-signatures'
+     the key signatures are not verified.  This command can be used to
+     create a list of signing keys missing in the lcoal keyring; for
+     example:
+
+                gpg --list-sigs --with-colons USERID | \
+                  awk -F: '$1=="sig" && $2=="?" {if($13){print $13}else{print $5}}'
 
 '--fast-list-mode'
      Changes the output of the list commands to work faster; this is
@@ -4838,17 +5062,18 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
      an inappropriate plaintext so they can take action against the
      offending user.
 
-'--override-session-key string'
-'--override-session-key-fd fd'
-     Don't use the public key but the session key 'string' respective
-     the session key taken from the first line read from file descriptor
-     'fd'.  The format of this string is the same as the one printed by
+'--override-session-key STRING'
+'--override-session-key-fd FD'
+     Don't use the public key but the session key STRING respective the
+     session key taken from the first line read from file descriptor FD.
+     The format of this string is the same as the one printed by
      '--show-session-key'.  This option is normally not used but comes
      handy in case someone forces you to reveal the content of an
      encrypted message; using this option you can do this without
      handing out the secret key.  Note that using
      '--override-session-key' may reveal the session key to all local
-     users via the global process table.
+     users via the global process table.  Often it is useful to combine
+     this option with '--no-keyring'.
 
 '--ask-sig-expire'
 '--no-ask-sig-expire'
@@ -4880,9 +5105,14 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
 
 '--default-new-key-algo STRING'
      This option can be used to change the default algorithms for key
-     generation.  Note that the advanced key generation commands can
-     always be used to specify a key algorithm directly.  Please consult
-     the source code to learn the syntax of STRING.
+     generation.  The STRING is similar to the arguments required for
+     the command '--quick-add-key' but slightly different.  For example
+     the current default of '"rsa2048/cert,sign+rsa2048/encr"' (or
+     '"rsa3072"') can be changed to the value of what we currently call
+     future default, which is '"ed25519/cert,sign+cv25519/encr"'.  You
+     need to consult the source code to learn the details.  Note that
+     the advanced key generation commands can always be used to specify
+     a key algorithm directly.
 
 '--allow-secret-key-import'
      This is an obsolete option and is not used anywhere.
@@ -4911,15 +5141,15 @@ File: gnupg.info,  Node: GPG Esoteric Options,  Next: Deprecated Options,  Prev:
      read/write only.  Use this option only if you really know what you
      are doing.
 
-'--default-preference-list string'
-     Set the list of default preferences to 'string'.  This preference
+'--default-preference-list STRING'
+     Set the list of default preferences to STRING.  This preference
      list is used for new keys and becomes the default for "setpref" in
      the edit menu.
 
-'--default-keyserver-url name'
-     Set the default keyserver URL to 'name'.  This keyserver will be
-     used as the keyserver URL when writing a new self-signature on a
-     key, which includes key generation and changing preferences.
+'--default-keyserver-url NAME'
+     Set the default keyserver URL to NAME.  This keyserver will be used
+     as the keyserver URL when writing a new self-signature on a key,
+     which includes key generation and changing preferences.
 
 '--list-config'
      Display various internal configuration parameters of GnuPG. This
@@ -5010,8 +5240,8 @@ start up with a working configuration.  For existing users a small
 helper script is provided to create these files (*note addgnupghome::).
 
    For internal purposes 'gpg' creates and maintains a few other files;
-They all live in in the current home directory (*note option
---homedir::).  Only the 'gpg' program may modify these files.
+They all live in the current home directory (*note option --homedir::).
+Only the 'gpg' program may modify these files.
 
 '~/.gnupg'
      This is the default home directory which is used if neither the
@@ -5062,9 +5292,6 @@ They all live in in the current home directory (*note option
      may want to print them out.  You should backup all files in this
      directory and take care to keep this backup closed away.
 
-'/usr/local/share/gnupg/options.skel'
-     The skeleton options file.
-
    Operation is further controlled by a few environment variables:
 
 HOME
@@ -5093,6 +5320,12 @@ LANGUAGE
      Here GPGDIR is the directory out of which the gpg binary has been
      loaded.  If it can't be loaded the Registry is tried and as last
      resort the native Windows locale system is used.
+
+   When calling the gpg-agent component 'gpg' sends a set of environment
+variables to gpg-agent.  The names of these variables can be listed
+using the command:
+
+       gpg-connect-agent 'getinfo std_env_names' /bye | awk '$1=="D" {print $2}'
 
 
 File: gnupg.info,  Node: GPG Examples,  Next: Unattended Usage of GPG,  Prev: GPG Configuration,  Up: Invoking GPG
@@ -5257,6 +5490,19 @@ it is *very* easy to spy out your passphrase!
 program knows about it; either give both filenames on the command line
 or use '-' to specify STDIN.
 
+   For scripted or other unattended use of 'gpg' make sure to use the
+machine-parseable interface and not the default interface which is
+intended for direct use by humans.  The machine-parseable interface
+provides a stable and well documented API independent of the locale or
+future changes of 'gpg'.  To enable this interface use the options
+'--with-colons' and '--status-fd'.  For certain operations the option
+'--command-fd' may come handy too.  See this man page and the file
+'DETAILS' for the specification of the interface.  Note that the GnuPG
+"info" pages as well as the PDF version of the GnuPG manual features a
+chapter on unattended use of GnuPG. As an alternative the library
+'GPGME' can be used as a high-level abstraction on top of that
+interface.
+
 INTEROPERABILITY WITH OTHER OPENPGP PROGRAMS
 ********************************************
 
@@ -5307,7 +5553,7 @@ recoverable from it later.
 
    Before you report a bug you should first search the mailing list
 archives for similar problems and second check whether such a bug has
-already been reported to our bug tracker at http://bugs.gnupg.org .
+already been reported to our bug tracker at <https://bugs.gnupg.org>.
 
 
 File: gnupg.info,  Node: Unattended Usage of GPG,  Prev: GPG Examples,  Up: Invoking GPG
@@ -5398,7 +5644,7 @@ follows:
    * Text only, line length is limited to about 1000 characters.
    * UTF-8 encoding must be used to specify non-ASCII characters.
    * Empty lines are ignored.
-   * Leading and trailing while space is ignored.
+   * Leading and trailing white space is ignored.
    * A hash sign as the first non white space character indicates a
      comment line.
    * Control statements are indicated by a leading percent sign, the
@@ -5789,12 +6035,12 @@ File: gnupg.info,  Node: Certificate Management,  Prev: Operational GPGSM Comman
      fingerprints or keygrips.
 
 '--export-secret-key-p12 KEY-ID'
-     Export the private key and the certificate identified by KEY-ID in
-     a PKCS#12 format.  When used with the '--armor' option a few
-     informational lines are prepended to the output.  Note, that the
-     PKCS#12 format is not very secure and this command is only provided
-     if there is no other way to exchange the private key.  (*Note
-     option --p12-charset::.)
+     Export the private key and the certificate identified by KEY-ID
+     using the PKCS#12 format.  When used with the '--armor' option a
+     few informational lines are prepended to the output.  Note, that
+     the PKCS#12 format is not very secure and proper transport security
+     should be used to convey the exported key.  (*Note option
+     --p12-charset::.)
 
 '--export-secret-key-p8 KEY-ID'
 '--export-secret-key-raw KEY-ID'
@@ -5894,10 +6140,7 @@ in the option file.
      value is '/usr/local/bin/dirmngr'.
 
 '--prefer-system-dirmngr'
-     If a system wide 'dirmngr' is running in daemon mode, first try to
-     connect to this one.  Fallback to a pipe based server if this does
-     not work.  Under Windows this option is ignored because the system
-     dirmngr is always used.
+     This option is obsolete and ignored.
 
 '--disable-dirmngr'
      Entirely disable the use of the Dirmngr.
@@ -6053,7 +6296,7 @@ File: gnupg.info,  Node: Input and Output,  Next: CMS Options,  Prev: Certificat
      Displays extra information with the '--list-keys' commands.
      Especially a line tagged 'grp' is printed which tells you the
      keygrip of a key.  This string is for example used as the file name
-     of the secret key.
+     of the secret key.  Implies '--with-colons'.
 
 '--with-validation'
      When doing a key listing, do a full validation check for each key
@@ -6224,6 +6467,14 @@ File: gnupg.info,  Node: Esoteric Options,  Prev: CMS Options,  Up: GPGSM Option
           contrast to Pinentry the user is not prompted again if he
           enters a bad password.
 
+'--request-origin ORIGIN'
+     Tell gpgsm to assume that the operation ultimately originated at
+     ORIGIN.  Depending on the origin certain restrictions are applied
+     and the Pinentry may include an extra note on the origin.
+     Supported values for ORIGIN are: 'local' which is the default,
+     'remote' to indicate a remote origin or 'browser' for an operation
+     requested by a web browser.
+
 '--no-common-certs-import'
      Suppress the import of common certificates on keybox creation.
 
@@ -6326,7 +6577,7 @@ start up with a working configuration.  For existing users a small
 helper script is provided to create these files (*note addgnupghome::).
 
    For internal purposes 'gpgsm' creates and maintains a few other
-files; they all live in in the current home directory (*note option
+files; they all live in the current home directory (*note option
 --homedir::).  Only 'gpgsm' may modify these files.
 
 'pubring.kbx'
@@ -6908,8 +7159,8 @@ The standard Assuan option handler supports these options.
 'include-certs'
      This option overrides the command line option '--include-certs'.  A
      VALUE of -2 includes all certificates except for the root
-     certificate, -1 includes all certicates, 0 does not include any
-     certicates, 1 includes only the signers certicate and all other
+     certificate, -1 includes all certificates, 0 does not include any
+     certificates, 1 includes only the signers certificate and all other
      positive values include up to VALUE certificates starting with the
      signer cert.
 
@@ -6961,339 +7212,4 @@ The standard Assuan option handler supports these options.
      If VALUE is true or VALUE is not given all network access is
      disabled for this session.  This is the same as the command line
      option '--disable-dirmngr'.
-
-
-File: gnupg.info,  Node: Invoking SCDAEMON,  Next: Specify a User ID,  Prev: Invoking GPGSM,  Up: Top
-
-6 Invoking the SCDAEMON
-***********************
-
-The 'scdaemon' is a daemon to manage smartcards.  It is usually invoked
-by 'gpg-agent' and in general not used directly.
-
-   *Note Option Index::, for an index to 'scdaemon''s commands and
-options.
-
-* Menu:
-
-* Scdaemon Commands::      List of all commands.
-* Scdaemon Options::       List of all options.
-* Card applications::      Description of card applications.
-* Scdaemon Configuration:: Configuration files.
-* Scdaemon Examples::      Some usage examples.
-* Scdaemon Protocol::      The protocol the daemon uses.
-
-
-File: gnupg.info,  Node: Scdaemon Commands,  Next: Scdaemon Options,  Up: Invoking SCDAEMON
-
-6.1 Commands
-============
-
-Commands are not distinguished from options except for the fact that
-only one command is allowed.
-
-'--version'
-     Print the program version and licensing information.  Note that you
-     cannot abbreviate this command.
-
-'--help, -h'
-     Print a usage message summarizing the most useful command-line
-     options.  Note that you cannot abbreviate this command.
-
-'--dump-options'
-     Print a list of all available options and commands.  Note that you
-     cannot abbreviate this command.
-
-'--server'
-     Run in server mode and wait for commands on the 'stdin'.  The
-     default mode is to create a socket and listen for commands there.
-
-'--multi-server'
-     Run in server mode and wait for commands on the 'stdin' as well as
-     on an additional Unix Domain socket.  The server command 'GETINFO'
-     may be used to get the name of that extra socket.
-
-'--daemon'
-     Run the program in the background.  This option is required to
-     prevent it from being accidentally running in the background.
-
-
-File: gnupg.info,  Node: Scdaemon Options,  Next: Card applications,  Prev: Scdaemon Commands,  Up: Invoking SCDAEMON
-
-6.2 Option Summary
-==================
-
-'--options FILE'
-     Reads configuration from FILE instead of from the default per-user
-     configuration file.  The default configuration file is named
-     'scdaemon.conf' and expected in the '.gnupg' directory directly
-     below the home directory of the user.
-
-'--homedir DIR'
-     Set the name of the home directory to DIR.  If this option is not
-     used, the home directory defaults to '~/.gnupg'.  It is only
-     recognized when given on the command line.  It also overrides any
-     home directory stated through the environment variable 'GNUPGHOME'
-     or (on Windows systems) by means of the Registry entry
-     HKCU\SOFTWARE\GNU\GNUPG:HOMEDIR.
-
-     On Windows systems it is possible to install GnuPG as a portable
-     application.  In this case only this command line option is
-     considered, all other ways to set a home directory are ignored.
-
-     To install GnuPG as a portable application under Windows, create an
-     empty file named 'gpgconf.ctl' in the same directory as the tool
-     'gpgconf.exe'.  The root of the installation is then that
-     directory; or, if 'gpgconf.exe' has been installed directly below a
-     directory named 'bin', its parent directory.  You also need to make
-     sure that the following directories exist and are writable:
-     'ROOT/home' for the GnuPG home and 'ROOT/usr/local/var/cache/gnupg'
-     for internal cache files.
-
-'-v'
-'--verbose'
-     Outputs additional information while running.  You can increase the
-     verbosity by giving several verbose commands to 'gpgsm', such as
-     '-vv'.
-
-'--debug-level LEVEL'
-     Select the debug level for investigating problems.  LEVEL may be a
-     numeric value or a keyword:
-
-     'none'
-          No debugging at all.  A value of less than 1 may be used
-          instead of the keyword.
-     'basic'
-          Some basic debug messages.  A value between 1 and 2 may be
-          used instead of the keyword.
-     'advanced'
-          More verbose debug messages.  A value between 3 and 5 may be
-          used instead of the keyword.
-     'expert'
-          Even more detailed messages.  A value between 6 and 8 may be
-          used instead of the keyword.
-     'guru'
-          All of the debug messages you can get.  A value greater than 8
-          may be used instead of the keyword.  The creation of hash
-          tracing files is only enabled if the keyword is used.
-
-     How these messages are mapped to the actual debugging flags is not
-     specified and may change with newer releases of this program.  They
-     are however carefully selected to best aid in debugging.
-
-          Note: All debugging options are subject to change and thus
-          should not be used by any application program.  As the name
-          says, they are only used as helpers to debug problems.
-
-'--debug FLAGS'
-     This option is only useful for debugging and the behavior may
-     change at any time without notice.  FLAGS are bit encoded and may
-     be given in usual C-Syntax.  The currently defined bits are:
-
-     '0 (1)'
-          command I/O
-     '1 (2)'
-          values of big number integers
-     '2 (4)'
-          low level crypto operations
-     '5 (32)'
-          memory allocation
-     '6 (64)'
-          caching
-     '7 (128)'
-          show memory statistics
-     '9 (512)'
-          write hashed data to files named 'dbgmd-000*'
-     '10 (1024)'
-          trace Assuan protocol.  See also option
-          '--debug-assuan-log-cats'.
-     '11 (2048)'
-          trace APDU I/O to the card.  This may reveal sensitive data.
-     '12 (4096)'
-          trace some card reader related function calls.
-
-'--debug-all'
-     Same as '--debug=0xffffffff'
-
-'--debug-wait N'
-     When running in server mode, wait N seconds before entering the
-     actual processing loop and print the pid.  This gives time to
-     attach a debugger.
-
-'--debug-ccid-driver'
-     Enable debug output from the included CCID driver for smartcards.
-     Using this option twice will also enable some tracing of the T=1
-     protocol.  Note that this option may reveal sensitive data.
-
-'--debug-disable-ticker'
-     This option disables all ticker functions like checking for card
-     insertions.
-
-'--debug-allow-core-dump'
-     For security reasons we won't create a core dump when the process
-     aborts.  For debugging purposes it is sometimes better to allow
-     core dump.  This option enables it and also changes the working
-     directory to '/tmp' when running in '--server' mode.
-
-'--debug-log-tid'
-     This option appends a thread ID to the PID in the log output.
-
-'--debug-assuan-log-cats CATS'
-     Changes the active Libassuan logging categories to CATS.  The value
-     for CATS is an unsigned integer given in usual C-Syntax.  A value
-     of of 0 switches to a default category.  If this option is not used
-     the categories are taken from the environment variable
-     'ASSUAN_DEBUG'.  Note that this option has only an effect if the
-     Assuan debug flag has also been with the option '--debug'.  For a
-     list of categories see the Libassuan manual.
-
-'--no-detach'
-     Don't detach the process from the console.  This is mainly useful
-     for debugging.
-
-'--log-file FILE'
-     Append all logging output to FILE.  This is very helpful in seeing
-     what the agent actually does.  Use 'socket://' to log to socket.
-
-'--pcsc-driver LIBRARY'
-     Use LIBRARY to access the smartcard reader.  The current default is
-     'libpcsclite.so'.  Instead of using this option you might also want
-     to install a symbolic link to the default file name (e.g.  from
-     'libpcsclite.so.1').
-
-'--ctapi-driver LIBRARY'
-     Use LIBRARY to access the smartcard reader.  The current default is
-     'libtowitoko.so'.  Note that the use of this interface is
-     deprecated; it may be removed in future releases.
-
-'--disable-ccid'
-     Disable the integrated support for CCID compliant readers.  This
-     allows falling back to one of the other drivers even if the
-     internal CCID driver can handle the reader.  Note, that CCID
-     support is only available if libusb was available at build time.
-
-'--reader-port NUMBER_OR_STRING'
-     This option may be used to specify the port of the card terminal.
-     A value of 0 refers to the first serial device; add 32768 to access
-     USB devices.  The default is 32768 (first USB device).  PC/SC or
-     CCID readers might need a string here; run the program in verbose
-     mode to get a list of available readers.  The default is then the
-     first reader found.
-
-     To get a list of available CCID readers you may use this command:
-            echo scd getinfo reader_list \
-              | gpg-connect-agent --decode | awk '/^D/ {print $2}'
-
-'--card-timeout N'
-     If N is not 0 and no client is actively using the card, the card
-     will be powered down after N seconds.  Powering down the card
-     avoids a potential risk of damaging a card when used with certain
-     cheap readers.  This also allows applications that are not aware of
-     Scdaemon to access the card.  The disadvantage of using a card
-     timeout is that accessing the card takes longer and that the user
-     needs to enter the PIN again after the next power up.
-
-     Note that with the current version of Scdaemon the card is powered
-     down immediately at the next timer tick for any value of N other
-     than 0.
-
-'--enable-pinpad-varlen'
-     Please specify this option when the card reader supports variable
-     length input for pinpad (default is no).  For known readers (listed
-     in ccid-driver.c and apdu.c), this option is not needed.  Note that
-     if your card reader doesn't supports variable length input but you
-     want to use it, you need to specify your pinpad request on your
-     card.
-
-'--disable-pinpad'
-     Even if a card reader features a pinpad, do not try to use it.
-
-'--deny-admin'
-     This option disables the use of admin class commands for card
-     applications where this is supported.  Currently we support it for
-     the OpenPGP card.  This option is useful to inhibit accidental
-     access to admin class command which could ultimately lock the card
-     through wrong PIN numbers.  Note that GnuPG versions older than
-     2.0.11 featured an '--allow-admin' option which was required to use
-     such admin commands.  This option has no more effect today because
-     the default is now to allow admin commands.
-
-'--disable-application NAME'
-     This option disables the use of the card application named NAME.
-     This is mainly useful for debugging or if a application with lower
-     priority should be used by default.
-
-   All the long options may also be given in the configuration file
-after stripping off the two leading dashes.
-
-
-File: gnupg.info,  Node: Card applications,  Next: Scdaemon Configuration,  Prev: Scdaemon Options,  Up: Invoking SCDAEMON
-
-6.3 Description of card applications
-====================================
-
-'scdaemon' supports the card applications as described below.
-
-* Menu:
-
-* OpenPGP Card::          The OpenPGP card application
-* NKS Card::              The Telesec NetKey card application
-* DINSIG Card::           The DINSIG card application
-* PKCS#15 Card::          The PKCS#15 card application
-* Geldkarte Card::        The Geldkarte application
-* SmartCard-HSM::         The SmartCard-HSM application
-* Undefined Card::        The Undefined stub application
-
-
-File: gnupg.info,  Node: OpenPGP Card,  Next: NKS Card,  Up: Card applications
-
-6.3.1 The OpenPGP card application "openpgp"
---------------------------------------------
-
-This application is currently only used by 'gpg' but may in future also
-be useful with 'gpgsm'.  Version 1 and version 2 of the card is
-supported.
-
-The specifications for these cards are available at
-<http://g10code.com/docs/openpgp-card-1.0.pdf> and
-<http://g10code.com/docs/openpgp-card-2.0.pdf>.
-
-
-File: gnupg.info,  Node: NKS Card,  Next: DINSIG Card,  Prev: OpenPGP Card,  Up: Card applications
-
-6.3.2 The Telesec NetKey card "nks"
------------------------------------
-
-This is the main application of the Telesec cards as available in
-Germany.  It is a superset of the German DINSIG card.  The card is used
-by 'gpgsm'.
-
-
-File: gnupg.info,  Node: DINSIG Card,  Next: PKCS#15 Card,  Prev: NKS Card,  Up: Card applications
-
-6.3.3 The DINSIG card application "dinsig"
-------------------------------------------
-
-This is an application as described in the German draft standard _DIN V
-66291-1_.  It is intended to be used by cards supporting the German
-signature law and its bylaws (SigG and SigV).
-
-
-File: gnupg.info,  Node: PKCS#15 Card,  Next: Geldkarte Card,  Prev: DINSIG Card,  Up: Card applications
-
-6.3.4 The PKCS#15 card application "p15"
-----------------------------------------
-
-This is common framework for smart card applications.  It is used by
-'gpgsm'.
-
-
-File: gnupg.info,  Node: Geldkarte Card,  Next: SmartCard-HSM,  Prev: PKCS#15 Card,  Up: Card applications
-
-6.3.5 The Geldkarte card application "geldkarte"
-------------------------------------------------
-
-This is a simple application to display information of a German
-Geldkarte.  The Geldkarte is a small amount debit card application which
-comes with almost all German banking cards.
 

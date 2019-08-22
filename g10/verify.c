@@ -27,15 +27,14 @@
 #include "gpg.h"
 #include "options.h"
 #include "packet.h"
-#include "status.h"
-#include "iobuf.h"
+#include "../common/status.h"
+#include "../common/iobuf.h"
 #include "keydb.h"
-#include "util.h"
+#include "../common/util.h"
 #include "main.h"
-#include "status.h"
 #include "filter.h"
-#include "ttyio.h"
-#include "i18n.h"
+#include "../common/ttyio.h"
+#include "../common/i18n.h"
 
 
 /****************
@@ -61,7 +60,7 @@ verify_signatures (ctrl_t ctrl, int nfiles, char **files )
     /* Decide whether we should handle a detached or a normal signature,
      * which is needed so that the code later can hash the correct data and
      * not have a normal signature act as detached signature and ignoring the
-     * indended signed material from the 2nd file or stdin.
+     * intended signed material from the 2nd file or stdin.
      * 1. gpg <file        - normal
      * 2. gpg file         - normal (or detached)
      * 3. gpg file <file2  - detached

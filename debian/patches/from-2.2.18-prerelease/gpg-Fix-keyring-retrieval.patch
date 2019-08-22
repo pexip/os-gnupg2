@@ -1,0 +1,40 @@
+From: NIIBE Yutaka <gniibe@fsij.org>
+Date: Wed, 10 Jul 2019 15:06:54 +0900
+Subject: gpg: Fix keyring retrieval.
+
+* g10/keyring.c (keyring_get_keyblock): Avoid O(N^2) append.
+
+--
+
+Cherry-picking the master commit of:
+	a7a043e82555a9da984c6fb01bfec4990d904690
+
+GnuPG-bug-id: 4592
+Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
+(cherry picked from commit b7df72d3074b72cf8b537ac87416b6b719c1b1b7)
+---
+ g10/keyring.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/g10/keyring.c b/g10/keyring.c
+index a8dd462..f424f94 100644
+--- a/g10/keyring.c
++++ b/g10/keyring.c
+@@ -473,11 +473,14 @@ keyring_get_keyblock (KEYRING_HANDLE hd, KBNODE *ret_kb)
+         }
+ 
+         in_cert = 1;
+-        node = lastnode = new_kbnode (pkt);
++        node = new_kbnode (pkt);
+         if (!keyblock)
+-          keyblock = node;
++          keyblock = lastnode = node;
+         else
+-          add_kbnode (keyblock, node);
++          {
++            lastnode->next = node;
++            lastnode = node;
++          }
+         switch (pkt->pkttype)
+           {
+           case PKT_PUBLIC_KEY:

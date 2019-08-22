@@ -17,7 +17,7 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "defs.scm"))
+(load (in-srcdir "tests" "openpgp" "defs.scm"))
 (setup-legacy-environment)
 
 (for-each-p
@@ -28,5 +28,5 @@
 			 --output ,tmp ,source ) usrpass1)
      (pipe:do
       (pipe:open source (logior O_RDONLY O_BINARY))
-      (pipe:spawn `(,@GPG --yes ,tmp)))))
+      (pipe:spawn `(,@GPG --yes --verify ,tmp -)))))
  (append plain-files data-files))

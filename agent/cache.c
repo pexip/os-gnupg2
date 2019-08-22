@@ -31,9 +31,8 @@
 /* The size of the encryption key in bytes.  */
 #define ENCRYPTION_KEYSIZE (128/8)
 
-/* A mutex used to protect the encryption.  This is required because
-   we use one context to do all encryption and decryption.  */
-static npth_mutex_t encryption_lock;
+/* A mutex used to serialize access to the cache.  */
+static npth_mutex_t cache_lock;
 /* The encryption context.  This is the only place where the
    encryption key for all cached entries is available.  It would be nice
    to keep this (or just the key) in some hardware device, for example
@@ -59,6 +58,7 @@ struct cache_item_s {
   int ttl;  /* max. lifetime given in seconds, -1 one means infinite */
   struct secret_data_s *pw;
   cache_mode_t cache_mode;
+  int restricted;  /* The value of ctrl->restricted is part of the key.  */
   char key[1];
 };
 
@@ -76,7 +76,7 @@ initialize_module_cache (void)
 {
   int err;
 
-  err = npth_mutex_init (&encryption_lock, NULL);
+  err = npth_mutex_init (&cache_lock, NULL);
 
   if (err)
     log_fatal ("error initializing cache module: %s\n", strerror (err));
@@ -102,14 +102,9 @@ init_encryption (void)
 {
   gpg_error_t err;
   void *key;
-  int res;
 
   if (encryption_handle)
     return 0; /* Shortcut - Already initialized.  */
-
-  res = npth_mutex_lock (&encryption_lock);
-  if (res)
-    log_fatal ("failed to acquire cache encryption mutex: %s\n", strerror (res));
 
   err = gcry_cipher_open (&encryption_handle, GCRY_CIPHER_AES128,
                           GCRY_CIPHER_MODE_AESWRAP, GCRY_CIPHER_SECURE);
@@ -133,10 +128,6 @@ init_encryption (void)
     log_error ("error initializing cache encryption context: %s\n",
                gpg_strerror (err));
 
-  res = npth_mutex_unlock (&encryption_lock);
-  if (res)
-    log_fatal ("failed to release cache encryption mutex: %s\n", strerror (res));
-
   return err? gpg_error (GPG_ERR_NOT_INITIALIZED) : 0;
 }
 
@@ -155,7 +146,6 @@ new_data (const char *string, struct secret_data_s **r_data)
   struct secret_data_s *d, *d_enc;
   size_t length;
   int total;
-  int res;
 
   *r_data = NULL;
 
@@ -186,17 +176,9 @@ new_data (const char *string, struct secret_data_s **r_data)
     }
 
   d_enc->totallen = total;
-  res = npth_mutex_lock (&encryption_lock);
-  if (res)
-    log_fatal ("failed to acquire cache encryption mutex: %s\n",
-               strerror (res));
-
   err = gcry_cipher_encrypt (encryption_handle, d_enc->data, total,
                              d->data, total - 8);
   xfree (d);
-  res = npth_mutex_unlock (&encryption_lock);
-  if (res)
-    log_fatal ("failed to release cache encryption mutex: %s\n", strerror (res));
   if (err)
     {
       xfree (d_enc);
@@ -221,8 +203,8 @@ housekeeping (void)
       if (r->pw && r->ttl >= 0 && r->accessed + r->ttl < current)
         {
           if (DBG_CACHE)
-            log_debug ("  expired '%s' (%ds after last access)\n",
-                       r->key, r->ttl);
+            log_debug ("  expired '%s'.%d (%ds after last access)\n",
+                       r->key, r->restricted, r->ttl);
           release_data (r->pw);
           r->pw = NULL;
           r->accessed = current;
@@ -243,8 +225,8 @@ housekeeping (void)
       if (r->pw && r->created + maxttl < current)
         {
           if (DBG_CACHE)
-            log_debug ("  expired '%s' (%lus after creation)\n",
-                       r->key, opt.max_cache_ttl);
+            log_debug ("  expired '%s'.%d (%lus after creation)\n",
+                       r->key, r->restricted, opt.max_cache_ttl);
           release_data (r->pw);
           r->pw = NULL;
           r->accessed = current;
@@ -252,15 +234,15 @@ housekeeping (void)
     }
 
   /* Third, make sure that we don't have too many items in the list.
-     Expire old and unused entries after 30 minutes */
+   * Expire old and unused entries after 30 minutes.  */
   for (rprev=NULL, r=thecache; r; )
     {
       if (!r->pw && r->ttl >= 0 && r->accessed + 60*30 < current)
         {
           ITEM r2 = r->next;
           if (DBG_CACHE)
-            log_debug ("  removed '%s' (mode %d) (slot not used for 30m)\n",
-                       r->key, r->cache_mode);
+            log_debug ("  removed '%s'.%d (mode %d) (slot not used for 30m)\n",
+                       r->key, r->restricted, r->cache_mode);
           xfree (r);
           if (!rprev)
             thecache = r2;
@@ -278,24 +260,53 @@ housekeeping (void)
 
 
 void
+agent_cache_housekeeping (void)
+{
+  int res;
+
+  if (DBG_CACHE)
+    log_debug ("agent_cache_housekeeping\n");
+
+  res = npth_mutex_lock (&cache_lock);
+  if (res)
+    log_fatal ("failed to acquire cache mutex: %s\n", strerror (res));
+
+  housekeeping ();
+
+  res = npth_mutex_unlock (&cache_lock);
+  if (res)
+    log_fatal ("failed to release cache mutex: %s\n", strerror (res));
+}
+
+
+void
 agent_flush_cache (void)
 {
   ITEM r;
+  int res;
 
   if (DBG_CACHE)
     log_debug ("agent_flush_cache\n");
+
+  res = npth_mutex_lock (&cache_lock);
+  if (res)
+    log_fatal ("failed to acquire cache mutex: %s\n", strerror (res));
 
   for (r=thecache; r; r = r->next)
     {
       if (r->pw)
         {
           if (DBG_CACHE)
-            log_debug ("  flushing '%s'\n", r->key);
+            log_debug ("  flushing '%s'.%d\n", r->key, r->restricted);
           release_data (r->pw);
           r->pw = NULL;
           r->accessed = 0;
         }
     }
+
+  res = npth_mutex_unlock (&cache_lock);
+  if (res)
+    log_fatal ("failed to release cache mutex: %s\n", strerror (res));
 }
 
 
@@ -316,15 +327,21 @@ cache_mode_equal (cache_mode_t a, cache_mode_t b)
    set infinite timeout.  CACHE_MODE is stored with the cache entry
    and used to select different timeouts.  */
 int
-agent_put_cache (const char *key, cache_mode_t cache_mode,
+agent_put_cache (ctrl_t ctrl, const char *key, cache_mode_t cache_mode,
                  const char *data, int ttl)
 {
   gpg_error_t err = 0;
   ITEM r;
+  int res;
+  int restricted = ctrl? ctrl->restricted : -1;
+
+  res = npth_mutex_lock (&cache_lock);
+  if (res)
+    log_fatal ("failed to acquire cache mutex: %s\n", strerror (res));
 
   if (DBG_CACHE)
-    log_debug ("agent_put_cache '%s' (mode %d) requested ttl=%d\n",
-               key, cache_mode, ttl);
+    log_debug ("agent_put_cache '%s'.%d (mode %d) requested ttl=%d\n",
+               key, restricted, cache_mode, ttl);
   housekeeping ();
 
   if (!ttl)
@@ -336,13 +353,14 @@ agent_put_cache (const char *key, cache_mode_t cache_mode,
         }
     }
   if ((!ttl && data) || cache_mode == CACHE_MODE_IGNORE)
-    return 0;
+    goto out;
 
   for (r=thecache; r; r = r->next)
     {
       if (((cache_mode != CACHE_MODE_USER
             && cache_mode != CACHE_MODE_NONCE)
            || cache_mode_equal (r->cache_mode, cache_mode))
+          && r->restricted == restricted
           && !strcmp (r->key, key))
         break;
     }
@@ -371,6 +389,7 @@ agent_put_cache (const char *key, cache_mode_t cache_mode,
       else
         {
           strcpy (r->key, key);
+          r->restricted = restricted;
           r->created = r->accessed = gnupg_get_time ();
           r->ttl = ttl;
           r->cache_mode = cache_mode;
@@ -386,6 +405,12 @@ agent_put_cache (const char *key, cache_mode_t cache_mode,
       if (err)
         log_error ("error inserting cache item: %s\n", gpg_strerror (err));
     }
+
+ out:
+  res = npth_mutex_unlock (&cache_lock);
+  if (res)
+    log_fatal ("failed to release cache mutex: %s\n", strerror (res));
+
   return err;
 }
 
@@ -394,29 +419,33 @@ agent_put_cache (const char *key, cache_mode_t cache_mode,
    make use of CACHE_MODE except for CACHE_MODE_NONCE and
    CACHE_MODE_USER.  */
 char *
-agent_get_cache (const char *key, cache_mode_t cache_mode)
+agent_get_cache (ctrl_t ctrl, const char *key, cache_mode_t cache_mode)
 {
   gpg_error_t err;
   ITEM r;
   char *value = NULL;
   int res;
   int last_stored = 0;
+  int restricted = ctrl? ctrl->restricted : -1;
 
   if (cache_mode == CACHE_MODE_IGNORE)
     return NULL;
+
+  res = npth_mutex_lock (&cache_lock);
+  if (res)
+    log_fatal ("failed to acquire cache mutex: %s\n", strerror (res));
 
   if (!key)
     {
       key = last_stored_cache_key;
       if (!key)
-        return NULL;
+        goto out;
       last_stored = 1;
     }
 
-
   if (DBG_CACHE)
-    log_debug ("agent_get_cache '%s' (mode %d)%s ...\n",
-               key, cache_mode,
+    log_debug ("agent_get_cache '%s'.%d (mode %d)%s ...\n",
+               key, ctrl->restricted, cache_mode,
                last_stored? " (stored cache key)":"");
   housekeeping ();
 
@@ -426,6 +455,7 @@ agent_get_cache (const char *key, cache_mode_t cache_mode)
           && ((cache_mode != CACHE_MODE_USER
                && cache_mode != CACHE_MODE_NONCE)
               || cache_mode_equal (r->cache_mode, cache_mode))
+          && r->restricted == restricted
           && !strcmp (r->key, key))
         {
           /* Note: To avoid races KEY may not be accessed anymore below.  */
@@ -440,32 +470,29 @@ agent_get_cache (const char *key, cache_mode_t cache_mode)
             err = gpg_error_from_syserror ();
           else
             {
-              res = npth_mutex_lock (&encryption_lock);
-              if (res)
-                log_fatal ("failed to acquire cache encryption mutex: %s\n",
-			   strerror (res));
               err = gcry_cipher_decrypt (encryption_handle,
                                          value, r->pw->totallen - 8,
                                          r->pw->data, r->pw->totallen);
-              res = npth_mutex_unlock (&encryption_lock);
-              if (res)
-                log_fatal ("failed to release cache encryption mutex: %s\n",
-			   strerror (res));
             }
           if (err)
             {
               xfree (value);
               value = NULL;
-              log_error ("retrieving cache entry '%s' failed: %s\n",
-                         key, gpg_strerror (err));
+              log_error ("retrieving cache entry '%s'.%d failed: %s\n",
+                         key, restricted, gpg_strerror (err));
             }
-          return value;
+          break;
         }
     }
-  if (DBG_CACHE)
+  if (DBG_CACHE && value == NULL)
     log_debug ("... miss\n");
 
-  return NULL;
+ out:
+  res = npth_mutex_unlock (&cache_lock);
+  if (res)
+    log_fatal ("failed to release cache mutex: %s\n", strerror (res));
+
+  return value;
 }
 
 
@@ -475,6 +502,29 @@ agent_get_cache (const char *key, cache_mode_t cache_mode)
 void
 agent_store_cache_hit (const char *key)
 {
-  xfree (last_stored_cache_key);
-  last_stored_cache_key = key? xtrystrdup (key) : NULL;
+  char *new;
+  char *old;
+
+  /* To make sure the update is atomic under the non-preemptive thread
+   * model, we must make sure not to surrender control to a different
+   * thread.  Therefore, we avoid calling the allocator during the
+   * update.
+   *
+   * Background: xtrystrdup uses gcry_strdup which may use the secure
+   * memory allocator of Libgcrypt.  That allocator takes locks and
+   * since version 1.14 libgpg-error is nPth aware and thus taking a
+   * lock may now lead to thread switch.  Note that this only happens
+   * when secure memory is _allocated_ (the standard allocator uses
+   * malloc which is not nPth aware) but not when calling _xfree_
+   * because gcry_free needs to check whether the pointer is in secure
+   * memory and thus needs to take a lock.
+   */
+  new = key ? xtrystrdup (key) : NULL;
+
+  /* Atomic update.  */
+  old = last_stored_cache_key;
+  last_stored_cache_key = new;
+  /* Done.  */
+
+  xfree (old);
 }

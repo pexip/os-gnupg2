@@ -18,7 +18,7 @@
 
 ## Process this file with automake to produce Makefile.in
 
-EXTRA_DIST = ChangeLog-2011
+EXTRA_DIST = ChangeLog-2011 all-tests.scm
 
 bin_PROGRAMS = g13
 sbin_PROGRAMS = g13-syshelp
@@ -26,7 +26,7 @@ sbin_PROGRAMS = g13-syshelp
 noinst_PROGRAMS = $(module_tests)
 TESTS = $(module_tests)
 
-AM_CPPFLAGS = -I$(top_srcdir)/common
+AM_CPPFLAGS =
 
 include $(top_srcdir)/am/cmacros.am
 
@@ -70,7 +70,7 @@ g13_syshelp_LDADD = $(libcommon) \
 
 module_tests = t-g13tuple
 t_common_ldadd = $(libcommon) $(LIBGCRYPT_LIBS) \
-	         $(LIBASSUAN_LIBS)
+	         $(LIBASSUAN_LIBS) $(LIBICONV)
 
 t_g13tuple_SOURCES = t-g13tuple.c g13tuple.c
 t_g13tuple_LDADD = $(t_common_ldadd)

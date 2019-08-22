@@ -1,0 +1,88 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Sun, 23 Jun 2019 20:17:05 -0400
+Subject: spelling: Fix "synchronize"
+
+Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+(cherry picked from commit 520f5d70e4128b61c30da2a463f6c34ca24b628e)
+---
+ NEWS              | 2 +-
+ g10/cpr.c         | 2 +-
+ kbx/keybox-blob.c | 4 ++--
+ scd/app-openpgp.c | 2 +-
+ scd/ccid-driver.c | 2 +-
+ 5 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/NEWS b/NEWS
+index 294709d..5728cdd 100644
+--- a/NEWS
++++ b/NEWS
+@@ -2487,7 +2487,7 @@ Noteworthy changes in version 1.9.2 (2003-11-17)
+    command but from the menu provided by the new --card-edit command.
+ 
+  * PINs are now properly cached and there are only 2 PINs visible.
+-   The 3rd PIN (CHV2) is internally syncronized with the regular PIN.
++   The 3rd PIN (CHV2) is internally synchronized with the regular PIN.
+ 
+  * All kind of other internal stuff.
+ 
+diff --git a/g10/cpr.c b/g10/cpr.c
+index 4354426..d40e0a7 100644
+--- a/g10/cpr.c
++++ b/g10/cpr.c
+@@ -62,7 +62,7 @@ progress_cb (void *ctx, const char *what, int printchar,
+ 
+ 
+ /* Return true if the status message NO may currently be issued.  We
+-   need this to avoid syncronisation problem while auto retrieving a
++   need this to avoid synchronization problem while auto retrieving a
+    key.  There it may happen that a status NODATA is issued for a non
+    available key and the user may falsely interpret this has a missing
+    signature. */
+diff --git a/kbx/keybox-blob.c b/kbx/keybox-blob.c
+index 6874212..ac259ea 100644
+--- a/kbx/keybox-blob.c
++++ b/kbx/keybox-blob.c
+@@ -116,7 +116,7 @@
+                            Note that this value matches TRUST_FLAG_REVOKED
+    - u16  RFU
+    - u32  Recheck_after
+-   - u32  Latest timestamp in the keyblock (useful for KS syncronsiation?)
++   - u32  Latest timestamp in the keyblock (useful for KS synchronization?)
+    - u32  Blob created at
+    - u32  [NRES] Size of reserved space (not including this field)
+    - bN   Reserved space of size NRES for future use.
+@@ -126,7 +126,7 @@
+    - bN   Space for the keyblock or certificate.
+    - bN   RFU.  This is the remaining space after keyblock and before
+           the checksum.  It is not covered by the checksum.
+-   - b20  SHA-1 checksum (useful for KS syncronisation?)
++   - b20  SHA-1 checksum (useful for KS synchronization?)
+           Note, that KBX versions before GnuPG 2.1 used an MD5
+           checksum.  However it was only created but never checked.
+           Thus we do not expect problems if we switch to SHA-1.  If
+diff --git a/scd/app-openpgp.c b/scd/app-openpgp.c
+index e4a1fba..a1f8603 100644
+--- a/scd/app-openpgp.c
++++ b/scd/app-openpgp.c
+@@ -640,7 +640,7 @@ count_bits (const unsigned char *a, size_t len)
+     Where FLAGS is a plain hexadecimal number representing flag values.
+     The lsb is here the rightmost bit.  Defined flags bits are:
+ 
+-      Bit 0 = CHV1 and CHV2 are not syncronized
++      Bit 0 = CHV1 and CHV2 are not synchronized
+       Bit 1 = CHV2 has been set to the default PIN of "123456"
+               (this implies that bit 0 is also set).
+ 
+diff --git a/scd/ccid-driver.c b/scd/ccid-driver.c
+index ae40f01..94cd8c2 100644
+--- a/scd/ccid-driver.c
++++ b/scd/ccid-driver.c
+@@ -2952,7 +2952,7 @@ ccid_transceive_apdu_level (ccid_driver_t handle,
+       bit 7    1
+       bit 6    1
+       bit 5    clear=request,set=response
+-      bit 4..0  0 = resyncronisation request
++      bit 4..0  0 = resynchronization request
+                 1 = information field size request
+                 2 = abort request
+                 3 = extension of BWT request

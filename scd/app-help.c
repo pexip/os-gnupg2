@@ -26,7 +26,7 @@
 #include "scdaemon.h"
 #include "app-common.h"
 #include "iso7816.h"
-#include "tlv.h"
+#include "../common/tlv.h"
 
 
 /* Count the number of bits, assuming the A represents an unsigned big
@@ -106,7 +106,7 @@ app_help_read_length_of_cert (int slot, int fid, size_t *r_certoff)
   int class, tag, constructed, ndef;
   size_t resultlen, objlen, hdrlen;
 
-  err = iso7816_select_file (slot, fid, 0, NULL, NULL);
+  err = iso7816_select_file (slot, fid, 0);
   if (err)
     {
       log_info ("error selecting FID 0x%04X: %s\n", fid, gpg_strerror (err));

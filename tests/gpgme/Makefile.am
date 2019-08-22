@@ -28,15 +28,12 @@ include $(top_srcdir)/am/cmacros.am
 
 AM_CFLAGS =
 
-TMP ?= /tmp
-
 TESTS_ENVIRONMENT = LC_ALL=C \
 	EXEEXT=$(EXEEXT) \
 	PATH=../gpgscm:$(PATH) \
-	TMP=$(TMP) \
-	srcdir=$(abs_srcdir) \
+	abs_top_srcdir=$(abs_top_srcdir) \
 	objdir=$(abs_top_builddir) \
-	GPGSCM_PATH=$(abs_top_srcdir)/tests/gpgscm:$(abs_top_srcdir)/tests/openpgp:$(abs_top_srcdir)/tests/gpgme
+	GPGSCM_PATH=$(abs_top_srcdir)/tests/gpgscm
 
 # XXX: Currently, one cannot override automake's 'check' target.  As a
 # workaround, we avoid defining 'TESTS', thus automake will not emit
@@ -49,11 +46,11 @@ check: xcheck
 .PHONY: xcheck
 xcheck:
 	$(TESTS_ENVIRONMENT) $(abs_top_builddir)/tests/gpgscm/gpgscm \
-	  $(abs_srcdir)/run-tests.scm $(TESTFLAGS) $(XTESTS)
+	  $(abs_srcdir)/run-tests.scm $(TESTFLAGS) $(TESTS)
 
-EXTRA_DIST = gpgme-defs.scm run-tests.scm setup.scm wrap.scm
+EXTRA_DIST = gpgme-defs.scm run-tests.scm setup.scm wrap.scm all-tests.scm
 
-CLEANFILES = *.log
+CLEANFILES = *.log report.xml
 
 # We need to depend on a couple of programs so that the tests don't
 # start before all programs are built.

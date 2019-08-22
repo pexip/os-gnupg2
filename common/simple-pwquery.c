@@ -246,6 +246,7 @@ agent_open (assuan_context_t *ctx)
 #ifdef SPWQ_USE_LOGGING
       log_error (_("no gpg-agent running in this session\n"));
 #endif
+      *ctx = NULL;
       return SPWQ_NO_AGENT;
     }
 
@@ -352,7 +353,7 @@ default_inq_cb (void *opaque, const char *line)
 
 /* Ask the gpg-agent for a passphrase and present the user with a
    DESCRIPTION, a PROMPT and optionally with a TRYAGAIN extra text.
-   If a CACHEID is not NULL it is used to locate the passphrase in in
+   If a CACHEID is not NULL it is used to locate the passphrase in
    the cache and store it under this ID.  If OPT_CHECK is true
    gpg-agent is asked to apply some checks on the passphrase security.
    If ERRORCODE is not NULL it should point a variable receiving an

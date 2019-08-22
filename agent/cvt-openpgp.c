@@ -25,9 +25,9 @@
 #include <assert.h>
 
 #include "agent.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "cvt-openpgp.h"
-#include "host2net.h"
+#include "../common/host2net.h"
 
 
 /* Helper to pass data via the callback to do_unprotect. */
@@ -951,7 +951,7 @@ convert_from_openpgp_main (ctrl_t ctrl, gcry_sexp_t s_pgp, int dontcare_exist,
         {
           char *cache_value;
 
-          cache_value = agent_get_cache (cache_nonce, CACHE_MODE_NONCE);
+          cache_value = agent_get_cache (ctrl, cache_nonce, CACHE_MODE_NONCE);
           if (cache_value)
             {
               if (strlen (cache_value) < pi->max_length)

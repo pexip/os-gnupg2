@@ -33,13 +33,13 @@
 #endif
 
 #include "gpg.h"
-#include "util.h"
+#include "../common/util.h"
 #include "options.h"
-#include "ttyio.h"
+#include "../common/ttyio.h"
 #include "keydb.h"
 #include "main.h"
-#include "i18n.h"
-#include "status.h"
+#include "../common/i18n.h"
+#include "../common/status.h"
 #include "call-agent.h"
 #include "../common/shareddefs.h"
 
@@ -165,6 +165,9 @@ read_passphrase_from_fd( int fd )
 {
   int i, len;
   char *pw;
+
+  if (! gnupg_fd_valid (fd))
+    log_fatal ("passphrase-fd is invalid: %s\n", strerror (errno));
 
   if ( !opt.batch && opt.pinentry_mode != PINENTRY_MODE_LOOPBACK)
     { /* Not used but we have to do a dummy read, so that it won't end
@@ -314,6 +317,9 @@ passphrase_to_dek (int cipher_algo, STRING2KEY *s2k,
     canceled = &dummy_canceled;
   *canceled = 0;
 
+  if (opt.no_symkey_cache)
+    nocache = 1;  /* Force no symmtric key caching.  */
+
   if ( !s2k )
     {
       log_assert (create && !nocache);
@@ -438,12 +444,13 @@ passphrase_to_dek (int cipher_algo, STRING2KEY *s2k,
 /* Emit the USERID_HINT and the NEED_PASSPHRASE status messages.
    MAINKEYID may be NULL. */
 void
-emit_status_need_passphrase (u32 *keyid, u32 *mainkeyid, int pubkey_algo)
+emit_status_need_passphrase (ctrl_t ctrl,
+                             u32 *keyid, u32 *mainkeyid, int pubkey_algo)
 {
   char buf[50];
   char *us;
 
-  us = get_long_user_id_string (keyid);
+  us = get_long_user_id_string (ctrl, keyid);
   write_status_text (STATUS_USERID_HINT, us);
   xfree (us);
 
@@ -463,7 +470,7 @@ emit_status_need_passphrase (u32 *keyid, u32 *mainkeyid, int pubkey_algo)
    MODE describes the use of the key description; use one of the
    FORMAT_KEYDESC_ macros. */
 char *
-gpg_format_keydesc (PKT_public_key *pk, int mode, int escaped)
+gpg_format_keydesc (ctrl_t ctrl, PKT_public_key *pk, int mode, int escaped)
 {
   char *uid;
   size_t uidlen;
@@ -481,7 +488,7 @@ gpg_format_keydesc (PKT_public_key *pk, int mode, int escaped)
                && pk->keyid[1] != pk->main_keyid[1]);
   algo_name = openpgp_pk_algo_name (pk->pubkey_algo);
   timestr = strtimestamp (pk->timestamp);
-  uid = get_user_id (is_subkey? pk->main_keyid:pk->keyid, &uidlen);
+  uid = get_user_id (ctrl, is_subkey? pk->main_keyid:pk->keyid, &uidlen, NULL);
 
   orig_codeset = i18n_switchto_utf8 ();
 

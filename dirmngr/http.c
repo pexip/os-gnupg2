@@ -31,7 +31,7 @@
  */
 
 /* Simple HTTP client implementation.  We try to keep the code as
-   self-contained as possible.  There are some contraints however:
+   self-contained as possible.  There are some constraints however:
 
   - estream is required.  We now require estream because it provides a
     very useful and portable asprintf implementation and the fopencookie
@@ -70,6 +70,7 @@
 # include <sys/socket.h>
 # include <sys/time.h>
 # include <time.h>
+# include <fcntl.h>
 # include <netinet/in.h>
 # include <arpa/inet.h>
 # include <netdb.h>
@@ -96,10 +97,12 @@
 
 #include <assuan.h>  /* We need the socket wrapper.  */
 
-#include "util.h"
-#include "i18n.h"
+#include "../common/util.h"
+#include "../common/i18n.h"
+#include "../common/sysutils.h" /* (gnupg_fd_t) */
 #include "dns-stuff.h"
 #include "http.h"
+#include "http-common.h"
 
 
 #ifdef USE_NPTH
@@ -151,20 +154,27 @@ static int insert_escapes (char *buffer, const char *string,
 static uri_tuple_t parse_tuple (char *string);
 static gpg_error_t send_request (http_t hd, const char *httphost,
                                  const char *auth,const char *proxy,
-				 const char *srvtag,strlist_t headers);
+				 const char *srvtag, unsigned int timeout,
+                                 strlist_t headers);
 static char *build_rel_path (parsed_uri_t uri);
 static gpg_error_t parse_response (http_t hd);
 
-static assuan_fd_t connect_server (const char *server, unsigned short port,
+static gpg_error_t connect_server (const char *server, unsigned short port,
                                    unsigned int flags, const char *srvtag,
-                                   int *r_host_not_found);
-static gpg_error_t write_server (int sock, const char *data, size_t length);
+                                   unsigned int timeout, assuan_fd_t *r_sock);
+static gpgrt_ssize_t read_server (assuan_fd_t sock, void *buffer, size_t size);
+static gpg_error_t write_server (assuan_fd_t sock, const char *data, size_t length);
 
 static gpgrt_ssize_t cookie_read (void *cookie, void *buffer, size_t size);
 static gpgrt_ssize_t cookie_write (void *cookie,
                                    const void *buffer, size_t size);
 static int cookie_close (void *cookie);
-
+#if defined(HAVE_W32_SYSTEM) && defined(HTTP_USE_NTBTLS)
+static gpgrt_ssize_t simple_cookie_read (void *cookie,
+                                         void *buffer, size_t size);
+static gpgrt_ssize_t simple_cookie_write (void *cookie,
+                                          const void *buffer, size_t size);
+#endif
 
 /* A socket object used to a allow ref counting of sockets.  */
 struct my_socket_s
@@ -184,6 +194,7 @@ static es_cookie_io_functions_t cookie_functions =
     cookie_close
   };
 
+
 struct cookie_s
 {
   /* Socket object or NULL if already closed. */
@@ -202,9 +213,31 @@ struct cookie_s
 };
 typedef struct cookie_s *cookie_t;
 
+
+/* Simple cookie functions.  Here the cookie is an int with the
+ * socket. */
+#if defined(HAVE_W32_SYSTEM) && defined(HTTP_USE_NTBTLS)
+static es_cookie_io_functions_t simple_cookie_functions =
+  {
+    simple_cookie_read,
+    simple_cookie_write,
+    NULL,
+    NULL
+  };
+#endif
+
+
+#if SIZEOF_UNSIGNED_LONG == 8
+# define HTTP_SESSION_MAGIC 0x0068545470534553 /* "hTTpSES" */
+#else
+# define HTTP_SESSION_MAGIC 0x68547365         /* "hTse"    */
+#endif
+
 /* The session object. */
 struct http_session_s
 {
+  unsigned long magic;
+
   int refcount;    /* Number of references to this object.  */
 #ifdef HTTP_USE_GNUTLS
   gnutls_certificate_credentials_t certcred;
@@ -221,6 +254,16 @@ struct http_session_s
   /* A callback function to log details of TLS certifciates.  */
   void (*cert_log_cb) (http_session_t, gpg_error_t, const char *,
                        const void **, size_t *);
+
+  /* The flags passed to the session object.  */
+  unsigned int flags;
+
+  /* A per-session TLS verification callback.  */
+  http_verify_cb_t verify_cb;
+  void *verify_cb_value;
+
+  /* The connect timeout */
+  unsigned int connect_timeout;
 };
 
 
@@ -234,9 +277,17 @@ struct header_s
 typedef struct header_s *header_t;
 
 
+#if SIZEOF_UNSIGNED_LONG == 8
+# define HTTP_CONTEXT_MAGIC 0x0068545470435458 /* "hTTpCTX" */
+#else
+# define HTTP_CONTEXT_MAGIC 0x68546378         /* "hTcx"    */
+#endif
+
+
 /* Our handle context. */
 struct http_context_s
 {
+  unsigned long magic;
   unsigned int status_code;
   my_socket_t sock;
   unsigned int in_data:1;
@@ -266,6 +317,9 @@ static gpg_error_t (*tls_callback) (http_t, http_session_t, int);
 
 /* The list of files with trusted CA certificates.  */
 static strlist_t tls_ca_certlist;
+
+/* The list of files with extra trusted CA certificates.  */
+static strlist_t cfg_ca_certlist;
 
 /* The global callback for net activity.  */
 static void (*netactivity_cb)(void);
@@ -338,7 +392,7 @@ _my_socket_new (int lnr, assuan_fd_t fd)
   so->refcount = 1;
   if (opt_debug)
     log_debug ("http.c:%d:socket_new: object %p for fd %d created\n",
-               lnr, so, so->fd);
+               lnr, so, (int)so->fd);
   return so;
 }
 #define my_socket_new(a) _my_socket_new (__LINE__, (a))
@@ -350,7 +404,7 @@ _my_socket_ref (int lnr, my_socket_t so)
   so->refcount++;
   if (opt_debug > 1)
     log_debug ("http.c:%d:socket_ref: object %p for fd %d refcount now %d\n",
-               lnr, so, so->fd, so->refcount);
+               lnr, so, (int)so->fd, so->refcount);
   return so;
 }
 #define my_socket_ref(a) _my_socket_ref (__LINE__,(a))
@@ -368,7 +422,7 @@ _my_socket_unref (int lnr, my_socket_t so,
       so->refcount--;
       if (opt_debug > 1)
         log_debug ("http.c:%d:socket_unref: object %p for fd %d ref now %d\n",
-                   lnr, so, so->fd, so->refcount);
+                   lnr, so, (int)so->fd, so->refcount);
 
       if (!so->refcount)
         {
@@ -406,6 +460,27 @@ my_gnutls_write (gnutls_transport_ptr_t ptr, const void *buffer, size_t size)
 #endif /*HTTP_USE_GNUTLS*/
 
 
+#ifdef HTTP_USE_NTBTLS
+/* Connect the ntbls callback to our generic callback.  */
+static gpg_error_t
+my_ntbtls_verify_cb (void *opaque, ntbtls_t tls, unsigned int verify_flags)
+{
+  http_t hd = opaque;
+
+  (void)verify_flags;
+
+  log_assert (hd && hd->session && hd->session->verify_cb);
+  log_assert (hd->magic == HTTP_CONTEXT_MAGIC);
+  log_assert (hd->session->magic == HTTP_SESSION_MAGIC);
+
+  return hd->session->verify_cb (hd->session->verify_cb_value,
+                                 hd, hd->session,
+                                 (hd->flags | hd->session->flags),
+                                 tls);
+}
+#endif /*HTTP_USE_NTBTLS*/
+
+
 
 
 /* This notification function is called by estream whenever stream is
@@ -418,6 +493,7 @@ fp_onclose_notification (estream_t stream, void *opaque)
 {
   http_t hd = opaque;
 
+  log_assert (hd->magic == HTTP_CONTEXT_MAGIC);
   if (hd->fp_read && hd->fp_read == stream)
     hd->fp_read = NULL;
   else if (hd->fp_write && hd->fp_write == stream)
@@ -523,6 +599,35 @@ http_register_tls_ca (const char *fname)
 }
 
 
+/* Register a CA certificate for future use.  The certificate is
+ * expected to be in FNAME.  PEM format is assume if FNAME has a
+ * suffix of ".pem".  If FNAME is NULL the list of CA files is
+ * removed.  This is a variant of http_register_tls_ca which puts the
+ * certificate into a separate list enabled using HTTP_FLAG_TRUST_CFG.  */
+void
+http_register_cfg_ca (const char *fname)
+{
+  strlist_t sl;
+
+  if (!fname)
+    {
+      free_strlist (cfg_ca_certlist);
+      cfg_ca_certlist = NULL;
+    }
+  else
+    {
+      /* Warn if we can't access right now, but register it anyway in
+         case it becomes accessible later */
+      if (access (fname, F_OK))
+        log_info (_("can't access '%s': %s\n"), fname,
+                  gpg_strerror (gpg_error_from_syserror()));
+      sl = add_to_strlist (&cfg_ca_certlist, fname);
+      if (*sl->d && !strcmp (sl->d + strlen (sl->d) - 4, ".pem"))
+        sl->flags = 1;
+    }
+}
+
+
 /* Register a callback which is called every time the HTTP mode has
  * made a successful connection to some server.  */
 void
@@ -577,6 +682,8 @@ session_unref (int lnr, http_session_t sess)
   if (!sess)
     return;
 
+  log_assert (sess->magic == HTTP_SESSION_MAGIC);
+
   sess->refcount--;
   if (opt_debug > 1)
     log_debug ("http.c:%d:session_unref: sess %p ref now %d\n",
@@ -588,6 +695,7 @@ session_unref (int lnr, http_session_t sess)
   close_tls_session (sess);
 #endif /*USE_TLS*/
 
+  sess->magic = 0xdeadbeef;
   xfree (sess);
 }
 #define http_session_unref(a) session_unref (__LINE__, (a))
@@ -604,10 +712,13 @@ http_session_release (http_session_t sess)
  * Valid values for FLAGS are:
  *   HTTP_FLAG_TRUST_DEF - Use the CAs set with http_register_tls_ca
  *   HTTP_FLAG_TRUST_SYS - Also use the CAs defined by the system
+ *   HTTP_FLAG_TRUST_CFG - Also use CAs set with http_register_cfg_ca
+ *   HTTP_FLAG_NO_CRL    - Do not consult CRLs for https.
  */
 gpg_error_t
-http_session_new (http_session_t *r_session, const char *tls_priority,
-                  const char *intended_hostname, unsigned int flags)
+http_session_new (http_session_t *r_session,
+                  const char *intended_hostname, unsigned int flags,
+                  http_verify_cb_t verify_cb, void *verify_cb_value)
 {
   gpg_error_t err;
   http_session_t sess;
@@ -617,97 +728,25 @@ http_session_new (http_session_t *r_session, const char *tls_priority,
   sess = xtrycalloc (1, sizeof *sess);
   if (!sess)
     return gpg_error_from_syserror ();
+  sess->magic = HTTP_SESSION_MAGIC;
   sess->refcount = 1;
+  sess->flags = flags;
+  sess->verify_cb = verify_cb;
+  sess->verify_cb_value = verify_cb_value;
+  sess->connect_timeout = 0;
 
 #if HTTP_USE_NTBTLS
   {
-    x509_cert_t ca_chain;
-    char line[256];
-    estream_t fp, mem_p;
-    size_t nread, nbytes;
-    struct b64state state;
-    void *buf;
-    size_t buflen;
-    char *pemname;
-
-    (void)tls_priority;
-
-    pemname = make_filename_try (gnupg_datadir (),
-                                 "sks-keyservers.netCA.pem", NULL);
-    if (!pemname)
-      {
-        err = gpg_error_from_syserror ();
-        log_error ("setting CA from file '%s' failed: %s\n",
-                   pemname, gpg_strerror (err));
-        goto leave;
-      }
-
-    fp = es_fopen (pemname, "r");
-    if (!fp)
-      {
-        err = gpg_error_from_syserror ();
-        log_error ("can't open '%s': %s\n", pemname, gpg_strerror (err));
-        xfree (pemname);
-        goto leave;
-      }
-    xfree (pemname);
-
-    mem_p = es_fopenmem (0, "r+b");
-    err = b64dec_start (&state, "CERTIFICATE");
-    if (err)
-      {
-        log_error ("b64dec failure: %s\n", gpg_strerror (err));
-        goto leave;
-      }
-
-    while ( (nread = es_fread (line, 1, DIM (line), fp)) )
-      {
-        err = b64dec_proc (&state, line, nread, &nbytes);
-        if (err)
-          {
-            if (gpg_err_code (err) == GPG_ERR_EOF)
-              break;
-
-            log_error ("b64dec failure: %s\n", gpg_strerror (err));
-            es_fclose (fp);
-            es_fclose (mem_p);
-            goto leave;
-          }
-        else if (nbytes)
-          es_fwrite (line, 1, nbytes, mem_p);
-      }
-    err = b64dec_finish (&state);
-    if (err)
-      {
-        log_error ("b64dec failure: %s\n", gpg_strerror (err));
-        es_fclose (fp);
-        es_fclose (mem_p);
-        goto leave;
-      }
-
-    es_fclose_snatch (mem_p, &buf, &buflen);
-    es_fclose (fp);
-
-    err = ntbtls_x509_cert_new (&ca_chain);
-    if (err)
-      {
-        log_error ("ntbtls_x509_new failed: %s\n", gpg_strerror (err));
-        xfree (buf);
-        goto leave;
-      }
-
-    err = ntbtls_x509_append_cert (ca_chain, buf, buflen);
-    xfree (buf);
+    (void)intended_hostname; /* Not needed because we do not preload
+                              * certificates.  */
 
     err = ntbtls_new (&sess->tls_session, NTBTLS_CLIENT);
     if (err)
       {
         log_error ("ntbtls_new failed: %s\n", gpg_strerror (err));
-        ntbtls_x509_cert_release (ca_chain);
         goto leave;
       }
 
-    err = ntbtls_set_ca_chain (sess->tls_session, ca_chain, NULL);
   }
 #elif HTTP_USE_GNUTLS
   {
@@ -728,7 +767,7 @@ http_session_new (http_session_t *r_session, const char *tls_priority,
 
     is_hkps_pool = (intended_hostname
                     && !ascii_strcasecmp (intended_hostname,
-                                          "hkps.pool.sks-keyservers.net"));
+                                          get_default_keyserver (1)));
 
     /* If the user has not specified a CA list, and they are looking
      * for the hkps pool from sks-keyservers.net, then default to
@@ -787,6 +826,21 @@ http_session_new (http_session_t *r_session, const char *tls_priority,
 #endif /* gnutls >= 3.0.20 */
       }
 
+    /* Add other configured certificates to the session.  */
+    if ((flags & HTTP_FLAG_TRUST_CFG))
+      {
+        for (sl = cfg_ca_certlist; sl; sl = sl->next)
+          {
+            rc = gnutls_certificate_set_x509_trust_file
+              (sess->certcred, sl->d,
+               (sl->flags & 1)? GNUTLS_X509_FMT_PEM : GNUTLS_X509_FMT_DER);
+            if (rc < 0)
+              log_info ("setting extra CA from file '%s' failed: %s\n",
+                        sl->d, gnutls_strerror (rc));
+          }
+      }
+
+
     rc = gnutls_init (&sess->tls_session, GNUTLS_CLIENT);
     if (rc < 0)
       {
@@ -799,7 +853,7 @@ http_session_new (http_session_t *r_session, const char *tls_priority,
     gnutls_transport_set_ptr (sess->tls_session, NULL);
 
     rc = gnutls_priority_set_direct (sess->tls_session,
-                                     tls_priority? tls_priority : "NORMAL",
+                                     "NORMAL",
                                      &errpos);
     if (rc < 0)
       {
@@ -818,11 +872,12 @@ http_session_new (http_session_t *r_session, const char *tls_priority,
         goto leave;
       }
   }
-#else /*!HTTP_USE_GNUTLS*/
+#else /*!HTTP_USE_GNUTLS && !HTTP_USE_NTBTLS*/
   {
-    (void)tls_priority;
+    (void)intended_hostname;
+    (void)flags;
   }
-#endif /*!HTTP_USE_GNUTLS*/
+#endif /*!HTTP_USE_GNUTLS && !HTTP_USE_NTBTLS*/
 
   if (opt_debug > 1)
     log_debug ("http.c:session_new: sess %p created\n", sess);
@@ -866,6 +921,15 @@ http_session_set_log_cb (http_session_t sess,
 }
 
 
+/* Set the TIMEOUT in milliseconds for the connection's connect
+ * calls.  Using 0 disables the timeout.  */
+void
+http_session_set_timeout (http_session_t sess, unsigned int timeout)
+{
+  sess->connect_timeout = timeout;
+}
+
+
 
 
 /* Start a HTTP retrieval and on success store at R_HD a context
@@ -890,13 +954,16 @@ http_open (http_t *r_hd, http_req_t reqtype, const char *url,
   hd = xtrycalloc (1, sizeof *hd);
   if (!hd)
     return gpg_error_from_syserror ();
+  hd->magic = HTTP_CONTEXT_MAGIC;
   hd->req_type = reqtype;
   hd->flags = flags;
   hd->session = http_session_ref (session);
 
   err = parse_uri (&hd->uri, url, 0, !!(flags & HTTP_FLAG_FORCE_TLS));
   if (!err)
-    err = send_request (hd, httphost, auth, proxy, srvtag, headers);
+    err = send_request (hd, httphost, auth, proxy, srvtag,
+                        hd->session? hd->session->connect_timeout : 0,
+                        headers);
 
   if (err)
     {
@@ -916,15 +983,14 @@ http_open (http_t *r_hd, http_req_t reqtype, const char *url,
 
 /* This function is useful to connect to a generic TCP service using
    this http abstraction layer.  This has the advantage of providing
-   service tags and an estream interface.  */
+   service tags and an estream interface.  TIMEOUT is in milliseconds. */
 gpg_error_t
 http_raw_connect (http_t *r_hd, const char *server, unsigned short port,
-                  unsigned int flags, const char *srvtag)
+                  unsigned int flags, const char *srvtag, unsigned int timeout)
 {
   gpg_error_t err = 0;
   http_t hd;
   cookie_t cookie;
-  int hnf;
 
   *r_hd = NULL;
 
@@ -937,12 +1003,17 @@ http_raw_connect (http_t *r_hd, const char *server, unsigned short port,
           log_error ("Tor support is not available\n");
           return gpg_err_make (default_errsource, GPG_ERR_NOT_IMPLEMENTED);
         }
+      /* Non-blocking connects do not work with our Tor proxy because
+       * we can't continue the Socks protocol after the EINPROGRESS.
+       * Disable the timeout to use a blocking connect.  */
+      timeout = 0;
     }
 
   /* Create the handle. */
   hd = xtrycalloc (1, sizeof *hd);
   if (!hd)
     return gpg_error_from_syserror ();
+  hd->magic = HTTP_CONTEXT_MAGIC;
   hd->req_type = HTTP_REQ_OPAQUE;
   hd->flags = flags;
 
@@ -950,12 +1021,9 @@ http_raw_connect (http_t *r_hd, const char *server, unsigned short port,
   {
     assuan_fd_t sock;
 
-    sock = connect_server (server, port, hd->flags, srvtag, &hnf);
-    if (sock == ASSUAN_INVALID_FD)
+    err = connect_server (server, port, hd->flags, srvtag, timeout, &sock);
+    if (err)
       {
-        err = gpg_err_make (default_errsource,
-                            (hnf? GPG_ERR_UNKNOWN_HOST
-                             : gpg_err_code_from_syserror ()));
         xfree (hd);
         return err;
       }
@@ -1048,6 +1116,7 @@ http_wait_response (http_t hd)
 {
   gpg_error_t err;
   cookie_t cookie;
+  int use_tls;
 
   /* Make sure that we are in the data. */
   http_start_data (hd);
@@ -1058,6 +1127,7 @@ http_wait_response (http_t hd)
   if (!cookie)
     return gpg_err_make (default_errsource, GPG_ERR_INTERNAL);
 
+  use_tls = cookie->use_tls;
   es_fclose (hd->fp_write);
   hd->fp_write = NULL;
   /* The close has released the cookie and thus we better set it to NULL.  */
@@ -1067,7 +1137,7 @@ http_wait_response (http_t hd)
      is not required but some very old servers (e.g. the original pksd
      keyserver didn't worked without it.  */
   if ((hd->flags & HTTP_FLAG_SHUTDOWN))
-    shutdown (hd->sock->fd, 1);
+    shutdown (FD2INT (hd->sock->fd), 1);
   hd->in_data = 0;
 
   /* Create a new cookie and a stream for reading.  */
@@ -1076,7 +1146,7 @@ http_wait_response (http_t hd)
     return gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
   cookie->sock = my_socket_ref (hd->sock);
   cookie->session = http_session_ref (hd->session);
-  cookie->use_tls = hd->uri->use_tls;
+  cookie->use_tls = use_tls;
 
   hd->read_cookie = cookie;
   hd->fp_read = es_fopencookie (cookie, "r", cookie_functions);
@@ -1130,6 +1200,8 @@ http_close (http_t hd, int keep_read_stream)
   if (!hd)
     return;
 
+  log_assert (hd->magic == HTTP_CONTEXT_MAGIC);
+
   /* First remove the close notifications for the streams.  */
   if (hd->fp_read)
     es_onclose (hd->fp_read, 0, fp_onclose_notification, hd);
@@ -1143,6 +1215,7 @@ http_close (http_t hd, int keep_read_stream)
   if (hd->fp_write)
     es_fclose (hd->fp_write);
   http_session_unref (hd->session);
+  hd->magic = 0xdeadbeef;
   http_release_parsed_uri (hd->uri);
   while (hd->headers)
     {
@@ -1177,7 +1250,7 @@ http_get_status_code (http_t hd)
 /* Return information pertaining to TLS.  If TLS is not in use for HD,
    NULL is returned.  WHAT is used ask for specific information:
 
-     (NULL) := Only check whether TLS is is use.  Returns an
+     (NULL) := Only check whether TLS is in use.  Returns an
                unspecified string if TLS is in use.  That string may
                even be the empty string.
  */
@@ -1200,14 +1273,16 @@ parse_uri (parsed_uri_t *ret_uri, const char *uri,
 {
   gpg_err_code_t ec;
 
-  *ret_uri = xtrycalloc (1, sizeof **ret_uri + strlen (uri));
+  *ret_uri = xtrycalloc (1, sizeof **ret_uri + 2 * strlen (uri) + 1);
   if (!*ret_uri)
     return gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
   strcpy ((*ret_uri)->buffer, uri);
+  strcpy ((*ret_uri)->buffer + strlen (uri) + 1, uri);
+  (*ret_uri)->original = (*ret_uri)->buffer + strlen (uri) + 1;
   ec = do_parse_uri (*ret_uri, 0, no_scheme_check, force_tls);
   if (ec)
     {
-      xfree (*ret_uri);
+      http_release_parsed_uri (*ret_uri);
       *ret_uri = NULL;
     }
   return gpg_err_make (default_errsource, ec);
@@ -1236,6 +1311,11 @@ http_release_parsed_uri (parsed_uri_t uri)
     {
       uri_tuple_t r, r2;
 
+      for (r = uri->params; r; r = r2)
+	{
+	  r2 = r->next;
+	  xfree (r);
+	}
       for (r = uri->query; r; r = r2)
 	{
 	  r2 = r->next;
@@ -1267,6 +1347,8 @@ do_parse_uri (parsed_uri_t uri, int only_local_part,
   uri->v6lit = 0;
   uri->onion = 0;
   uri->explicit_port = 0;
+  uri->off_host = 0;
+  uri->off_path = 0;
 
   /* A quick validity check. */
   if (strspn (p, VALID_URI_CHARS) != n)
@@ -1310,7 +1392,19 @@ do_parse_uri (parsed_uri_t uri, int only_local_part,
 	{
           p += 2;
 	  if ((p2 = strchr (p, '/')))
-	    *p2++ = 0;
+            {
+              if (p2 - uri->buffer > 10000)
+                return GPG_ERR_BAD_URI;
+              uri->off_path = p2 - uri->buffer;
+              *p2++ = 0;
+            }
+          else
+            {
+              n = (p - uri->buffer) + strlen (p);
+              if (n > 10000)
+                return GPG_ERR_BAD_URI;
+              uri->off_path = n;
+            }
 
           /* Check for username/password encoding */
           if ((p3 = strchr (p, '@')))
@@ -1329,11 +1423,19 @@ do_parse_uri (parsed_uri_t uri, int only_local_part,
 	      *p3++ = '\0';
 	      /* worst case, uri->host should have length 0, points to \0 */
 	      uri->host = p + 1;
+              if (p - uri->buffer > 10000)
+                return GPG_ERR_BAD_URI;
+              uri->off_host = (p + 1) - uri->buffer;
               uri->v6lit = 1;
 	      p = p3;
 	    }
 	  else
-	    uri->host = p;
+            {
+              uri->host = p;
+              if (p - uri->buffer > 10000)
+                return GPG_ERR_BAD_URI;
+              uri->off_host = p - uri->buffer;
+            }
 
 	  if ((p3 = strchr (p, ':')))
 	    {
@@ -1345,7 +1447,7 @@ do_parse_uri (parsed_uri_t uri, int only_local_part,
 	  if ((n = remove_escapes (uri->host)) < 0)
 	    return GPG_ERR_BAD_URI;
 	  if (n != strlen (uri->host))
-	    return GPG_ERR_BAD_URI;	/* Hostname incudes a Nul. */
+	    return GPG_ERR_BAD_URI;	/* Hostname includes a Nul. */
 	  p = p2 ? p2 : NULL;
 	}
       else if (uri->is_http)
@@ -1633,7 +1735,8 @@ is_hostname_port (const char *string)
  */
 static gpg_error_t
 send_request (http_t hd, const char *httphost, const char *auth,
-	      const char *proxy, const char *srvtag, strlist_t headers)
+	      const char *proxy, const char *srvtag, unsigned int timeout,
+              strlist_t headers)
 {
   gpg_error_t err;
   const char *server;
@@ -1642,8 +1745,10 @@ send_request (http_t hd, const char *httphost, const char *auth,
   const char *http_proxy = NULL;
   char *proxy_authstr = NULL;
   char *authstr = NULL;
-  int sock;
-  int hnf;
+  assuan_fd_t sock;
+#ifdef USE_TLS
+  int have_http_proxy = 0;
+#endif
 
   if (hd->uri->use_tls && !hd->session)
     {
@@ -1653,9 +1758,19 @@ send_request (http_t hd, const char *httphost, const char *auth,
 #ifdef USE_TLS
   if (hd->uri->use_tls && !hd->session->tls_session)
     {
-      log_error ("TLS requested but no GNUTLS context available\n");
+      log_error ("TLS requested but no TLS context available\n");
       return gpg_err_make (default_errsource, GPG_ERR_INTERNAL);
     }
+  if (opt_debug)
+    log_debug ("Using TLS library: %s %s\n",
+# if HTTP_USE_NTBTLS
+               "NTBTLS", ntbtls_check_version (NULL)
+# elif HTTP_USE_GNUTLS
+               "GNUTLS", gnutls_check_version (NULL)
+# else
+               "?", "?"
+# endif /*HTTP_USE_*TLS*/
+               );
 #endif /*USE_TLS*/
 
   if ((hd->flags & HTTP_FLAG_FORCE_TOR))
@@ -1667,6 +1782,10 @@ send_request (http_t hd, const char *httphost, const char *auth,
           log_error ("Tor support is not available\n");
           return gpg_err_make (default_errsource, GPG_ERR_NOT_IMPLEMENTED);
         }
+      /* Non-blocking connects do not work with our Tor proxy because
+       * we can't continue the Socks protocol after the EINPROGRESS.
+       * Disable the timeout to use a blocking connect.  */
+      timeout = 0;
     }
 
   server = *hd->uri->host ? hd->uri->host : "localhost";
@@ -1713,7 +1832,6 @@ send_request (http_t hd, const char *httphost, const char *auth,
             && *http_proxy ))
     {
       parsed_uri_t uri;
-      int save_errno;
 
       if (proxy)
 	http_proxy = proxy;
@@ -1731,9 +1849,12 @@ send_request (http_t hd, const char *httphost, const char *auth,
 
       if (err)
         ;
-      else if (!strcmp (uri->scheme, "http") || !strcmp (uri->scheme, "socks4"))
-        ;
-      else if (!strcmp (uri->scheme, "socks5h"))
+#ifdef USE_TLS
+      else if (!strcmp (uri->scheme, "http"))
+        have_http_proxy = 1;
+#endif
+      else if (!strcmp (uri->scheme, "socks4")
+               || !strcmp (uri->scheme, "socks5h"))
         err = gpg_err_make (default_errsource, GPG_ERR_NOT_IMPLEMENTED);
       else
         err = gpg_err_make (default_errsource, GPG_ERR_INV_URI);
@@ -1760,25 +1881,20 @@ send_request (http_t hd, const char *httphost, const char *auth,
             }
         }
 
-      sock = connect_server (*uri->host ? uri->host : "localhost",
-                             uri->port ? uri->port : 80,
-                             hd->flags, srvtag, &hnf);
-      save_errno = errno;
+      err = connect_server (*uri->host ? uri->host : "localhost",
+                            uri->port ? uri->port : 80,
+                            hd->flags, NULL, timeout, &sock);
       http_release_parsed_uri (uri);
-      if (sock == ASSUAN_INVALID_FD)
-        gpg_err_set_errno (save_errno);
     }
   else
     {
-      sock = connect_server (server, port, hd->flags, srvtag, &hnf);
+      err = connect_server (server, port, hd->flags, srvtag, timeout, &sock);
     }
 
-  if (sock == ASSUAN_INVALID_FD)
+  if (err)
     {
       xfree (proxy_authstr);
-      return gpg_err_make (default_errsource,
-                           (hnf? GPG_ERR_UNKNOWN_HOST
-                               : gpg_err_code_from_syserror ()));
+      return err;
     }
   hd->sock = my_socket_new (sock);
   if (!hd->sock)
@@ -1787,7 +1903,94 @@ send_request (http_t hd, const char *httphost, const char *auth,
       return gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
     }
 
+#if USE_TLS
+  if (have_http_proxy && hd->uri->use_tls)
+    {
+      int saved_flags;
+      cookie_t cookie;
 
+      /* Try to use the CONNECT method to proxy our TLS stream.  */
+      request = es_bsprintf
+        ("CONNECT %s:%hu HTTP/1.0\r\nHost: %s:%hu\r\n%s",
+         httphost ? httphost : server,
+         port,
+         httphost ? httphost : server,
+         port,
+         proxy_authstr ? proxy_authstr : "");
+      xfree (proxy_authstr);
+      proxy_authstr = NULL;
+
+      if (! request)
+        return gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
+
+      if (opt_debug || (hd->flags & HTTP_FLAG_LOG_RESP))
+        log_debug_with_string (request, "http.c:request:");
+
+      cookie = xtrycalloc (1, sizeof *cookie);
+      if (! cookie)
+        {
+          err = gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
+          xfree (request);
+          return err;
+        }
+      cookie->sock = my_socket_ref (hd->sock);
+      hd->write_cookie = cookie;
+
+      hd->fp_write = es_fopencookie (cookie, "w", cookie_functions);
+      if (! hd->fp_write)
+        {
+          err = gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
+          my_socket_unref (cookie->sock, NULL, NULL);
+          xfree (cookie);
+          xfree (request);
+          hd->write_cookie = NULL;
+          return err;
+        }
+      else if (es_fputs (request, hd->fp_write) || es_fflush (hd->fp_write))
+        err = gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
+
+      xfree (request);
+      request = NULL;
+
+      /* Make sure http_wait_response doesn't close the stream.  */
+      saved_flags = hd->flags;
+      hd->flags &= ~HTTP_FLAG_SHUTDOWN;
+
+      /* Get the response.  */
+      err = http_wait_response (hd);
+
+      /* Restore flags, destroy stream.  */
+      hd->flags = saved_flags;
+      es_fclose (hd->fp_read);
+      hd->fp_read = NULL;
+      hd->read_cookie = NULL;
+
+      /* Reset state.  */
+      hd->in_data = 0;
+
+      if (err)
+        return err;
+
+      if (hd->status_code != 200)
+        {
+          request = es_bsprintf
+            ("CONNECT %s:%hu",
+             httphost ? httphost : server,
+             port);
+
+          log_error (_("error accessing '%s': http status %u\n"),
+                     request ? request : "out of core",
+                     http_get_status_code (hd));
+
+          xfree (request);
+          return gpg_error (GPG_ERR_NO_DATA);
+        }
+
+      /* We are done with the proxy, the code below will establish a
+       * TLS session and talk directly to the target server.  */
+      http_proxy = NULL;
+    }
+#endif	/* USE_TLS */
 
 #if HTTP_USE_NTBTLS
   if (hd->uri->use_tls)
@@ -1796,7 +1999,14 @@ send_request (http_t hd, const char *httphost, const char *auth,
 
       my_socket_ref (hd->sock);
 
+      /* Until we support send/recv in estream under Windows we need
+       * to use es_fopencookie.  */
+#ifdef HAVE_W32_SYSTEM
+      in = es_fopencookie ((void*)(unsigned int)hd->sock->fd, "rb",
+                           simple_cookie_functions);
+#else
       in = es_fdopen_nc (hd->sock->fd, "rb");
+#endif
       if (!in)
         {
           err = gpg_error_from_syserror ();
@@ -1804,7 +2014,12 @@ send_request (http_t hd, const char *httphost, const char *auth,
           return err;
         }
 
+#ifdef HAVE_W32_SYSTEM
+      out = es_fopencookie ((void*)(unsigned int)hd->sock->fd, "wb",
+                            simple_cookie_functions);
+#else
       out = es_fdopen_nc (hd->sock->fd, "wb");
+#endif
       if (!out)
         {
           err = gpg_error_from_syserror ();
@@ -1822,6 +2037,21 @@ send_request (http_t hd, const char *httphost, const char *auth,
           return err;
         }
 
+#ifdef HTTP_USE_NTBTLS
+      if (hd->session->verify_cb)
+        {
+          err = ntbtls_set_verify_cb (hd->session->tls_session,
+                                      my_ntbtls_verify_cb, hd);
+          if (err)
+            {
+              log_error ("ntbtls_set_verify_cb failed: %s\n",
+                         gpg_strerror (err));
+              xfree (proxy_authstr);
+              return err;
+            }
+        }
+#endif /*HTTP_USE_NTBTLS*/
+
       while ((err = ntbtls_handshake (hd->session->tls_session)))
         {
           switch (err)
@@ -1835,10 +2065,33 @@ send_request (http_t hd, const char *httphost, const char *auth,
         }
 
       hd->session->verify.done = 0;
-      if (tls_callback)
+
+      /* Try the available verify callbacks until one returns success
+       * or a real error.  Note that NTBTLS does the verification
+       * during the handshake via   */
+#ifdef HTTP_USE_NTBTLS
+      err = 0; /* Fixme check that the CB has been called.  */
+#else
+      err = gpg_error (GPG_ERR_NOT_IMPLEMENTED);
+#endif
+
+      if (hd->session->verify_cb
+          && gpg_err_source (err) == GPG_ERR_SOURCE_DIRMNGR
+          && gpg_err_code (err) == GPG_ERR_NOT_IMPLEMENTED)
+        err = hd->session->verify_cb (hd->session->verify_cb_value,
+                                      hd, hd->session,
+                                      (hd->flags | hd->session->flags),
+                                      hd->session->tls_session);
+
+      if (tls_callback
+          && gpg_err_source (err) == GPG_ERR_SOURCE_DIRMNGR
+          && gpg_err_code (err) == GPG_ERR_NOT_IMPLEMENTED)
         err = tls_callback (hd, hd->session, 0);
-      else
+
+      if (gpg_err_source (err) == GPG_ERR_SOURCE_DIRMNGR
+          && gpg_err_code (err) == GPG_ERR_NOT_IMPLEMENTED)
         err = http_verify_server_credentials (hd->session);
+
       if (err)
         {
           log_info ("TLS connection authentication failed: %s <%s>\n",
@@ -1846,6 +2099,7 @@ send_request (http_t hd, const char *httphost, const char *auth,
           xfree (proxy_authstr);
           return err;
         }
+
     }
 #elif HTTP_USE_GNUTLS
   if (hd->uri->use_tls)
@@ -1859,6 +2113,7 @@ send_request (http_t hd, const char *httphost, const char *auth,
       gnutls_transport_set_push_function (hd->session->tls_session,
                                           my_gnutls_write);
 
+    handshake_again:
       do
         {
           rc = gnutls_handshake (hd->session->tls_session);
@@ -1874,10 +2129,15 @@ send_request (http_t hd, const char *httphost, const char *auth,
 
               alertno = gnutls_alert_get (hd->session->tls_session);
               alertstr = gnutls_alert_get_name (alertno);
-              log_info ("TLS handshake failed: %s (alert %d)\n",
+              log_info ("TLS handshake %s: %s (alert %d)\n",
+                        rc == GNUTLS_E_WARNING_ALERT_RECEIVED
+                        ? "warning" : "failed",
                         alertstr, (int)alertno);
               if (alertno == GNUTLS_A_UNRECOGNIZED_NAME && server)
                 log_info ("  (sent server name '%s')\n", server);
+
+              if (rc == GNUTLS_E_WARNING_ALERT_RECEIVED)
+                goto handshake_again;
             }
           else
             log_info ("TLS handshake failed: %s\n", gnutls_strerror (rc));
@@ -1954,7 +2214,7 @@ send_request (http_t hd, const char *httphost, const char *auth,
     {
       char portstr[35];
 
-      if (port == 80)
+      if (port == (hd->uri->use_tls? 443 : 80))
         *portstr = 0;
       else
         snprintf (portstr, sizeof portstr, ":%u", port);
@@ -2134,7 +2394,7 @@ store_header (http_t hd, char *line)
   if (*line == ' ' || *line == '\t')
     {
       /* Continuation. This won't happen too often as it is not
-         recommended.  We use a straightforward implementaion. */
+         recommended.  We use a straightforward implementation. */
       if (!hd->headers)
         return GPG_ERR_PROTOCOL_VIOLATION;
       n += strlen (hd->headers->value);
@@ -2162,11 +2422,10 @@ store_header (http_t hd, char *line)
   if (h)
     {
       /* We have already seen a line with that name.  Thus we assume
-         it is a comma separated list and merge them.  */
-      p = xtrymalloc (strlen (h->value) + 1 + strlen (value)+ 1);
+       * it is a comma separated list and merge them.  */
+      p = strconcat (h->value, ",", value, NULL);
       if (!p)
         return gpg_err_code_from_syserror ();
-      strcpy (stpcpy (stpcpy (p, h->value), ","), value);
       xfree (h->value);
       h->value = p;
       return 0;
@@ -2266,7 +2525,7 @@ parse_response (http_t hd)
       if (!len)
 	return GPG_ERR_EOF;
 
-      if ((hd->flags & HTTP_FLAG_LOG_RESP))
+      if (opt_debug || (hd->flags & HTTP_FLAG_LOG_RESP))
         log_debug_with_string (line, "http.c:response:\n");
     }
   while (!*line);
@@ -2311,7 +2570,7 @@ parse_response (http_t hd)
       /* Trim line endings of empty lines. */
       if ((*line == '\r' && line[1] == '\n') || *line == '\n')
 	*line = 0;
-      if ((hd->flags & HTTP_FLAG_LOG_RESP))
+      if (opt_debug || (hd->flags & HTTP_FLAG_LOG_RESP))
         log_info ("http.c:RESP: '%.*s'\n",
                   (int)strlen(line)-(*line&&line[1]?2:0),line);
       if (*line)
@@ -2418,16 +2677,16 @@ start_server ()
 
 /* Return true if SOCKS shall be used.  This is the case if tor_mode
  * is enabled and the desired address is not the loopback address.
- * This function is basically a copy of the same internal fucntion in
+ * This function is basically a copy of the same internal function in
  * Libassuan.  */
 static int
-use_socks (struct sockaddr *addr)
+use_socks (struct sockaddr_storage *addr)
 {
   int mode;
 
   if (assuan_sock_get_flag (ASSUAN_INVALID_FD, "tor-mode", &mode) || !mode)
     return 0;  /* Not in Tor mode.  */
-  else if (addr->sa_family == AF_INET6)
+  else if (addr->ss_family == AF_INET6)
     {
       struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)addr;
       const unsigned char *s;
@@ -2442,7 +2701,7 @@ use_socks (struct sockaddr *addr)
 
       return 0; /* This is the loopback address.  */
     }
-  else if (addr->sa_family == AF_INET)
+  else if (addr->ss_family == AF_INET)
     {
       struct sockaddr_in *addr_in = (struct sockaddr_in *)addr;
 
@@ -2459,7 +2718,7 @@ use_socks (struct sockaddr *addr)
 /* Wrapper around assuan_sock_new which takes the domain from an
  * address parameter.  */
 static assuan_fd_t
-my_sock_new_for_addr (struct sockaddr *addr, int type, int proto)
+my_sock_new_for_addr (struct sockaddr_storage *addr, int type, int proto)
 {
   int domain;
 
@@ -2470,17 +2729,172 @@ my_sock_new_for_addr (struct sockaddr *addr, int type, int proto)
       domain = AF_INET;
     }
   else
-    domain = addr->sa_family;
+    domain = addr->ss_family;
 
   return assuan_sock_new (domain, type, proto);
 }
 
 
-/* Actually connect to a server.  Returns the file descriptor or -1 on
-   error.  ERRNO is set on error. */
-static assuan_fd_t
+/* Call WSAGetLastError and map it to a libgpg-error.  */
+#ifdef HAVE_W32_SYSTEM
+static gpg_error_t
+my_wsagetlasterror (void)
+{
+  int wsaerr;
+  gpg_err_code_t ec;
+
+  wsaerr = WSAGetLastError ();
+  switch (wsaerr)
+    {
+    case WSAENOTSOCK:        ec = GPG_ERR_EINVAL;       break;
+    case WSAEWOULDBLOCK:     ec = GPG_ERR_EAGAIN;       break;
+    case ERROR_BROKEN_PIPE:  ec = GPG_ERR_EPIPE;        break;
+    case WSANOTINITIALISED:  ec = GPG_ERR_ENOSYS;       break;
+    case WSAENOBUFS:         ec = GPG_ERR_ENOBUFS;      break;
+    case WSAEMSGSIZE:        ec = GPG_ERR_EMSGSIZE;     break;
+    case WSAECONNREFUSED:    ec = GPG_ERR_ECONNREFUSED; break;
+    case WSAEISCONN:         ec = GPG_ERR_EISCONN;      break;
+    case WSAEALREADY:        ec = GPG_ERR_EALREADY;     break;
+    case WSAETIMEDOUT:       ec = GPG_ERR_ETIMEDOUT;    break;
+    default:                 ec = GPG_ERR_EIO;          break;
+    }
+
+  return gpg_err_make (default_errsource, ec);
+}
+#endif /*HAVE_W32_SYSTEM*/
+
+
+/* Connect SOCK and return GPG_ERR_ETIMEOUT if a connection could not
+ * be established within TIMEOUT milliseconds.  0 indicates the
+ * system's default timeout.  The other args are the usual connect
+ * args.  On success 0 is returned, on timeout GPG_ERR_ETIMEDOUT, and
+ * another error code for other errors.  On timeout the caller needs
+ * to close the socket as soon as possible to stop an ongoing
+ * handshake.
+ *
+ * This implementation is for well-behaving systems; see Stevens,
+ * Network Programming, 2nd edition, Vol 1, 15.4.  */
+static gpg_error_t
+connect_with_timeout (assuan_fd_t sock,
+                      struct sockaddr *addr, int addrlen,
+                      unsigned int timeout)
+{
+  gpg_error_t err;
+  int syserr;
+  socklen_t slen;
+  fd_set rset, wset;
+  struct timeval tval;
+  int n;
+
+#ifndef HAVE_W32_SYSTEM
+  int oflags;
+# define RESTORE_BLOCKING()  do {  \
+    fcntl (sock, F_SETFL, oflags); \
+  } while (0)
+#else /*HAVE_W32_SYSTEM*/
+# define RESTORE_BLOCKING()  do {                       \
+    unsigned long along = 0;                            \
+    ioctlsocket (FD2INT (sock), FIONBIO, &along);       \
+  } while (0)
+#endif /*HAVE_W32_SYSTEM*/
+
+
+  if (!timeout)
+    {
+      /* Shortcut.  */
+      if (assuan_sock_connect (sock, addr, addrlen))
+        err = gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
+      else
+        err = 0;
+      return err;
+    }
+
+  /* Switch the socket into non-blocking mode.  */
+#ifdef HAVE_W32_SYSTEM
+  {
+    unsigned long along = 1;
+    if (ioctlsocket (FD2INT (sock), FIONBIO, &along))
+      return my_wsagetlasterror ();
+  }
+#else
+  oflags = fcntl (sock, F_GETFL, 0);
+  if (fcntl (sock, F_SETFL, oflags | O_NONBLOCK))
+    return gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
+#endif
+
+  /* Do the connect.  */
+  if (!assuan_sock_connect (sock, addr, addrlen))
+    {
+      /* Immediate connect.  Restore flags. */
+      RESTORE_BLOCKING ();
+      return 0; /* Success.  */
+    }
+  err = gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
+  if (gpg_err_code (err) != GPG_ERR_EINPROGRESS
+#ifdef HAVE_W32_SYSTEM
+      && gpg_err_code (err) != GPG_ERR_EAGAIN
+#endif
+      )
+    {
+      RESTORE_BLOCKING ();
+      return err;
+    }
+
+  FD_ZERO (&rset);
+  FD_SET (FD2INT (sock), &rset);
+  wset = rset;
+  tval.tv_sec = timeout / 1000;
+  tval.tv_usec = (timeout % 1000) * 1000;
+
+  n = my_select (FD2INT(sock)+1, &rset, &wset, NULL, &tval);
+  if (n < 0)
+    {
+      err = gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
+      RESTORE_BLOCKING ();
+      return err;
+    }
+  if (!n)
+    {
+      /* Timeout: We do not restore the socket flags on timeout
+       * because the caller is expected to close the socket.  */
+      return gpg_err_make (default_errsource, GPG_ERR_ETIMEDOUT);
+    }
+  if (!FD_ISSET (sock, &rset) && !FD_ISSET (sock, &wset))
+    {
+      /* select misbehaved.  */
+      return gpg_err_make (default_errsource, GPG_ERR_SYSTEM_BUG);
+    }
+
+  slen = sizeof (syserr);
+  if (getsockopt (FD2INT(sock), SOL_SOCKET, SO_ERROR,
+                  (void*)&syserr, &slen) < 0)
+    {
+      /* Assume that this is Solaris which returns the error in ERRNO.  */
+      err = gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
+    }
+  else if (syserr)
+    err = gpg_err_make (default_errsource, gpg_err_code_from_errno (syserr));
+  else
+    err = 0; /* Connected.  */
+
+  RESTORE_BLOCKING ();
+
+  return err;
+
+#undef RESTORE_BLOCKING
+}
+
+
+/* Actually connect to a server.  On success 0 is returned and the
+ * file descriptor for the socket is stored at R_SOCK; on error an
+ * error code is returned and ASSUAN_INVALID_FD is stored at R_SOCK.
+ * TIMEOUT is the connect timeout in milliseconds.  Note that the
+ * function tries to connect to all known addresses and the timeout is
+ * for each one. */
+static gpg_error_t
 connect_server (const char *server, unsigned short port,
-                unsigned int flags, const char *srvtag, int *r_host_not_found)
+                unsigned int flags, const char *srvtag, unsigned int timeout,
+                assuan_fd_t *r_sock)
 {
   gpg_error_t err;
   assuan_fd_t sock = ASSUAN_INVALID_FD;
@@ -2488,11 +2902,11 @@ connect_server (const char *server, unsigned short port,
   int hostfound = 0;
   int anyhostaddr = 0;
   int srv, connected;
-  int last_errno = 0;
+  gpg_error_t last_err = 0;
   struct srventry *serverlist = NULL;
-  int ret;
 
-  *r_host_not_found = 0;
+  *r_sock = ASSUAN_INVALID_FD;
+
 #if defined(HAVE_W32_SYSTEM) && !defined(HTTP_NO_WSASTARTUP)
   init_sockets ();
 #endif /*Windows*/
@@ -2509,18 +2923,21 @@ connect_server (const char *server, unsigned short port,
                                          ASSUAN_SOCK_TOR);
       if (sock == ASSUAN_INVALID_FD)
         {
-          if (errno == EHOSTUNREACH)
-            *r_host_not_found = 1;
-          log_error ("can't connect to '%s': %s\n", server, strerror (errno));
+          err = gpg_err_make (default_errsource,
+                              (errno == EHOSTUNREACH)? GPG_ERR_UNKNOWN_HOST
+                              : gpg_err_code_from_syserror ());
+          log_error ("can't connect to '%s': %s\n", server, gpg_strerror (err));
+          return err;
         }
-      else
-        notify_netactivity ();
-      return sock;
+
+      notify_netactivity ();
+      *r_sock = sock;
+      return 0;
 
 #else /*!ASSUAN_SOCK_TOR*/
 
-      gpg_err_set_errno (ENETUNREACH);
-      return -1; /* Out of core.  */
+      err = gpg_err_make (default_errsource, GPG_ERR_ENETUNREACH);
+      return ASSUAN_INVALID_FD;
 
 #endif /*!HASSUAN_SOCK_TOR*/
     }
@@ -2533,6 +2950,7 @@ connect_server (const char *server, unsigned short port,
         log_info ("getting '%s' SRV for '%s' failed: %s\n",
                   srvtag, server, gpg_strerror (err));
       /* Note that on error SRVCOUNT is zero.  */
+      err = 0;
     }
 
   if (!serverlist)
@@ -2541,7 +2959,8 @@ connect_server (const char *server, unsigned short port,
 	 up a fake SRV record. */
       serverlist = xtrycalloc (1, sizeof *serverlist);
       if (!serverlist)
-        return -1; /* Out of core.  */
+        return gpg_err_make (default_errsource, gpg_err_code_from_syserror ());
+
       serverlist->port = port;
       strncpy (serverlist->target, server, DIMof (struct srventry, target));
       serverlist->target[DIMof (struct srventry, target)-1] = '\0';
@@ -2562,6 +2981,7 @@ connect_server (const char *server, unsigned short port,
         {
           log_info ("resolving '%s' failed: %s\n",
                     serverlist[srv].target, gpg_strerror (err));
+          last_err = err;
           continue; /* Not found - try next one. */
         }
       hostfound = 1;
@@ -2578,18 +2998,21 @@ connect_server (const char *server, unsigned short port,
           sock = my_sock_new_for_addr (ai->addr, ai->socktype, ai->protocol);
           if (sock == ASSUAN_INVALID_FD)
             {
-              int save_errno = errno;
-              log_error ("error creating socket: %s\n", strerror (errno));
+              err = gpg_err_make (default_errsource,
+                                  gpg_err_code_from_syserror ());
+              log_error ("error creating socket: %s\n", gpg_strerror (err));
               free_dns_addrinfo (aibuf);
               xfree (serverlist);
-              errno = save_errno;
-              return ASSUAN_INVALID_FD;
+              return err;
             }
 
           anyhostaddr = 1;
-          ret = assuan_sock_connect (sock, ai->addr, ai->addrlen);
-          if (ret)
-            last_errno = errno;
+          err = connect_with_timeout (sock, (struct sockaddr *)ai->addr,
+                                      ai->addrlen, timeout);
+          if (err)
+            {
+              last_err = err;
+            }
           else
             {
               connected = 1;
@@ -2616,22 +3039,58 @@ connect_server (const char *server, unsigned short port,
                    server, (int)WSAGetLastError());
 #else
         log_error ("can't connect to '%s': %s\n",
-                   server, strerror (last_errno));
+                   server, gpg_strerror (last_err));
 #endif
         }
-      if (!hostfound || (hostfound && !anyhostaddr))
-        *r_host_not_found = 1;
+      err = last_err? last_err : gpg_err_make (default_errsource,
+                                               GPG_ERR_UNKNOWN_HOST);
       if (sock != ASSUAN_INVALID_FD)
 	assuan_sock_close (sock);
-      gpg_err_set_errno (last_errno);
-      return ASSUAN_INVALID_FD;
+      return err;
     }
-  return sock;
+
+  *r_sock = sock;
+  return 0;
+}
+
+
+/* Helper to read from a socket.  This handles npth things and
+ * EINTR.  */
+static gpgrt_ssize_t
+read_server (assuan_fd_t sock, void *buffer, size_t size)
+{
+  int nread;
+
+  do
+    {
+#ifdef HAVE_W32_SYSTEM
+      /* Under Windows we need to use recv for a socket.  */
+# if defined(USE_NPTH)
+      npth_unprotect ();
+# endif
+      nread = recv (FD2INT (sock), buffer, size, 0);
+# if defined(USE_NPTH)
+      npth_protect ();
+# endif
+
+#else /*!HAVE_W32_SYSTEM*/
+
+# ifdef USE_NPTH
+      nread = npth_read (sock, buffer, size);
+# else
+      nread = read (sock, buffer, size);
+# endif
+
+#endif /*!HAVE_W32_SYSTEM*/
+    }
+  while (nread == -1 && errno == EINTR);
+
+  return nread;
 }
 
 
 static gpg_error_t
-write_server (int sock, const char *data, size_t length)
+write_server (assuan_fd_t sock, const char *data, size_t length)
 {
   int nleft;
   int nwritten;
@@ -2643,7 +3102,7 @@ write_server (int sock, const char *data, size_t length)
 # if defined(USE_NPTH)
       npth_unprotect ();
 # endif
-      nwritten = send (sock, data, nleft, 0);
+      nwritten = send (FD2INT (sock), data, nleft, 0);
 # if defined(USE_NPTH)
       npth_protect ();
 # endif
@@ -2745,29 +3204,7 @@ cookie_read (void *cookie, void *buffer, size_t size)
   else
 #endif /*HTTP_USE_GNUTLS*/
     {
-      do
-        {
-#ifdef HAVE_W32_SYSTEM
-          /* Under Windows we need to use recv for a socket.  */
-# if defined(USE_NPTH)
-          npth_unprotect ();
-# endif
-          nread = recv (c->sock->fd, buffer, size, 0);
-# if defined(USE_NPTH)
-          npth_protect ();
-# endif
-
-#else /*!HAVE_W32_SYSTEM*/
-
-# ifdef USE_NPTH
-          nread = npth_read (c->sock->fd, buffer, size);
-# else
-          nread = read (c->sock->fd, buffer, size);
-# endif
-
-#endif /*!HAVE_W32_SYSTEM*/
-        }
-      while (nread == -1 && errno == EINTR);
+      nread = read_server (c->sock->fd, buffer, size);
     }
 
   if (c->content_length_valid && nread > 0)
@@ -2849,6 +3286,34 @@ cookie_write (void *cookie, const void *buffer_arg, size_t size)
 }
 
 
+#if defined(HAVE_W32_SYSTEM) && defined(HTTP_USE_NTBTLS)
+static gpgrt_ssize_t
+simple_cookie_read (void *cookie, void *buffer, size_t size)
+{
+  assuan_fd_t sock = (assuan_fd_t)cookie;
+  return read_server (sock, buffer, size);
+}
+
+static gpgrt_ssize_t
+simple_cookie_write (void *cookie, const void *buffer_arg, size_t size)
+{
+  assuan_fd_t sock = (assuan_fd_t)cookie;
+  const char *buffer = buffer_arg;
+  int nwritten;
+
+  if (write_server (sock, buffer, size))
+    {
+      gpg_err_set_errno (EIO);
+      nwritten = -1;
+    }
+  else
+    nwritten = size;
+
+  return (gpgrt_ssize_t)nwritten;
+}
+#endif /*HAVE_W32_SYSTEM*/
+
+
 #ifdef HTTP_USE_GNUTLS
 /* Wrapper for gnutls_bye used by my_socket_unref.  */
 static void
@@ -2912,11 +3377,8 @@ cookie_close (void *cookie)
 gpg_error_t
 http_verify_server_credentials (http_session_t sess)
 {
-#if HTTP_USE_NTBTLS
-  (void)sess;
-  return 0;  /* FIXME!! */
-#elif HTTP_USE_GNUTLS
-  static const char const errprefix[] = "TLS verification of peer failed";
+#if HTTP_USE_GNUTLS
+  static const char errprefix[] = "TLS verification of peer failed";
   int rc;
   unsigned int status;
   const char *hostname;
@@ -3049,4 +3511,173 @@ uri_query_lookup (parsed_uri_t uri, const char *key)
       return t;
 
   return NULL;
+}
+
+
+/* Return true if both URI point to the same host.  */
+static int
+same_host_p (parsed_uri_t a, parsed_uri_t b)
+{
+  return a->host && b->host && !ascii_strcasecmp (a->host, b->host);
+}
+
+
+/* Prepare a new URL for a HTTP redirect.  INFO has flags controlling
+ * the operaion, STATUS_CODE is used for diagnostics, LOCATION is the
+ * value of the "Location" header, and R_URL reveives the new URL on
+ * success or NULL or error.  Note that INFO->ORIG_URL is
+ * required.  */
+gpg_error_t
+http_prepare_redirect (http_redir_info_t *info, unsigned int status_code,
+                       const char *location, char **r_url)
+{
+  gpg_error_t err;
+  parsed_uri_t locuri;
+  parsed_uri_t origuri;
+  char *newurl;
+  char *p;
+
+  *r_url = NULL;
+
+  if (!info || !info->orig_url)
+    return gpg_error (GPG_ERR_INV_ARG);
+
+  if (!info->silent)
+    log_info (_("URL '%s' redirected to '%s' (%u)\n"),
+              info->orig_url, location? location:"[none]", status_code);
+
+  if (!info->redirects_left)
+    {
+      if (!info->silent)
+        log_error (_("too many redirections\n"));
+      return gpg_error (GPG_ERR_NO_DATA);
+    }
+  info->redirects_left--;
+
+  if (!location || !*location)
+    return gpg_error (GPG_ERR_NO_DATA);
+
+  err = http_parse_uri (&locuri, location, 0);
+  if (err)
+    return err;
+
+  /* Make sure that an onion address only redirects to another
+   * onion address, or that a https address only redirects to a
+   * https address. */
+  if (info->orig_onion && !locuri->onion)
+    {
+      http_release_parsed_uri (locuri);
+      return gpg_error (GPG_ERR_FORBIDDEN);
+    }
+  if (!info->allow_downgrade && info->orig_https && !locuri->use_tls)
+    {
+      http_release_parsed_uri (locuri);
+      return gpg_error (GPG_ERR_FORBIDDEN);
+    }
+
+  if (info->trust_location)
+    {
+      /* We trust the Location - return it verbatim.  */
+      http_release_parsed_uri (locuri);
+      newurl = xtrystrdup (location);
+      if (!newurl)
+        {
+          err = gpg_error_from_syserror ();
+          http_release_parsed_uri (locuri);
+          return err;
+        }
+    }
+  else if ((err = http_parse_uri (&origuri, info->orig_url, 0)))
+    {
+      http_release_parsed_uri (locuri);
+      return err;
+    }
+  else if (same_host_p (origuri, locuri))
+    {
+      /* The host is the same and thus we can take the location
+       * verbatim.  */
+      http_release_parsed_uri (origuri);
+      http_release_parsed_uri (locuri);
+      newurl = xtrystrdup (location);
+      if (!newurl)
+        {
+          err = gpg_error_from_syserror ();
+          http_release_parsed_uri (locuri);
+          return err;
+        }
+    }
+  else
+    {
+      /* We take only the host and port from the URL given in the
+       * Location.  This limits the effects of redirection attacks by
+       * rogue hosts returning an URL to servers in the client's own
+       * network.  We don't even include the userinfo because they
+       * should be considered similar to the path and query parts.
+       */
+      if (!(locuri->off_path - locuri->off_host))
+        {
+          http_release_parsed_uri (origuri);
+          http_release_parsed_uri (locuri);
+          return gpg_error (GPG_ERR_BAD_URI);
+        }
+      if (!(origuri->off_path - origuri->off_host))
+        {
+          http_release_parsed_uri (origuri);
+          http_release_parsed_uri (locuri);
+          return gpg_error (GPG_ERR_BAD_URI);
+        }
+
+      newurl = xtrymalloc (strlen (origuri->original)
+                           + (locuri->off_path - locuri->off_host) + 1);
+      if (!newurl)
+        {
+          err = gpg_error_from_syserror ();
+          http_release_parsed_uri (origuri);
+          http_release_parsed_uri (locuri);
+          return err;
+        }
+      /* Build new URL from
+       *   uriguri:  scheme userinfo ---- ---- path rest
+       *   locuri:   ------ -------- host port ---- ----
+       */
+      p = newurl;
+      memcpy (p, origuri->original, origuri->off_host);
+      p += origuri->off_host;
+      memcpy (p, locuri->original + locuri->off_host,
+              (locuri->off_path - locuri->off_host));
+      p += locuri->off_path - locuri->off_host;
+      strcpy (p, origuri->original + origuri->off_path);
+
+      http_release_parsed_uri (origuri);
+      http_release_parsed_uri (locuri);
+      if (!info->silent)
+        log_info (_("redirection changed to '%s'\n"), newurl);
+    }
+
+  *r_url = newurl;
+  return 0;
+}
+
+
+/* Return string describing the http STATUS.  Returns an empty string
+ * for an unknown status.  */
+const char *
+http_status2string (unsigned int status)
+{
+  switch (status)
+    {
+    case 500: return "Internal Server Error";
+    case 501: return "Not Implemented";
+    case 502: return "Bad Gateway";
+    case 503: return "Service Unavailable";
+    case 504: return "Gateway Timeout";
+    case 505: return "HTTP version Not Supported";
+    case 506: return "Variant Also Negation";
+    case 507: return "Insufficient Storage";
+    case 508: return "Loop Detected";
+    case 510: return "Not Extended";
+    case 511: return "Network Authentication Required";
+    }
+
+  return "";
 }

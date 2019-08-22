@@ -1,19 +1,19 @@
 /* rfc822parse.h - Simple mail and MIME parser
- *	Copyright (C) 1999 Werner Koch, Duesseldorf
- *      Copyright (C) 2003 g10 Code GmbH
+ * Copyright (C) 1999 Werner Koch, Duesseldorf
+ * Copyright (C) 2003 g10 Code GmbH
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation; either version 3 of
+ * This file is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation; either version 2.1 of
  * the License, or (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful,
+ * This file is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this program; if not, see <https://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef RFC822PARSE_H
@@ -48,6 +48,8 @@ typedef int (*rfc822parse_cb_t) (void *opaque,
                                  rfc822parse_event_t event,
                                  rfc822parse_t msg);
 
+int rfc822_valid_header_name_p (const char *name);
+void rfc822_capitalize_header_name (char *name);
 
 rfc822parse_t rfc822parse_open (rfc822parse_cb_t cb, void *opaque_value);
 

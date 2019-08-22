@@ -23,18 +23,25 @@
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <gcrypt.h>
 #include <gpg-error.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+#if HAVE_MMAP
+#include <sys/mman.h>
+#endif
 
 #include "private.h"
 #include "scheme.h"
 #include "scheme-private.h"
 #include "ffi.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "../../common/argparse.h"
 #include "../../common/init.h"
 #include "../../common/logging.h"
@@ -88,7 +95,7 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
     }
 }
 
-/* Print usage information and and provide strings for help. */
+/* Print usage information and provide strings for help. */
 static const char *
 my_strusage( int level )
 {
@@ -117,6 +124,19 @@ my_strusage( int level )
 }
 
 
+
+static int
+path_absolute_p (const char *p)
+{
+#if _WIN32
+  return ((strlen (p) > 2 && p[1] == ':' && (p[2] == '\\' || p[2] == '/'))
+          || p[0] == '\\' || p[0] == '/');
+#else
+  return p[0] == '/';
+#endif
+}
+
+
 /* Load the Scheme program from FILE_NAME.  If FILE_NAME is not an
    absolute path, and LOOKUP_IN_PATH is given, then it is qualified
    with the values in scmpath until the file is found.  */
@@ -132,9 +152,9 @@ load (scheme *sc, char *file_name,
   FILE *h = NULL;
 
   use_path =
-    lookup_in_path && ! (file_name[0] == '/' || scmpath_len == 0);
+    lookup_in_path && ! (path_absolute_p (file_name) || scmpath_len == 0);
 
-  if (file_name[0] == '/' || lookup_in_cwd || scmpath_len == 0)
+  if (path_absolute_p (file_name) || lookup_in_cwd || scmpath_len == 0)
     {
       h = fopen (file_name, "r");
       if (! h)
@@ -175,9 +195,41 @@ load (scheme *sc, char *file_name,
                  "of the Scheme library.\n");
       goto leave;
     }
-  if (verbose > 1)
+  if (verbose > 2)
     fprintf (stderr, "Loading %s...\n", qualified_name);
-  scheme_load_named_file (sc, h, qualified_name);
+
+#if HAVE_MMAP
+  /* Always try to mmap the file.  This allows the pages to be shared
+   * between processes.  If anything fails, we fall back to using
+   * buffered streams.  */
+  if (1)
+    {
+      struct stat st;
+      void *map;
+      size_t len;
+      int fd = fileno (h);
+
+      if (fd < 0)
+        goto fallback;
+
+      if (fstat (fd, &st))
+        goto fallback;
+
+      len = (size_t) st.st_size;
+      if ((off_t) len != st.st_size)
+        goto fallback;	/* Truncated.  */
+
+      map = mmap (NULL, len, PROT_READ, MAP_SHARED, fd, 0);
+      if (map == MAP_FAILED)
+        goto fallback;
+
+      scheme_load_memory (sc, map, len, qualified_name);
+      munmap (map, len);
+    }
+  else
+  fallback:
+#endif
+    scheme_load_named_file (sc, h, qualified_name);
   fclose (h);
 
   if (sc->retcode && sc->nesting)
@@ -274,7 +326,11 @@ main (int argc, char **argv)
   if (! err)
     err = load (sc, "repl.scm", 0, 1);
   if (! err)
+    err = load (sc, "xml.scm", 0, 1);
+  if (! err)
     err = load (sc, "tests.scm", 0, 1);
+  if (! err)
+    err = load (sc, "gnupg.scm", 0, 1);
   if (err)
     {
       fprintf (stderr, "Error initializing gpgscm: %s.\n",

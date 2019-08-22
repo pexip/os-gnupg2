@@ -20,7 +20,7 @@
 (macro (assert form)
   (let ((tag (get-tag form)))
     `(if (not ,(cadr form))
-	 (throw ,(if (pair? tag)
+	 (throw ,(if (and (pair? tag) (string? (car tag)) (number? (cdr tag)))
 		     `(string-append ,(car tag) ":"
 				     ,(number->string (+ 1 (cdr tag)))
 				     ": Assertion failed: ")
@@ -28,6 +28,18 @@
 		(quote ,(cadr form))))))
 (assert #t)
 (assert (not #f))
+
+;; Trace displays and returns the given value.  A debugging aid.
+(define (trace x)
+  (display x)
+  (newline)
+  x)
+
+;; Stringification.
+(define (stringify expression)
+  (let ((p (open-output-string)))
+    (write expression p)
+    (get-output-string p)))
 
 (define (filter pred lst)
   (cond ((null? lst) '())
@@ -95,10 +107,10 @@
   (let ((length (string-length haystack)))
     (define (split acc offset n)
       (if (>= offset length)
-	  (reverse acc)
+	  (reverse! acc)
 	  (let ((i (lookahead haystack offset)))
 	    (if (or (eq? i #f) (= 0 n))
-		(reverse (cons (substring haystack offset length) acc))
+		(reverse! (cons (substring haystack offset length) acc))
 		(split (cons (substring haystack offset i) acc)
 		       (+ i 1) (- n 1))))))
     (split '() 0 n)))
@@ -168,10 +180,10 @@
 (define (string-rtrim predicate s)
   (if (string=? s "")
       ""
-      (let loop ((s' (reverse (string->list s))))
+      (let loop ((s' (reverse! (string->list s))))
 	(if (predicate (car s'))
 	    (loop (cdr s'))
-	    (list->string (reverse s'))))))
+	    (list->string (reverse! s'))))))
 (assert (string=? "" (string-rtrim char-whitespace? "")))
 (assert (string=? "foo" (string-rtrim char-whitespace? "foo 	")))
 
@@ -186,6 +198,13 @@
 (ffi-define (string-contains? haystack needle))
 (assert (string-contains? "Hallo" "llo"))
 (assert (not (string-contains? "Hallo" "olla")))
+
+;; Translate characters.
+(define (string-translate s from to)
+  (list->string (map (lambda (c)
+		       (let ((i (string-index from c)))
+			 (if i (string-ref to i) c))) (string->list s))))
+(assert (equal? (string-translate "foo/bar" "/" ".") "foo.bar"))
 
 ;; Read a word from port P.
 (define (read-word . p)

@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <gpg-error.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -341,11 +342,33 @@ do_seek (scheme *sc, pointer args)
 }
 
 static pointer
+do_get_temp_path (scheme *sc, pointer args)
+{
+  FFI_PROLOG ();
+#ifdef HAVE_W32_SYSTEM
+  char buffer[MAX_PATH+1];
+#endif
+  FFI_ARGS_DONE_OR_RETURN (sc, args);
+
+#ifdef HAVE_W32_SYSTEM
+  if (GetTempPath (MAX_PATH+1, buffer) == 0)
+    FFI_RETURN_STRING (sc, "/temp");
+  FFI_RETURN_STRING (sc, buffer);
+#else
+  FFI_RETURN_STRING (sc, "/tmp");
+#endif
+}
+
+static pointer
 do_mkdtemp (scheme *sc, pointer args)
 {
   FFI_PROLOG ();
   char *template;
-  char buffer[128];
+#ifdef PATH_MAX
+  char buffer[PATH_MAX];
+#else
+  char buffer[1024];
+#endif
   char *name;
   FFI_ARG_OR_RETURN (sc, char *, template, string, args);
   FFI_ARGS_DONE_OR_RETURN (sc, args);
@@ -499,6 +522,14 @@ do_get_isotime (scheme *sc, pointer args)
   FFI_ARGS_DONE_OR_RETURN (sc, args);
   gnupg_get_isotime (timebuf);
   FFI_RETURN_STRING (sc, timebuf);
+}
+
+static pointer
+do_get_time (scheme *sc, pointer args)
+{
+  FFI_PROLOG ();
+  FFI_ARGS_DONE_OR_RETURN (sc, args);
+  FFI_RETURN_INT (sc, gnupg_get_time ());
 }
 
 static pointer
@@ -884,6 +915,8 @@ do_wait_processes (scheme *sc, pointer args)
                               retcodes);
   if (err == GPG_ERR_GENERAL)
     err = 0;	/* Let the return codes speak.  */
+  if (err == GPG_ERR_TIMEOUT)
+    err = 0;	/* We may have got some results.  */
 
   for (i = 0; i < count; i++)
     retcodes_list =
@@ -1339,6 +1372,7 @@ ffi_init (scheme *sc, const char *argv0, const char *scriptname,
   ffi_define_function (sc, fdopen);
   ffi_define_function (sc, close);
   ffi_define_function (sc, seek);
+  ffi_define_function (sc, get_temp_path);
   ffi_define_function_name (sc, "_mkdtemp", mkdtemp);
   ffi_define_function (sc, unlink);
   ffi_define_function (sc, unlink_recursively);
@@ -1347,6 +1381,7 @@ ffi_init (scheme *sc, const char *argv0, const char *scriptname,
   ffi_define_function (sc, mkdir);
   ffi_define_function (sc, rmdir);
   ffi_define_function (sc, get_isotime);
+  ffi_define_function (sc, get_time);
   ffi_define_function (sc, getpid);
 
   /* Random numbers.  */
@@ -1401,6 +1436,22 @@ ffi_init (scheme *sc, const char *argv0, const char *scriptname,
 
   ffi_define (sc, "*win32*",
 #if _WIN32
+              sc->T
+#else
+              sc->F
+#endif
+              );
+
+  ffi_define (sc, "*maintainer-mode*",
+#if MAINTAINER_MODE
+              sc->T
+#else
+              sc->F
+#endif
+              );
+
+  ffi_define (sc, "*run-all-tests*",
+#if RUN_ALL_TESTS
               sc->T
 #else
               sc->F

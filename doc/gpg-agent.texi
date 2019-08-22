@@ -77,7 +77,7 @@ the included Secure Shell Agent you may start the agent using:
 @c
 @c   The rationale for this separation is that it allows access to the
 @c   secret key to be tightly controlled and audited, and it doesn't permit
-@c   the the supplicant to either copy the key or to override the owner's
+@c   the supplicant to either copy the key or to override the owner's
 @c   intentions.
 
 @example
@@ -186,6 +186,9 @@ this convention).
 @node Agent Options
 @section Option Summary
 
+Options may either be used on the command line or, after stripping off
+the two leading dashes, in the configuration file.
+
 @table @gnupgtabopt
 
 @anchor{option --options}
@@ -193,8 +196,9 @@ this convention).
 @opindex options
 Reads configuration from @var{file} instead of from the default
 per-user configuration file.  The default configuration file is named
-@file{gpg-agent.conf} and expected in the @file{.gnupg} directory directly
-below the home directory of the user.
+@file{gpg-agent.conf} and expected in the @file{.gnupg} directory
+directly below the home directory of the user.  This option is ignored
+if used in an options file.
 
 @anchor{option --homedir}
 @include opt-homedir.texi
@@ -205,7 +209,7 @@ below the home directory of the user.
 @opindex verbose
 Outputs additional information while running.
 You can increase the verbosity by giving several
-verbose commands to @command{gpgsm}, such as @samp{-vv}.
+verbose commands to @command{gpg-agent}, such as @samp{-vv}.
 
 @item -q
 @item --quiet
@@ -325,10 +329,14 @@ the environment variable @code{SHELL} which is correct in almost all
 cases.
 
 
-@item --no-grab
+@item --grab
+@itemx --no-grab
+@opindex grab
 @opindex no-grab
-Tell the pinentry not to grab the keyboard and mouse.  This option
-should in general not be used to avoid X-sniffing attacks.
+Tell the pinentry to grab the keyboard and mouse.  This option should
+be used on X-Servers to avoid X-sniffing attacks. Any use of the
+option @option{--grab} overrides an used option @option{--no-grab}.
+The default is @option{--no-grab}.
 
 @anchor{option --log-file}
 @item --log-file @var{file}
@@ -395,7 +403,10 @@ control this behavior but this command line option takes precedence.
 Set the time a cache entry is valid to @var{n} seconds.  The default
 is 600 seconds.  Each time a cache entry is accessed, the entry's
 timer is reset.  To set an entry's maximum lifetime, use
-@command{max-cache-ttl}.
+@command{max-cache-ttl}.  Note that a cached passphrase may not
+evicted immediately from memory if no client requests a cache
+operation.  This is due to an internal housekeeping function which is
+only run every few seconds.
 
 @item --default-cache-ttl-ssh @var{n}
 @opindex default-cache-ttl
@@ -555,6 +566,9 @@ Ignore requests to change the current @code{tty} or X window system's
 @code{DISPLAY} variable respectively.  This is useful to lock the
 pinentry to pop up at the @code{tty} or display you started the agent.
 
+@item --listen-backlog @var{n}
+@opindex listen-backlog
+Set the size of the queue for pending connections.  The default is 64.
 
 @anchor{option --extra-socket}
 @item --extra-socket @var{name}
@@ -571,6 +585,16 @@ local gpg-agent and use its private keys.  This enables decrypting or
 signing data on a remote machine without exposing the private keys to the
 remote machine.
 
+@anchor{option --enable-extended-key-format}
+@item --enable-extended-key-format
+@opindex enable-extended-key-format
+This option creates keys in the extended private key format.  Changing
+the passphrase of a key will also convert the key to that new format.
+Using this option makes the private keys unreadable for gpg-agent
+versions before 2.1.12.  The advantage of the extended private key
+format is that it is text based and can carry additional meta data.
+Note that this option also changes the key protection format to use
+OCB mode.
 
 @anchor{option --enable-ssh-support}
 @item --enable-ssh-support
@@ -626,11 +650,55 @@ and allows the use of gpg-agent with the ssh implementation
 @command{putty}.  This is similar to the regular ssh-agent support but
 makes use of Windows message queue as required by @command{putty}.
 
+@anchor{option --ssh-fingerprint-digest}
+@item --ssh-fingerprint-digest
+@opindex ssh-fingerprint-digest
+
+Select the digest algorithm used to compute ssh fingerprints that are
+communicated to the user, e.g. in pinentry dialogs.  OpenSSH has
+transitioned from using MD5 to the more secure SHA256.
+
+
+@item --auto-expand-secmem @var{n}
+@opindex auto-expand-secmem
+Allow Libgcrypt to expand its secure memory area as required.  The
+optional value @var{n} is a non-negative integer with a suggested size
+in bytes of each additionally allocated secure memory area.  The value
+is rounded up to the next 32 KiB; usual C style prefixes are allowed.
+For an heavy loaded gpg-agent with many concurrent connection this
+option avoids sign or decrypt errors due to out of secure memory error
+returns.
+
+@item --s2k-calibration @var{milliseconds}
+@opindex s2k-calibration
+Change the default calibration time to @var{milliseconds}.  The given
+value is capped at 60 seconds; a value of 0 resets to the compiled-in
+default.  This option is re-read on a SIGHUP (or @code{gpgconf
+--reload gpg-agent}) and the S2K count is then re-calibrated.
+
+@item --s2k-count @var{n}
+@opindex s2k-count
+Specify the iteration count used to protect the passphrase.  This
+option can be used to override the auto-calibration done by default.
+The auto-calibration computes a count which requires by default 100ms
+to mangle a given passphrase.  See also @option{--s2k-calibration}.
+
+To view the actually used iteration count and the milliseconds
+required for an S2K operation use:
+
+@example
+gpg-connect-agent 'GETINFO s2k_count' /bye
+gpg-connect-agent 'GETINFO s2k_time' /bye
+@end example
+
+To view the auto-calibrated count use:
+
+@example
+gpg-connect-agent 'GETINFO s2k_count_cal' /bye
+@end example
+
 
 @end table
-
-All the long options may also be given in the configuration file after
-stripping off the two leading dashes.
 
 
 @mansect files
@@ -792,6 +860,7 @@ again.  Only certain options are honored: @code{quiet},
 @code{pinentry-invisible-char},
 @code{default-cache-ttl},
 @code{max-cache-ttl}, @code{ignore-cache-for-signing},
+@code{s2k-count},
 @code{no-allow-external-cache}, @code{allow-emacs-pinentry},
 @code{no-allow-mark-trusted}, @code{disable-scdaemon}, and
 @code{disable-check-own-socket}.  @code{scdaemon-program} is also
@@ -1313,7 +1382,7 @@ This command adds a passphrase to the cache for the specified @var{keygrip}.
   PRESET_PASSPHRASE [--inquire] <string_or_keygrip> <timeout> [<hexstring>]
 @end example
 
-The passphrase is a hexidecimal string when specified. When not specified, the
+The passphrase is a hexadecimal string when specified. When not specified, the
 passphrase will be retrieved from the pinentry module unless the
 @option{--inquire} option was specified in which case the passphrase will be
 retrieved from the client.
@@ -1412,7 +1481,7 @@ numbers in the range @code{0} to @code{UINT_MAX} and wrapping around to
 0.  The actual values should not be relied upon; they shall only be used
 to detect a change.
 
-The currently defined counters are are:
+The currently defined counters are:
 @table @code
 @item ANY
 Incremented with any change of any of the other counters.
@@ -1508,7 +1577,7 @@ following values are defined:
 
 @item cache-ttl-opt-preset
 This option sets the cache TTL for new entries created by GENKEY and
-PASSWD commands when using the @option{--preset} option.  It it is not
+PASSWD commands when using the @option{--preset} option.  It is not
 used a default value is used.
 
 @item s2k-count
@@ -1518,6 +1587,27 @@ passphrase of a key.  Values below 65536 are considered to be 0.  This
 option is valid for the entire session or until reset to 0.  This
 option is useful if the key is later used on boxes which are either
 much slower or faster than the actual box.
+
+@item pretend-request-origin
+This option switches the connection into a restricted mode which
+handles all further commands in the same way as they would be handled
+when originating from the extra or browser socket.  Note that this
+option is not available in the restricted mode.  Valid values for this
+option are:
+
+  @table @code
+  @item none
+  @itemx local
+  This is a NOP and leaves the connection in the standard way.
+
+  @item remote
+  Pretend to come from a remote origin in the same way as connections
+  from the @option{--extra-socket}.
+
+  @item browser
+  Pretend to come from a local web browser in the same way as connections
+  from the @option{--browser-socket}.
+  @end table
 
 @end table
 

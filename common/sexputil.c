@@ -29,7 +29,7 @@
  */
 
 /* This file implements a few utility functions useful when working
-   with canonical encrypted S-expresions (i.e. not the S-exprssion
+   with canonical encrypted S-expressions (i.e. not the S-exprssion
    objects from libgcrypt).  */
 
 #include <config.h>
@@ -266,7 +266,7 @@ cmp_simple_canon_sexp (const unsigned char *a_orig,
 /* Create a simple S-expression from the hex string at LINE.  Returns
    a newly allocated buffer with that canonical encoded S-expression
    or NULL in case of an error.  On return the number of characters
-   scanned in LINE will be stored at NSCANNED.  This fucntions stops
+   scanned in LINE will be stored at NSCANNED.  This functions stops
    converting at the first character not representing a hexdigit. Odd
    numbers of hex digits are allowed; a leading zero is then
    assumed. If no characters have been found, NULL is returned.*/
@@ -512,53 +512,6 @@ get_rsa_pk_from_canon_sexp (const unsigned char *keydata, size_t keydatalen,
 }
 
 
-/* Return the algo of a public RSA expressed as an canonical encoded
-   S-expression.  The return value is a statically allocated
-   string.  On error that string is set to NULL. */
-gpg_error_t
-get_pk_algo_from_canon_sexp (const unsigned char *keydata, size_t keydatalen,
-                             const char **r_algo)
-{
-  gpg_error_t err;
-  const unsigned char *buf, *tok;
-  size_t buflen, toklen;
-  int depth;
-
-  *r_algo = NULL;
-
-  buf = keydata;
-  buflen = keydatalen;
-  depth = 0;
-  if ((err = parse_sexp (&buf, &buflen, &depth, &tok, &toklen)))
-    return err;
-  if ((err = parse_sexp (&buf, &buflen, &depth, &tok, &toklen)))
-    return err;
-  if (!tok || toklen != 10 || memcmp ("public-key", tok, toklen))
-    return gpg_error (GPG_ERR_BAD_PUBKEY);
-  if ((err = parse_sexp (&buf, &buflen, &depth, &tok, &toklen)))
-    return err;
-  if ((err = parse_sexp (&buf, &buflen, &depth, &tok, &toklen)))
-    return err;
-  if (!tok)
-    return gpg_error (GPG_ERR_BAD_PUBKEY);
-
-  if (toklen == 3 && !memcmp ("rsa", tok, toklen))
-    *r_algo = "rsa";
-  else if (toklen == 3 && !memcmp ("dsa", tok, toklen))
-    *r_algo = "dsa";
-  else if (toklen == 3 && !memcmp ("elg", tok, toklen))
-    *r_algo = "elg";
-  else if (toklen == 5 && !memcmp ("ecdsa", tok, toklen))
-    *r_algo = "ecdsa";
-  else if (toklen == 5 && !memcmp ("eddsa", tok, toklen))
-    *r_algo = "eddsa";
-  else
-    return gpg_error (GPG_ERR_PUBKEY_ALGO);
-
-  return 0;
-}
-
-
 /* Return the algo of a public KEY of SEXP. */
 int
 get_pk_algo_from_key (gcry_sexp_t key)
@@ -604,5 +557,23 @@ get_pk_algo_from_key (gcry_sexp_t key)
  out:
   gcry_sexp_release (list);
 
+  return algo;
+}
+
+
+/* This is a variant of get_pk_algo_from_key but takes an canonical
+ * encoded S-expression as input.  Returns a GCRYPT public key
+ * identiier or 0 on error.  */
+int
+get_pk_algo_from_canon_sexp (const unsigned char *keydata, size_t keydatalen)
+{
+  gcry_sexp_t sexp;
+  int algo;
+
+  if (gcry_sexp_sscan (&sexp, NULL, keydata, keydatalen))
+    return 0;
+
+  algo = get_pk_algo_from_key (sexp);
+  gcry_sexp_release (sexp);
   return algo;
 }

@@ -27,15 +27,15 @@
 #include "gpg.h"
 #include "options.h"
 #include "packet.h"
-#include "status.h"
+#include "../common/status.h"
 #include "keydb.h"
-#include "util.h"
+#include "../common/util.h"
 #include "main.h"
 #include "trustdb.h"
-#include "ttyio.h"
-#include "status.h"
+#include "../common/ttyio.h"
+#include "../common/status.h"
 #include "photoid.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "tofu.h"
 
 #define CONTROL_D ('D' - 'A' + 1)
@@ -110,10 +110,10 @@ do_show_revocation_reason( PKT_signature *sig )
    subkeys, etc.)  Mode 1: use only the revocation on the main pk */
 
 void
-show_revocation_reason( PKT_public_key *pk, int mode )
+show_revocation_reason (ctrl_t ctrl, PKT_public_key *pk, int mode)
 {
     /* Hmmm, this is not so easy because we have to duplicate the code
-     * used in the trustbd to calculate the keyflags.  We need to find
+     * used in the trustdb to calculate the keyflags.  We need to find
      * a clean way to check revocation certificates on keys and
      * signatures.  And there should be no duplicate code.  Because we
      * enter this function only when the trustdb told us that we have
@@ -127,7 +127,7 @@ show_revocation_reason( PKT_public_key *pk, int mode )
 
     /* get the keyblock */
     fingerprint_from_pk( pk, fingerprint, &fingerlen );
-    rc = get_pubkey_byfprint(NULL, &keyblock, fingerprint, fingerlen);
+    rc = get_pubkey_byfprint (ctrl, NULL, &keyblock, fingerprint, fingerlen);
     if( rc ) { /* that should never happen */
 	log_debug( "failed to get the keyblock\n");
 	return;
@@ -160,7 +160,7 @@ show_revocation_reason( PKT_public_key *pk, int mode )
 
     /* We didn't find it, so check if the whole key is revoked */
     if(!node && !mode)
-      show_revocation_reason(pk,1);
+      show_revocation_reason (ctrl, pk, 1);
 
     release_kbnode( keyblock );
 }
@@ -188,7 +188,7 @@ do_edit_ownertrust (ctrl_t ctrl, PKT_public_key *pk, int mode,
   int show=0;
   int min_num;
   int did_help=defer_help;
-  unsigned int minimum = tdb_get_min_ownertrust (pk);
+  unsigned int minimum = tdb_get_min_ownertrust (ctrl, pk, 0);
 
   switch(minimum)
     {
@@ -222,25 +222,25 @@ do_edit_ownertrust (ctrl_t ctrl, PKT_public_key *pk, int mode,
             KBNODE keyblock, un;
 
             tty_printf (_("No trust value assigned to:\n"));
-            print_key_line (NULL, pk, 0);
+            print_key_line (ctrl, NULL, pk, 0);
 
-	    p = get_user_id_native(keyid);
+	    p = get_user_id_native (ctrl, keyid);
 	    tty_printf (_("      \"%s\"\n"),p);
 	    xfree (p);
 
-            keyblock = get_pubkeyblock (keyid);
+            keyblock = get_pubkeyblock (ctrl, keyid);
             if (!keyblock)
                 BUG ();
             for (un=keyblock; un; un = un->next)
 	      {
                 if (un->pkt->pkttype != PKT_USER_ID )
 		  continue;
-                if (un->pkt->pkt.user_id->is_revoked )
+                if (un->pkt->pkt.user_id->flags.revoked)
 		  continue;
-                if (un->pkt->pkt.user_id->is_expired )
+                if (un->pkt->pkt.user_id->flags.expired)
 		  continue;
 		/* Only skip textual primaries */
-                if (un->pkt->pkt.user_id->is_primary
+                if (un->pkt->pkt.user_id->flags.primary
 		    && !un->pkt->pkt.user_id->attrib_data )
 		  continue;
 
@@ -257,7 +257,7 @@ do_edit_ownertrust (ctrl_t ctrl, PKT_public_key *pk, int mode,
 		tty_printf(_("  aka \"%s\"\n"),p);
 	      }
 
-            print_fingerprint (NULL, pk, 2);
+            print_fingerprint (ctrl, NULL, pk, 2);
             tty_printf("\n");
 	    release_kbnode (keyblock);
           }
@@ -391,8 +391,8 @@ edit_ownertrust (ctrl_t ctrl, PKT_public_key *pk, int mode )
           break;
         case 1: /* trust value set */
           trust &= ~TRUST_FLAG_DISABLED;
-          trust |= get_ownertrust (pk) & TRUST_FLAG_DISABLED;
-          update_ownertrust (pk, trust );
+          trust |= get_ownertrust (ctrl, pk) & TRUST_FLAG_DISABLED;
+          update_ownertrust (ctrl, pk, trust );
           return 1;
         default:
           return 0;
@@ -467,7 +467,7 @@ do_we_trust( PKT_public_key *pk, unsigned int trustlevel )
  * key anyway.
  */
 static int
-do_we_trust_pre( PKT_public_key *pk, unsigned int trustlevel )
+do_we_trust_pre (ctrl_t ctrl, PKT_public_key *pk, unsigned int trustlevel )
 {
   int rc;
 
@@ -475,8 +475,8 @@ do_we_trust_pre( PKT_public_key *pk, unsigned int trustlevel )
 
   if( !opt.batch && !rc )
     {
-      print_pubkey_info(NULL,pk);
-      print_fingerprint (NULL, pk, 2);
+      print_pubkey_info (ctrl, NULL,pk);
+      print_fingerprint (ctrl, NULL, pk, 2);
       tty_printf("\n");
 
       if ((trustlevel & TRUST_MASK) == TRUST_NEVER)
@@ -499,7 +499,7 @@ do_we_trust_pre( PKT_public_key *pk, unsigned int trustlevel )
           char *hint_str;
 
           keyid_from_pk (pk, kid);
-          hint_str = get_long_user_id_string ( kid );
+          hint_str = get_long_user_id_string (ctrl, kid);
           write_status_text ( STATUS_USERID_HINT, hint_str );
           xfree (hint_str);
         }
@@ -548,7 +548,7 @@ check_signatures_trust (ctrl_t ctrl, PKT_signature *sig)
   unsigned int trustlevel = TRUST_UNKNOWN;
   int rc=0;
 
-  rc = get_pubkey( pk, sig->keyid );
+  rc = get_pubkey_for_sig (ctrl, pk, sig);
   if (rc)
     { /* this should not happen */
       log_error("Ooops; the key vanished  - can't check the trust\n");
@@ -561,7 +561,7 @@ check_signatures_trust (ctrl_t ctrl, PKT_signature *sig)
       if( !opt.quiet )
         log_info(_("WARNING: Using untrusted key!\n"));
       if (opt.with_fingerprint)
-        print_fingerprint (NULL, pk, 1);
+        print_fingerprint (ctrl, NULL, pk, 1);
       goto leave;
     }
 
@@ -580,13 +580,13 @@ check_signatures_trust (ctrl_t ctrl, PKT_signature *sig)
       else
 	log_info(_("WARNING: This key has been revoked by its owner!\n"));
       log_info(_("         This could mean that the signature is forged.\n"));
-      show_revocation_reason( pk, 0 );
+      show_revocation_reason (ctrl, pk, 0);
     }
   else if ((trustlevel & TRUST_FLAG_SUB_REVOKED) )
     {
       write_status( STATUS_KEYREVOKED );
       log_info(_("WARNING: This subkey has been revoked by its owner!\n"));
-      show_revocation_reason( pk, 0 );
+      show_revocation_reason (ctrl, pk, 0);
     }
 
   if ((trustlevel & TRUST_FLAG_DISABLED))
@@ -602,7 +602,7 @@ check_signatures_trust (ctrl_t ctrl, PKT_signature *sig)
 
 
       primary_pk = xmalloc_clear (sizeof *primary_pk);
-      get_pubkey (primary_pk, pk->main_keyid);
+      get_pubkey (ctrl, primary_pk, pk->main_keyid);
       fingerprint_from_pk (primary_pk, fpr, &fprlen);
       free_public_key (primary_pk);
 
@@ -632,7 +632,7 @@ check_signatures_trust (ctrl_t ctrl, PKT_signature *sig)
               log_info (_("trustlevel adjusted to FULL"
                           " due to valid PKA info\n"));
             }
-          /* (fall through) */
+          /* fall through */
         case TRUST_FULLY:
           if (!okay)
             {
@@ -649,7 +649,7 @@ check_signatures_trust (ctrl_t ctrl, PKT_signature *sig)
     {
     case TRUST_EXPIRED:
       log_info(_("Note: This key has expired!\n"));
-      print_fingerprint (NULL, pk, 1);
+      print_fingerprint (ctrl, NULL, pk, 1);
       break;
 
     default:
@@ -663,7 +663,7 @@ check_signatures_trust (ctrl_t ctrl, PKT_signature *sig)
                  " a trusted signature!\n"));
       log_info(_("         There is no indication that the "
                  "signature belongs to the owner.\n" ));
-      print_fingerprint (NULL, pk, 1);
+      print_fingerprint (ctrl, NULL, pk, 1);
       break;
 
     case TRUST_NEVER:
@@ -673,7 +673,7 @@ check_signatures_trust (ctrl_t ctrl, PKT_signature *sig)
       log_info(_("WARNING: We do NOT trust this key!\n"));
       log_info(_("         The signature is probably a FORGERY.\n"));
       if (opt.with_fingerprint)
-        print_fingerprint (NULL, pk, 1);
+        print_fingerprint (ctrl, NULL, pk, 1);
       rc = gpg_error (GPG_ERR_BAD_SIGNATURE);
       break;
 
@@ -683,19 +683,19 @@ check_signatures_trust (ctrl_t ctrl, PKT_signature *sig)
                  " sufficiently trusted signatures!\n"));
       log_info(_("         It is not certain that the"
                  " signature belongs to the owner.\n" ));
-      print_fingerprint (NULL, pk, 1);
+      print_fingerprint (ctrl, NULL, pk, 1);
       break;
 
     case TRUST_FULLY:
       write_trust_status (STATUS_TRUST_FULLY, trustlevel);
       if (opt.with_fingerprint)
-        print_fingerprint (NULL, pk, 1);
+        print_fingerprint (ctrl, NULL, pk, 1);
       break;
 
     case TRUST_ULTIMATE:
       write_trust_status (STATUS_TRUST_ULTIMATE, trustlevel);
       if (opt.with_fingerprint)
-        print_fingerprint (NULL, pk, 1);
+        print_fingerprint (ctrl, NULL, pk, 1);
       break;
     }
 
@@ -730,39 +730,34 @@ key_present_in_pk_list(PK_LIST pk_list, PKT_public_key *pk)
 }
 
 
-/****************
+/*
  * Return a malloced string with a default recipient if there is any
+ * Fixme: We don't distinguish between malloc failure and no-default-recipient.
  */
 static char *
-default_recipient(ctrl_t ctrl)
+default_recipient (ctrl_t ctrl)
 {
-    PKT_public_key *pk;
-    byte fpr[MAX_FINGERPRINT_LEN+1];
-    size_t n;
-    char *p;
-    int i;
+  PKT_public_key *pk;
+  char *result;
 
-    if( opt.def_recipient )
-	return xstrdup( opt.def_recipient );
-    if( !opt.def_recipient_self )
-	return NULL;
-    pk = xmalloc_clear( sizeof *pk );
-    i = get_seckey_default (ctrl, pk);
-    if( i ) {
-	free_public_key( pk );
-	return NULL;
+  if (opt.def_recipient)
+    return xtrystrdup (opt.def_recipient);
+
+  if (!opt.def_recipient_self)
+    return NULL;
+  pk = xtrycalloc (1, sizeof *pk );
+  if (!pk)
+    return NULL;
+  if (get_seckey_default (ctrl, pk))
+    {
+      free_public_key (pk);
+      return NULL;
     }
-    n = MAX_FINGERPRINT_LEN;
-    fingerprint_from_pk( pk, fpr, &n );
-    free_public_key( pk );
-    p = xmalloc( 2*n+3 );
-    *p++ = '0';
-    *p++ = 'x';
-    for(i=0; i < n; i++ )
-	sprintf( p+2*i, "%02X", fpr[i] );
-    p -= 2;
-    return p;
+  result = hexfingerprint (pk, NULL, 0);
+  free_public_key (pk);
+  return result;
 }
+
 
 static int
 expand_id(const char *id,strlist_t *into,unsigned int flags)
@@ -818,7 +813,7 @@ expand_group (strlist_t input)
  * success the new key is added to PK_LIST_ADDR.  NAME is the user id
  * of the key.  USE the requested usage and a set MARK_HIDDEN will
  * mark the key in the updated list as a hidden recipient.  If
- * FROM_FILE is true, NAME is is not a user ID but the name of a file
+ * FROM_FILE is true, NAME is not a user ID but the name of a file
  * holding a key. */
 gpg_error_t
 find_and_check_key (ctrl_t ctrl, const char *name, unsigned int use,
@@ -826,6 +821,7 @@ find_and_check_key (ctrl_t ctrl, const char *name, unsigned int use,
 {
   int rc;
   PKT_public_key *pk;
+  KBNODE keyblock = NULL;
 
   if (!name || !*name)
     return gpg_error (GPG_ERR_INV_USER_ID);
@@ -838,7 +834,7 @@ find_and_check_key (ctrl_t ctrl, const char *name, unsigned int use,
   if (from_file)
     rc = get_pubkey_fromfile (ctrl, pk, name);
   else
-    rc = get_best_pubkey_byname (ctrl, NULL, pk, name, NULL, 0, 0);
+    rc = get_best_pubkey_byname (ctrl, NULL, pk, name, &keyblock, 0);
   if (rc)
     {
       int code;
@@ -861,6 +857,7 @@ find_and_check_key (ctrl_t ctrl, const char *name, unsigned int use,
   if (rc)
     {
       /* Key found but not usable for us (e.g. sign-only key). */
+      release_kbnode (keyblock);
       send_status_inv_recp (3, name); /* Wrong key usage */
       log_error (_("%s: skipped: %s\n"), name, gpg_strerror (rc) );
       free_public_key (pk);
@@ -872,7 +869,8 @@ find_and_check_key (ctrl_t ctrl, const char *name, unsigned int use,
     {
       int trustlevel;
 
-      trustlevel = get_validity (ctrl, NULL, pk, pk->user_id, NULL, 1);
+      trustlevel = get_validity (ctrl, keyblock, pk, pk->user_id, NULL, 1);
+      release_kbnode (keyblock);
       if ( (trustlevel & TRUST_FLAG_DISABLED) )
         {
           /* Key has been disabled. */
@@ -882,7 +880,7 @@ find_and_check_key (ctrl_t ctrl, const char *name, unsigned int use,
           return GPG_ERR_UNUSABLE_PUBKEY;
         }
 
-      if ( !do_we_trust_pre (pk, trustlevel) )
+      if ( !do_we_trust_pre (ctrl, pk, trustlevel) )
         {
           /* We don't trust this key.  */
           send_status_inv_recp (10, name);
@@ -1026,9 +1024,9 @@ build_pk_list (ctrl_t ctrl, strlist_t rcpts, PK_LIST *ret_pk_list)
              issue a warning and switch into GnuPG mode. */
           if ((rov->flags & PK_LIST_HIDDEN) && (PGP6 || PGP7 || PGP8))
             {
-              log_info(_("you may not use %s while in %s mode\n"),
+              log_info(_("option '%s' may not be used in %s mode\n"),
                        "--hidden-recipient",
-                       compliance_option_string());
+                       gnupg_compliance_option_string (opt.compliance));
 
               compliance_failure();
             }
@@ -1077,9 +1075,9 @@ build_pk_list (ctrl_t ctrl, strlist_t rcpts, PK_LIST *ret_pk_list)
                      GnuPG mode. */
                   if ((r->flags&PK_LIST_ENCRYPT_TO) && (PGP6 || PGP7 || PGP8))
                     {
-                      log_info(_("you may not use %s while in %s mode\n"),
+                      log_info(_("option '%s' may not be used in %s mode\n"),
                                "--hidden-encrypt-to",
-                               compliance_option_string());
+                               gnupg_compliance_option_string (opt.compliance));
 
                       compliance_failure();
                     }
@@ -1151,8 +1149,8 @@ build_pk_list (ctrl_t ctrl, strlist_t rcpts, PK_LIST *ret_pk_list)
                   else
                     {
                       size_t n;
-                      char *p = get_user_id( keyid, &n );
-                      tty_print_utf8_string( p, n );
+                      char *p = get_user_id (ctrl, keyid, &n, NULL);
+                      tty_print_utf8_string ( p, n );
                       xfree(p);
                     }
                   tty_printf("\"\n");
@@ -1218,7 +1216,7 @@ build_pk_list (ctrl_t ctrl, strlist_t rcpts, PK_LIST *ret_pk_list)
                     {
                       tty_printf (_("Public key is disabled.\n") );
                     }
-                  else if ( do_we_trust_pre (pk, trustlevel) )
+                  else if ( do_we_trust_pre (ctrl, pk, trustlevel) )
                     {
                       /* Skip the actual key if the key is already
                        * present in the list */

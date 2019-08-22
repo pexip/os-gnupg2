@@ -31,9 +31,9 @@
 #include <ksba.h>
 
 #include "keydb.h"
-#include "exechelp.h"
-#include "i18n.h"
-#include "sysutils.h"
+#include "../common/exechelp.h"
+#include "../common/i18n.h"
+#include "../common/sysutils.h"
 #include "../kbx/keybox.h" /* for KEYBOX_FLAG_* */
 #include "../common/membuf.h"
 #include "minip12.h"
@@ -272,7 +272,7 @@ static int
 import_one (ctrl_t ctrl, struct stats_s *stats, int in_fd)
 {
   int rc;
-  Base64Context b64reader = NULL;
+  gnupg_ksba_io_t b64reader = NULL;
   ksba_reader_t reader;
   ksba_cert_t cert = NULL;
   ksba_cms_t cms = NULL;
@@ -288,7 +288,12 @@ import_one (ctrl_t ctrl, struct stats_s *stats, int in_fd)
       goto leave;
     }
 
-  rc = gpgsm_create_reader (&b64reader, ctrl, fp, 1, &reader);
+  rc = gnupg_ksba_create_reader
+    (&b64reader, ((ctrl->is_pem? GNUPG_KSBA_IO_PEM : 0)
+                  | (ctrl->is_base64? GNUPG_KSBA_IO_BASE64 : 0)
+                  | (ctrl->autodetect_encoding? GNUPG_KSBA_IO_AUTODETECT : 0)
+                  | GNUPG_KSBA_IO_MULTIPEM),
+     fp, &reader);
   if (rc)
     {
       log_error ("can't create reader: %s\n", gpg_strerror (rc));
@@ -375,14 +380,14 @@ import_one (ctrl_t ctrl, struct stats_s *stats, int in_fd)
 
       ksba_reader_clear (reader, NULL, NULL);
     }
-  while (!gpgsm_reader_eof_seen (b64reader));
+  while (!gnupg_ksba_reader_eof_seen (b64reader));
 
  leave:
   if (any && gpg_err_code (rc) == GPG_ERR_EOF)
     rc = 0;
   ksba_cms_release (cms);
   ksba_cert_release (cert);
-  gpgsm_destroy_reader (b64reader);
+  gnupg_ksba_destroy_reader (b64reader);
   es_fclose (fp);
   return rc;
 }
@@ -809,7 +814,7 @@ parse_p12 (ctrl_t ctrl, ksba_reader_t reader, struct stats_s *stats)
 /*    print_mpi ("   q", sk.q); */
 /*    print_mpi ("   u", sk.u); */
 
-  /* Create an S-expresion from the parameters. */
+  /* Create an S-expression from the parameters. */
   err = gcry_sexp_build (&s_key, NULL,
                          "(private-key(rsa(n%m)(e%m)(d%m)(p%m)(q%m)(u%m)))",
                          sk.n, sk.e, sk.d, sk.p, sk.q, sk.u, NULL);

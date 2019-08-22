@@ -1,0 +1,30 @@
+From: Peter Lebbing <peter@digitalbrains.com>
+Date: Tue, 2 Jul 2019 10:28:56 +0200
+Subject: Mention --sender in documentation
+
+(cherry picked from commit 37b549dfe0acd362399debd7c93794eb75937402)
+---
+ doc/gpg.texi | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/doc/gpg.texi b/doc/gpg.texi
+index ff2c0cf..5c3bd48 100644
+--- a/doc/gpg.texi
++++ b/doc/gpg.texi
+@@ -2609,11 +2609,11 @@ allows for this.
+ 
+ @item --disable-signer-uid
+ @opindex disable-signer-uid
+-By default the user ID of the signing key is embedded in the data
+-signature.  As of now this is only done if the signing key has been
+-specified with @option{local-user} using a mail address.  This
+-information can be helpful for verifier to locate the key; see
+-option @option{--auto-key-retrieve}.
++By default the user ID of the signing key is embedded in the data signature.
++As of now this is only done if the signing key has been specified with
++@option{local-user} using a mail address, or with @option{sender}.  This
++information can be helpful for verifier to locate the key; see option
++@option{--auto-key-retrieve}.
+ 
+ @item --personal-cipher-preferences @var{string}
+ @opindex personal-cipher-preferences

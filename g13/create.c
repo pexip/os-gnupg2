@@ -27,7 +27,7 @@
 #include <assert.h>
 
 #include "g13.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "create.h"
 
 #include "keyblob.h"
@@ -217,7 +217,7 @@ write_keyblob (const char *filename,
 
 
 
-/* Create a new container under the name FILENAME and intialize it
+/* Create a new container under the name FILENAME and initialize it
    using the current settings.  If the file already exists an error is
    returned.  */
 gpg_error_t

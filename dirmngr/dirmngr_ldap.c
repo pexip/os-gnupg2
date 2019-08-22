@@ -29,7 +29,6 @@
 # include <signal.h>
 #endif
 #include <errno.h>
-#include <assert.h>
 #include <sys/time.h>
 #include <unistd.h>
 #ifndef USE_LDAPWRAPPER
@@ -56,8 +55,8 @@
 #include "../common/mischelp.h"
 #include "../common/strlist.h"
 
-#include "i18n.h"
-#include "util.h"
+#include "../common/i18n.h"
+#include "../common/util.h"
 #include "../common/init.h"
 
 /* With the ldap wrapper, there is no need for the npth_unprotect and leave
@@ -104,7 +103,7 @@ static void npth_protect (void) { }
  typedef struct timeval my_ldap_timeval_t;
 #endif
 
-#define DEFAULT_LDAP_TIMEOUT 100 /* Arbitrary long timeout. */
+#define DEFAULT_LDAP_TIMEOUT 15 /* Arbitrary long timeout. */
 
 
 /* Constants for the options.  */
@@ -150,7 +149,7 @@ static ARGPARSE_OPTS opts[] = {
   { oAttr,     "attr",      2, N_("|STRING|return the attribute STRING")},
   { oOnlySearchTimeout, "only-search-timeout", 0, "@"},
   { oLogWithPID,"log-with-pid", 0, "@"},
-  { 0, NULL, 0, NULL }
+  ARGPARSE_end ()
 };
 
 
@@ -343,7 +342,7 @@ ldap_wrapper_main (char **argv, estream_t outstream)
     usage (1);
 #else
   /* All passed arguments should be fine in this case.  */
-  assert (argc);
+  log_assert (argc);
 #endif
 
 #ifdef USE_LDAPWRAPPER
@@ -382,16 +381,56 @@ catch_alarm (int dummy)
 }
 #endif
 
+
+#ifdef HAVE_W32_SYSTEM
+static DWORD CALLBACK
+alarm_thread (void *arg)
+{
+  HANDLE timer = arg;
+
+  WaitForSingleObject (timer, INFINITE);
+  _exit (10);
+
+  return 0;
+}
+#endif
+
+
 static void
 set_timeout (my_opt_t myopt)
 {
-#ifdef HAVE_W32_SYSTEM
-  /* FIXME for W32.  */
-  (void)myopt;
-#else
   if (myopt->alarm_timeout)
-    alarm (myopt->alarm_timeout);
+    {
+#ifdef HAVE_W32_SYSTEM
+      static HANDLE timer;
+      LARGE_INTEGER due_time;
+
+      /* A negative value is a relative time.  */
+      due_time.QuadPart = (unsigned long long)-10000000 * myopt->alarm_timeout;
+
+      if (!timer)
+        {
+          SECURITY_ATTRIBUTES sec_attr;
+          DWORD tid;
+
+          memset (&sec_attr, 0, sizeof sec_attr);
+          sec_attr.nLength = sizeof sec_attr;
+          sec_attr.bInheritHandle = FALSE;
+
+          /* Create a manual resetable timer.  */
+          timer = CreateWaitableTimer (NULL, TRUE, NULL);
+          /* Intially set the timer.  */
+          SetWaitableTimer (timer, &due_time, 0, NULL, NULL, 0);
+
+          if (CreateThread (&sec_attr, 0, alarm_thread, timer, 0, &tid))
+            log_error ("failed to create alarm thread\n");
+        }
+      else /* Retrigger the timer.  */
+        SetWaitableTimer (timer, &due_time, 0, NULL, NULL, 0);
+#else
+      alarm (myopt->alarm_timeout);
 #endif
+    }
 }
 
 

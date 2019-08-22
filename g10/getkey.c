@@ -26,19 +26,19 @@
 #include <ctype.h>
 
 #include "gpg.h"
-#include "util.h"
+#include "../common/util.h"
 #include "packet.h"
-#include "iobuf.h"
+#include "../common/iobuf.h"
 #include "keydb.h"
 #include "options.h"
 #include "main.h"
 #include "trustdb.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "keyserver-internal.h"
 #include "call-agent.h"
-#include "host2net.h"
-#include "mbox-util.h"
-#include "status.h"
+#include "../common/host2net.h"
+#include "../common/mbox-util.h"
+#include "../common/status.h"
 
 #define MAX_PK_CACHE_ENTRIES   PK_UID_CACHE_SIZE
 #define MAX_UID_CACHE_ENTRIES  PK_UID_CACHE_SIZE
@@ -87,6 +87,9 @@ struct getkey_ctx_s
   /* This variable is used as backing store for strings which have
      their address used in ITEMS.  */
   strlist_t extra_list;
+
+  /* Hack to return the mechanism (AKL_foo) used to find the key.  */
+  int found_via_akl;
 
   /* Part of the search criteria: The low-level search specification
      as passed to keydb_search.  */
@@ -139,13 +142,12 @@ typedef struct user_id_db
 static user_id_db_t user_id_db;
 static int uid_cache_entries;	/* Number of entries in uid cache. */
 
-static void merge_selfsigs (kbnode_t keyblock);
-static int lookup (getkey_ctx_t ctx,
-		   kbnode_t *ret_keyblock, kbnode_t *ret_found_key,
-		   int want_secret);
+static void merge_selfsigs (ctrl_t ctrl, kbnode_t keyblock);
+static int lookup (ctrl_t ctrl, getkey_ctx_t ctx, int want_secret,
+		   kbnode_t *ret_keyblock, kbnode_t *ret_found_key);
 static kbnode_t finish_lookup (kbnode_t keyblock,
                                unsigned int req_usage, int want_exact,
-                               unsigned int *r_flags);
+                               int want_secret, unsigned int *r_flags);
 static void print_status_key_considered (kbnode_t keyblock, unsigned int flags);
 
 
@@ -274,7 +276,7 @@ get_primary_uid (KBNODE keyblock, size_t * uidlen)
     {
       if (k->pkt->pkttype == PKT_USER_ID
 	  && !k->pkt->pkt.user_id->attrib_data
-	  && k->pkt->pkt.user_id->is_primary)
+	  && k->pkt->pkt.user_id->flags.primary)
 	{
 	  *uidlen = k->pkt->pkt.user_id->len;
 	  return k->pkt->pkt.user_id->name;
@@ -369,7 +371,7 @@ cache_user_id (KBNODE keyblock)
 
 /* Disable and drop the public key cache (which is filled by
    cache_public_key and get_pubkey).  Note: there is currently no way
-   to reenable this cache.  */
+   to re-enable this cache.  */
 void
 getkey_disable_caches ()
 {
@@ -392,274 +394,18 @@ getkey_disable_caches ()
 }
 
 
-void
-pubkey_free (pubkey_t key)
-{
-  if (key)
-    {
-      xfree (key->pk);
-      release_kbnode (key->keyblock);
-      xfree (key);
-    }
-}
-
+/* Free a list of pubkey_t objects.  */
 void
 pubkeys_free (pubkey_t keys)
 {
   while (keys)
     {
       pubkey_t next = keys->next;
-      pubkey_free (keys);
+      xfree (keys->pk);
+      release_kbnode (keys->keyblock);
+      xfree (keys);
       keys = next;
     }
-}
-
-/* Returns all keys that match the search specfication SEARCH_TERMS.
-
-   This function also checks for and warns about duplicate entries in
-   the keydb, which can occur if the user has configured multiple
-   keyrings or keyboxes or if a keyring or keybox was corrupted.
-
-   Note: SEARCH_TERMS will not be expanded (i.e., it may not be a
-   group).
-
-   USE is the operation for which the key is required.  It must be
-   either PUBKEY_USAGE_ENC, PUBKEY_USAGE_SIG, PUBKEY_USAGE_CERT or
-   PUBKEY_USAGE_AUTH.
-
-   XXX: Currently, only PUBKEY_USAGE_ENC and PUBKEY_USAGE_SIG are
-   implemented.
-
-   INCLUDE_UNUSABLE indicates whether disabled keys are allowed.
-   (Recipients specified with --encrypt-to and --hidden-encrypt-to may
-   be disabled.  It is possible to edit disabled keys.)
-
-   SOURCE is the context in which SEARCH_TERMS was specified, e.g.,
-   "--encrypt-to", etc.  If this function is called interactively,
-   then this should be NULL.
-
-   If WARN_POSSIBLY_AMBIGUOUS is set, then emits a warning if the user
-   does not specify a long key id or a fingerprint.
-
-   The results are placed in *KEYS.  *KEYS must be NULL!  */
-gpg_error_t
-get_pubkeys (ctrl_t ctrl,
-             char *search_terms, int use, int include_unusable, char *source,
-             int warn_possibly_ambiguous,
-             pubkey_t *r_keys)
-{
-  /* We show a warning when a key appears multiple times in the DB.
-     This can happen for two reasons:
-
-       - The user has configured multiple keyrings or keyboxes.
-
-       - The keyring or keybox has been corrupted in some way, e.g., a
-         bug or a random process changing them.
-
-     For each duplicate, we only want to show the key once.  Hence,
-     this list.  */
-  static strlist_t key_dups;
-
-  /* USE transformed to a string.  */
-  char *use_str;
-
-  gpg_error_t err;
-
-  KEYDB_SEARCH_DESC desc;
-
-  GETKEY_CTX ctx;
-  pubkey_t results = NULL;
-  pubkey_t r;
-
-  int count;
-
-  char fingerprint[2 * MAX_FINGERPRINT_LEN + 1];
-
-  if (DBG_LOOKUP)
-    {
-      log_debug ("\n");
-      log_debug ("%s: Checking %s=%s\n",
-                 __func__, source ? source : "user input", search_terms);
-    }
-
-  if (*r_keys)
-    log_bug ("%s: KEYS should be NULL!\n", __func__);
-
-  switch (use)
-    {
-    case PUBKEY_USAGE_ENC: use_str = "encrypt"; break;
-    case PUBKEY_USAGE_SIG: use_str = "sign"; break;
-    case PUBKEY_USAGE_CERT: use_str = "cetify"; break;
-    case PUBKEY_USAGE_AUTH: use_str = "authentication"; break;
-    default: log_bug ("%s: Bad value for USE (%d)\n", __func__, use);
-    }
-
-  if (use == PUBKEY_USAGE_CERT || use == PUBKEY_USAGE_AUTH)
-    log_bug ("%s: use=%s is unimplemented.\n", __func__, use_str);
-
-  err = classify_user_id (search_terms, &desc, 1);
-  if (err)
-    {
-      log_info (_("key \"%s\" not found: %s\n"),
-                search_terms, gpg_strerror (err));
-      if (!opt.quiet && source)
-        log_info (_("(check argument of option '%s')\n"), source);
-      goto out;
-    }
-
-  if (warn_possibly_ambiguous
-      && ! (desc.mode == KEYDB_SEARCH_MODE_LONG_KID
-            || desc.mode == KEYDB_SEARCH_MODE_FPR16
-            || desc.mode == KEYDB_SEARCH_MODE_FPR20
-            || desc.mode == KEYDB_SEARCH_MODE_FPR))
-    {
-      log_info (_("Warning: '%s' should be a long key ID or a fingerprint\n"),
-                search_terms);
-      if (!opt.quiet && source)
-        log_info (_("(check argument of option '%s')\n"), source);
-    }
-
-  /* Gather all of the results.  */
-  ctx = NULL;
-  count = 0;
-  do
-    {
-      PKT_public_key *pk = xmalloc_clear (sizeof *pk);
-      KBNODE kb;
-      pk->req_usage = use;
-
-      if (! ctx)
-        err = get_pubkey_byname (ctrl, &ctx, pk, search_terms, &kb, NULL,
-                                 include_unusable, 1);
-      else
-        err = getkey_next (ctx, pk, &kb);
-
-      if (gpg_err_code (err) == GPG_ERR_NOT_FOUND)
-        /* No more results.   */
-        {
-          xfree (pk);
-          break;
-        }
-      else if (err)
-        /* An error (other than "not found").  */
-        {
-          log_error (_("error looking up: %s\n"),
-                     gpg_strerror (err));
-          xfree (pk);
-          break;
-        }
-
-      /* Another result!  */
-      count ++;
-
-      r = xmalloc_clear (sizeof (*r));
-      r->pk = pk;
-      r->keyblock = kb;
-      r->next = results;
-      results = r;
-    }
-  while (ctx);
-  getkey_end (ctx);
-
-  if (DBG_LOOKUP)
-    {
-      log_debug ("%s resulted in %d matches.\n", search_terms, count);
-      for (r = results; r; r = r->next)
-        log_debug ("  %s\n",
-                   hexfingerprint (r->keyblock->pkt->pkt.public_key,
-                                   fingerprint, sizeof (fingerprint)));
-    }
-
-  if (! results && gpg_err_code (err) == GPG_ERR_NOT_FOUND)
-    /* No match.  */
-    {
-      if (DBG_LOOKUP)
-        log_debug ("%s: '%s' not found.\n", __func__, search_terms);
-
-      log_info (_("key \"%s\" not found\n"), search_terms);
-      if (!opt.quiet && source)
-        log_info (_("(check argument of option '%s')\n"), source);
-
-      goto out;
-    }
-  else if (gpg_err_code (err) == GPG_ERR_NOT_FOUND)
-    /* No more matches.  */
-    ;
-  else if (err)
-    /* Some other error.  An error message was already printed
-       out.  Free RESULTS and continue.  */
-    goto out;
-
-  /* Check for duplicates.  */
-  if (DBG_LOOKUP)
-    log_debug ("%s: Checking results of %s='%s' for dups\n",
-               __func__, source ? source : "user input", search_terms);
-  count = 0;
-  for (r = results; r; r = r->next)
-    {
-      pubkey_t *prevp;
-      pubkey_t next;
-      pubkey_t r2;
-      int dups = 0;
-
-      prevp = &r->next;
-      next = r->next;
-      while ((r2 = next))
-        {
-          if (cmp_public_keys (r->keyblock->pkt->pkt.public_key,
-                               r2->keyblock->pkt->pkt.public_key) != 0)
-            /* Not a dup.  */
-            {
-              prevp = &r2->next;
-              next = r2->next;
-              continue;
-            }
-
-          dups ++;
-          count ++;
-
-          /* Remove R2 from the list.  */
-          *prevp = r2->next;
-          release_kbnode (r2->keyblock);
-          next = r2->next;
-          xfree (r2);
-        }
-
-      if (dups)
-        {
-          hexfingerprint (r->keyblock->pkt->pkt.public_key,
-                          fingerprint, sizeof fingerprint);
-          if (! strlist_find (key_dups, fingerprint))
-            {
-              char fingerprint_formatted[MAX_FORMATTED_FINGERPRINT_LEN + 1];
-
-              log_info (_("Warning: %s appears in the keyring %d times\n"),
-                        format_hexfingerprint (fingerprint,
-                                               fingerprint_formatted,
-                                               sizeof fingerprint_formatted),
-                        1 + dups);
-              add_to_strlist (&key_dups, fingerprint);
-            }
-        }
-    }
-
-  if (DBG_LOOKUP && count)
-    {
-      log_debug ("After removing %d dups:\n", count);
-      for (r = results, count = 0; r; r = r->next)
-        log_debug ("  %d: %s\n",
-                   count,
-                   hexfingerprint (r->keyblock->pkt->pkt.public_key,
-                                   fingerprint, sizeof fingerprint));
-    }
-
- out:
-  if (err)
-    pubkeys_free (results);
-  else
-    *r_keys = results;
-
-  return err;
 }
 
 
@@ -672,6 +418,24 @@ pk_from_block (PKT_public_key *pk, kbnode_t keyblock, kbnode_t found_key)
               || a->pkt->pkttype == PKT_PUBLIC_SUBKEY);
 
   copy_public_key (pk, a->pkt->pkt.public_key);
+}
+
+
+/* Specialized version of get_pubkey which retrieves the key based on
+ * information in SIG.  In contrast to get_pubkey PK is required.  */
+gpg_error_t
+get_pubkey_for_sig (ctrl_t ctrl, PKT_public_key *pk, PKT_signature *sig)
+{
+  const byte *fpr;
+  size_t fprlen;
+
+  /* First try the new ISSUER_FPR info.  */
+  fpr = issuer_fpr_raw (sig, &fprlen);
+  if (fpr && !get_pubkey_byfprint (ctrl, pk, NULL, fpr, fprlen))
+    return 0;
+
+  /* Fallback to use the ISSUER_KEYID.  */
+  return get_pubkey (ctrl, pk, sig->keyid);
 }
 
 
@@ -697,7 +461,7 @@ pk_from_block (PKT_public_key *pk, kbnode_t keyblock, kbnode_t found_key)
  * has definitely been merged into the public key using
  * merge_selfsigs.  */
 int
-get_pubkey (PKT_public_key * pk, u32 * keyid)
+get_pubkey (ctrl_t ctrl, PKT_public_key * pk, u32 * keyid)
 {
   int internal = 0;
   int rc = 0;
@@ -724,36 +488,52 @@ get_pubkey (PKT_public_key * pk, u32 * keyid)
   /* More init stuff.  */
   if (!pk)
     {
-      pk = xmalloc_clear (sizeof *pk);
       internal++;
+      pk = xtrycalloc (1, sizeof *pk);
+      if (!pk)
+        {
+          rc = gpg_error_from_syserror ();
+          goto leave;
+        }
     }
 
 
   /* Do a lookup.  */
   {
     struct getkey_ctx_s ctx;
-    KBNODE kb = NULL;
-    KBNODE found_key = NULL;
+    kbnode_t kb = NULL;
+    kbnode_t found_key = NULL;
+
     memset (&ctx, 0, sizeof ctx);
     ctx.exact = 1; /* Use the key ID exactly as given.  */
     ctx.not_allocated = 1;
-    ctx.kr_handle = keydb_new ();
-    if (!ctx.kr_handle)
+
+    if (ctrl && ctrl->cached_getkey_kdb)
       {
-        rc = gpg_error_from_syserror ();
-        goto leave;
+        ctx.kr_handle = ctrl->cached_getkey_kdb;
+        ctrl->cached_getkey_kdb = NULL;
+        keydb_search_reset (ctx.kr_handle);
+      }
+    else
+      {
+        ctx.kr_handle = keydb_new ();
+        if (!ctx.kr_handle)
+          {
+            rc = gpg_error_from_syserror ();
+            goto leave;
+          }
       }
     ctx.nitems = 1;
     ctx.items[0].mode = KEYDB_SEARCH_MODE_LONG_KID;
     ctx.items[0].u.kid[0] = keyid[0];
     ctx.items[0].u.kid[1] = keyid[1];
     ctx.req_usage = pk->req_usage;
-    rc = lookup (&ctx, &kb, &found_key, 0);
+    rc = lookup (ctrl, &ctx, 0, &kb, &found_key);
     if (!rc)
       {
 	pk_from_block (pk, kb, found_key);
       }
-    getkey_end (&ctx);
+    getkey_end (ctrl, &ctx);
     release_kbnode (kb);
   }
   if (!rc)
@@ -846,13 +626,35 @@ get_pubkey_fast (PKT_public_key * pk, u32 * keyid)
 }
 
 
+/* Return the entire keyblock used to create SIG.  This is a
+ * specialized version of get_pubkeyblock.
+ *
+ * FIXME: This is a hack because get_pubkey_for_sig was already called
+ * and it could have used a cache to hold the key.  */
+kbnode_t
+get_pubkeyblock_for_sig (ctrl_t ctrl, PKT_signature *sig)
+{
+  const byte *fpr;
+  size_t fprlen;
+  kbnode_t keyblock;
+
+  /* First try the new ISSUER_FPR info.  */
+  fpr = issuer_fpr_raw (sig, &fprlen);
+  if (fpr && !get_pubkey_byfprint (ctrl, NULL, &keyblock, fpr, fprlen))
+    return keyblock;
+
+  /* Fallback to use the ISSUER_KEYID.  */
+  return get_pubkeyblock (ctrl, sig->keyid);
+}
+
+
 /* Return the key block for the key with key id KEYID or NULL, if an
  * error occurs.  Use release_kbnode() to release the key block.
  *
  * The self-signed data has already been merged into the public key
  * using merge_selfsigs.  */
 kbnode_t
-get_pubkeyblock (u32 * keyid)
+get_pubkeyblock (ctrl_t ctrl, u32 * keyid)
 {
   struct getkey_ctx_s ctx;
   int rc = 0;
@@ -868,8 +670,8 @@ get_pubkeyblock (u32 * keyid)
   ctx.items[0].mode = KEYDB_SEARCH_MODE_LONG_KID;
   ctx.items[0].u.kid[0] = keyid[0];
   ctx.items[0].u.kid[1] = keyid[1];
-  rc = lookup (&ctx, &keyblock, NULL, 0);
-  getkey_end (&ctx);
+  rc = lookup (ctrl, &ctx, 0, &keyblock, NULL);
+  getkey_end (ctrl, &ctx);
 
   return rc ? NULL : keyblock;
 }
@@ -893,7 +695,7 @@ get_pubkeyblock (u32 * keyid)
  * The self-signed data has already been merged into the public key
  * using merge_selfsigs.  */
 gpg_error_t
-get_seckey (PKT_public_key *pk, u32 *keyid)
+get_seckey (ctrl_t ctrl, PKT_public_key *pk, u32 *keyid)
 {
   gpg_error_t err;
   struct getkey_ctx_s ctx;
@@ -911,12 +713,12 @@ get_seckey (PKT_public_key *pk, u32 *keyid)
   ctx.items[0].u.kid[0] = keyid[0];
   ctx.items[0].u.kid[1] = keyid[1];
   ctx.req_usage = pk->req_usage;
-  err = lookup (&ctx, &keyblock, &found_key, 1);
+  err = lookup (ctrl, &ctx, 1, &keyblock, &found_key);
   if (!err)
     {
       pk_from_block (pk, keyblock, found_key);
     }
-  getkey_end (&ctx);
+  getkey_end (ctrl, &ctx);
   release_kbnode (keyblock);
 
   if (!err)
@@ -933,15 +735,14 @@ get_seckey (PKT_public_key *pk, u32 *keyid)
 /* Skip unusable keys.  A key is unusable if it is revoked, expired or
    disabled or if the selected user id is revoked or expired.  */
 static int
-skip_unusable (void *dummy, u32 * keyid, int uid_no)
+skip_unusable (void *opaque, u32 * keyid, int uid_no)
 {
+  ctrl_t ctrl = opaque;
   int unusable = 0;
   KBNODE keyblock;
   PKT_public_key *pk;
 
-  (void) dummy;
-
-  keyblock = get_pubkeyblock (keyid);
+  keyblock = get_pubkeyblock (ctrl, keyid);
   if (!keyblock)
     {
       log_error ("error checking usability status of %s\n", keystr (keyid));
@@ -970,7 +771,7 @@ skip_unusable (void *dummy, u32 * keyid, int uid_no)
 	      if (uids_seen != uid_no)
 		continue;
 
-	      if (user_id->is_revoked || user_id->is_expired)
+	      if (user_id->flags.revoked || user_id->flags.expired)
 		unusable = 1;
 
 	      break;
@@ -1034,7 +835,7 @@ leave:
    returned.  In particular, GPG_ERR_NO_PUBKEY or GPG_ERR_NO_SECKEY
    (if want_secret is set) is returned if the key is not found.  */
 static int
-key_byname (GETKEY_CTX *retctx, strlist_t namelist,
+key_byname (ctrl_t ctrl, GETKEY_CTX *retctx, strlist_t namelist,
 	    PKT_public_key *pk,
 	    int want_secret, int include_unusable,
 	    KBNODE * ret_kb, KEYDB_HANDLE * ret_kdbhd)
@@ -1063,7 +864,10 @@ key_byname (GETKEY_CTX *retctx, strlist_t namelist,
       ctx->nitems = 1;
       ctx->items[0].mode = KEYDB_SEARCH_MODE_FIRST;
       if (!include_unusable)
-	ctx->items[0].skipfnc = skip_unusable;
+        {
+          ctx->items[0].skipfnc = skip_unusable;
+          ctx->items[0].skipfncvalue = ctrl;
+        }
     }
   else
     {
@@ -1096,7 +900,10 @@ key_byname (GETKEY_CTX *retctx, strlist_t namelist,
 	      && ctx->items[n].mode != KEYDB_SEARCH_MODE_FPR16
 	      && ctx->items[n].mode != KEYDB_SEARCH_MODE_FPR20
 	      && ctx->items[n].mode != KEYDB_SEARCH_MODE_FPR)
-	    ctx->items[n].skipfnc = skip_unusable;
+            {
+              ctx->items[n].skipfnc = skip_unusable;
+              ctx->items[n].skipfncvalue = ctrl;
+            }
 	}
     }
 
@@ -1105,7 +912,7 @@ key_byname (GETKEY_CTX *retctx, strlist_t namelist,
   if (!ctx->kr_handle)
     {
       rc = gpg_error_from_syserror ();
-      getkey_end (ctx);
+      getkey_end (ctrl, ctx);
       return rc;
     }
 
@@ -1117,7 +924,7 @@ key_byname (GETKEY_CTX *retctx, strlist_t namelist,
       ctx->req_usage = pk->req_usage;
     }
 
-  rc = lookup (ctx, ret_kb, &found_key, want_secret);
+  rc = lookup (ctrl, ctx, want_secret, ret_kb, &found_key);
   if (!rc && pk)
     {
       pk_from_block (pk, *ret_kb, found_key);
@@ -1134,7 +941,7 @@ key_byname (GETKEY_CTX *retctx, strlist_t namelist,
 	  *ret_kdbhd = ctx->kr_handle;
 	  ctx->kr_handle = NULL;
 	}
-      getkey_end (ctx);
+      getkey_end (ctrl, ctx);
     }
 
   return rc;
@@ -1143,7 +950,7 @@ key_byname (GETKEY_CTX *retctx, strlist_t namelist,
 
 /* Find a public key identified by NAME.
  *
- * If name appears to be a valid valid RFC822 mailbox (i.e., email
+ * If name appears to be a valid RFC822 mailbox (i.e., email
  * address) and auto key lookup is enabled (no_akl == 0), then the
  * specified auto key lookup methods (--auto-key-lookup) are used to
  * import the key into the local keyring.  Otherwise, just the local
@@ -1202,6 +1009,7 @@ get_pubkey_byname (ctrl_t ctrl, GETKEY_CTX * retctx, PKT_public_key * pk,
   int is_mbox;
   int nodefault = 0;
   int anylocalfirst = 0;
+  int mechanism_type = AKL_NODEFAULT;
 
   /* If RETCTX is not NULL, then RET_KDBHD must be NULL.  */
   log_assert (retctx == NULL || ret_kdbhd == NULL);
@@ -1273,7 +1081,7 @@ get_pubkey_byname (ctrl_t ctrl, GETKEY_CTX * retctx, PKT_public_key * pk,
        * only try the local keyring).  In this case, lookup NAME in
        * the local keyring.  */
       add_to_strlist (&namelist, name);
-      rc = key_byname (retctx, namelist, pk, 0,
+      rc = key_byname (ctrl, retctx, namelist, pk, 0,
 		       include_unusable, ret_keyblock, ret_kdbhd);
     }
 
@@ -1291,60 +1099,61 @@ get_pubkey_byname (ctrl_t ctrl, GETKEY_CTX * retctx, PKT_public_key * pk,
 	  size_t fpr_len;
 	  int did_akl_local = 0;
 	  int no_fingerprint = 0;
-	  const char *mechanism = "?";
+	  const char *mechanism_string = "?";
 
-	  switch (akl->type)
+          mechanism_type = akl->type;
+	  switch (mechanism_type)
 	    {
 	    case AKL_NODEFAULT:
 	      /* This is a dummy mechanism.  */
-	      mechanism = "None";
+	      mechanism_string = "None";
 	      rc = GPG_ERR_NO_PUBKEY;
 	      break;
 
 	    case AKL_LOCAL:
-	      mechanism = "Local";
+	      mechanism_string = "Local";
 	      did_akl_local = 1;
 	      if (retctx)
 		{
-		  getkey_end (*retctx);
+		  getkey_end (ctrl, *retctx);
 		  *retctx = NULL;
 		}
 	      add_to_strlist (&namelist, name);
-	      rc = key_byname (anylocalfirst ? retctx : NULL,
+	      rc = key_byname (ctrl, anylocalfirst ? retctx : NULL,
 			       namelist, pk, 0,
 			       include_unusable, ret_keyblock, ret_kdbhd);
 	      break;
 
 	    case AKL_CERT:
-	      mechanism = "DNS CERT";
+	      mechanism_string = "DNS CERT";
 	      glo_ctrl.in_auto_key_retrieve++;
 	      rc = keyserver_import_cert (ctrl, name, 0, &fpr, &fpr_len);
 	      glo_ctrl.in_auto_key_retrieve--;
 	      break;
 
 	    case AKL_PKA:
-	      mechanism = "PKA";
+	      mechanism_string = "PKA";
 	      glo_ctrl.in_auto_key_retrieve++;
 	      rc = keyserver_import_pka (ctrl, name, &fpr, &fpr_len);
 	      glo_ctrl.in_auto_key_retrieve--;
 	      break;
 
 	    case AKL_DANE:
-	      mechanism = "DANE";
+	      mechanism_string = "DANE";
 	      glo_ctrl.in_auto_key_retrieve++;
 	      rc = keyserver_import_cert (ctrl, name, 1, &fpr, &fpr_len);
 	      glo_ctrl.in_auto_key_retrieve--;
 	      break;
 
 	    case AKL_WKD:
-	      mechanism = "WKD";
+	      mechanism_string = "WKD";
 	      glo_ctrl.in_auto_key_retrieve++;
 	      rc = keyserver_import_wkd (ctrl, name, 0, &fpr, &fpr_len);
 	      glo_ctrl.in_auto_key_retrieve--;
 	      break;
 
 	    case AKL_LDAP:
-	      mechanism = "LDAP";
+	      mechanism_string = "LDAP";
 	      glo_ctrl.in_auto_key_retrieve++;
 	      rc = keyserver_import_ldap (ctrl, name, &fpr, &fpr_len);
 	      glo_ctrl.in_auto_key_retrieve--;
@@ -1357,7 +1166,7 @@ get_pubkey_byname (ctrl_t ctrl, GETKEY_CTX * retctx, PKT_public_key * pk,
 	       * and getting a whole lot of keys back. */
 	      if (keyserver_any_configured (ctrl))
 		{
-		  mechanism = "keyserver";
+		  mechanism_string = "keyserver";
 		  glo_ctrl.in_auto_key_retrieve++;
 		  rc = keyserver_import_name (ctrl, name, &fpr, &fpr_len,
                                               opt.keyserver);
@@ -1365,7 +1174,7 @@ get_pubkey_byname (ctrl_t ctrl, GETKEY_CTX * retctx, PKT_public_key * pk,
 		}
 	      else
 		{
-		  mechanism = "Unconfigured keyserver";
+		  mechanism_string = "Unconfigured keyserver";
 		  rc = GPG_ERR_NO_PUBKEY;
 		}
 	      break;
@@ -1374,7 +1183,7 @@ get_pubkey_byname (ctrl_t ctrl, GETKEY_CTX * retctx, PKT_public_key * pk,
 	      {
 		struct keyserver_spec *keyserver;
 
-		mechanism = akl->spec->uri;
+		mechanism_string = akl->spec->uri;
 		keyserver = keyserver_match (akl->spec);
 		glo_ctrl.in_auto_key_retrieve++;
 		rc = keyserver_import_name (ctrl,
@@ -1424,24 +1233,25 @@ get_pubkey_byname (ctrl_t ctrl, GETKEY_CTX * retctx, PKT_public_key * pk,
 	       * keyring.  */
 	      if (retctx)
 		{
-		  getkey_end (*retctx);
+		  getkey_end (ctrl, *retctx);
 		  *retctx = NULL;
 		}
-	      rc = key_byname (anylocalfirst ? retctx : NULL,
+	      rc = key_byname (ctrl, anylocalfirst ? retctx : NULL,
 			       namelist, pk, 0,
 			       include_unusable, ret_keyblock, ret_kdbhd);
 	    }
 	  if (!rc)
 	    {
 	      /* Key found.  */
-	      log_info (_("automatically retrieved '%s' via %s\n"),
-			name, mechanism);
+              if (opt.verbose)
+                log_info (_("automatically retrieved '%s' via %s\n"),
+                          name, mechanism_string);
 	      break;
 	    }
 	  if (gpg_err_code (rc) != GPG_ERR_NO_PUBKEY
               || opt.verbose || no_fingerprint)
 	    log_info (_("error retrieving '%s' via %s: %s\n"),
-		      name, mechanism,
+		      name, mechanism_string,
 		      no_fingerprint ? _("No fingerprint") : gpg_strerror (rc));
 	}
     }
@@ -1449,7 +1259,7 @@ get_pubkey_byname (ctrl_t ctrl, GETKEY_CTX * retctx, PKT_public_key * pk,
 
   if (rc && retctx)
     {
-      getkey_end (*retctx);
+      getkey_end (ctrl, *retctx);
       *retctx = NULL;
     }
 
@@ -1457,6 +1267,7 @@ get_pubkey_byname (ctrl_t ctrl, GETKEY_CTX * retctx, PKT_public_key * pk,
     {
       log_assert (!(*retctx)->extra_list);
       (*retctx)->extra_list = namelist;
+      (*retctx)->found_via_akl = mechanism_type;
     }
   else
     free_strlist (namelist);
@@ -1494,7 +1305,7 @@ key_is_ok (const PKT_public_key *key)
 static int
 uid_is_ok (const PKT_public_key *key, const PKT_user_id *uid)
 {
-  return key_is_ok (key) && ! uid->is_revoked;
+  return key_is_ok (key) && ! uid->flags.revoked;
 }
 
 
@@ -1504,6 +1315,34 @@ subkey_is_ok (const PKT_public_key *sub)
   return ! sub->flags.revoked && sub->flags.valid && ! sub->flags.disabled;
 }
 
+/* Return true if KEYBLOCK has only expired encryption subkyes.  Note
+ * that the function returns false if the key has no encryption
+ * subkeys at all or the subkecys are revoked.  */
+static int
+only_expired_enc_subkeys (kbnode_t keyblock)
+{
+  kbnode_t node;
+  PKT_public_key *sub;
+  int any = 0;
+
+  for (node = find_next_kbnode (keyblock, PKT_PUBLIC_SUBKEY);
+       node; node = find_next_kbnode (node, PKT_PUBLIC_SUBKEY))
+    {
+      sub = node->pkt->pkt.public_key;
+
+      if (!(sub->pubkey_usage & PUBKEY_USAGE_ENC))
+        continue;
+
+      if (!subkey_is_ok (sub))
+        continue;
+
+      any = 1;
+      if (!sub->has_expired)
+        return 0;
+    }
+
+  return any? 1 : 0;
+}
 
 /* Finally this function compares a NEW key to the former candidate
  * OLD.  Returns < 0 if the old key is worse, > 0 if the old key is
@@ -1569,32 +1408,78 @@ pubkey_cmp (ctrl_t ctrl, const char *name, struct pubkey_cmp_cookie *old,
 /* This function works like get_pubkey_byname, but if the name
  * resembles a mail address, the results are ranked and only the best
  * result is returned.  */
-int
+gpg_error_t
 get_best_pubkey_byname (ctrl_t ctrl, GETKEY_CTX *retctx, PKT_public_key *pk,
                         const char *name, KBNODE *ret_keyblock,
-                        int include_unusable, int no_akl)
+                        int include_unusable)
 {
-  int rc;
+  gpg_error_t err;
   struct getkey_ctx_s *ctx = NULL;
+  int is_mbox = is_valid_mailbox (name);
+  int wkd_tried = 0;
 
   if (retctx)
     *retctx = NULL;
 
-  rc = get_pubkey_byname (ctrl, &ctx, pk, name, ret_keyblock,
-                          NULL, include_unusable, no_akl);
-  if (rc)
+ start_over:
+  if (ctx)  /* Clear  in case of a start over.  */
     {
-      if (ctx)
-        getkey_end (ctx);
-      return rc;
+      if (ret_keyblock)
+        {
+          release_kbnode (*ret_keyblock);
+          *ret_keyblock = NULL;
+        }
+      getkey_end (ctrl, ctx);
+      ctx = NULL;
+    }
+  err = get_pubkey_byname (ctrl, &ctx, pk, name, ret_keyblock,
+                           NULL, include_unusable, 0);
+  if (err)
+    {
+      getkey_end (ctrl, ctx);
+      return err;
     }
 
-  if (is_valid_mailbox (name) && ctx)
+  /* If the keyblock was retrieved from the local database and the key
+   * has expired, do further checks.  However, we can do this only if
+   * the caller requested a keyblock.  */
+  if (is_mbox && ctx && ctx->found_via_akl == AKL_LOCAL && ret_keyblock)
+    {
+      u32 now = make_timestamp ();
+      PKT_public_key *pk2 = (*ret_keyblock)->pkt->pkt.public_key;
+      int found;
+
+      /* If the key has expired and its origin was the WKD then try to
+       * get a fresh key from the WKD.  We also try this if the key
+       * has any only expired encryption subkeys.  In case we checked
+       * for a fresh copy in the last 3 hours we won't do that again.
+       * Unfortunately that does not yet work because KEYUPDATE is
+       * only updated during import iff the key has actually changed
+       * (see import.c:import_one).  */
+      if (!wkd_tried && pk2->keyorg == KEYORG_WKD
+          && (pk2->keyupdate + 3*3600) < now
+          && (pk2->has_expired || only_expired_enc_subkeys (*ret_keyblock)))
+        {
+          if (opt.verbose)
+            log_info (_("checking for a fresh copy of an expired key via %s\n"),
+                      "WKD");
+          wkd_tried = 1;
+          glo_ctrl.in_auto_key_retrieve++;
+          found = !keyserver_import_wkd (ctrl, name, 0, NULL, NULL);
+          glo_ctrl.in_auto_key_retrieve--;
+          if (found)
+            goto start_over;
+        }
+    }
+
+  if (is_mbox && ctx)
     {
       /* Rank results and return only the most relevant key.  */
-      struct pubkey_cmp_cookie best = { 0 }, new;
-      KBNODE new_keyblock;
-      while (getkey_next (ctx, &new.key, &new_keyblock) == 0)
+      struct pubkey_cmp_cookie best = { 0 };
+      struct pubkey_cmp_cookie new = { 0 };
+      kbnode_t new_keyblock;
+
+      while (getkey_next (ctrl, ctx, &new.key, &new_keyblock) == 0)
         {
           int diff = pubkey_cmp (ctrl, name, &best, &new, new_keyblock);
           release_kbnode (new_keyblock);
@@ -1610,17 +1495,20 @@ get_best_pubkey_byname (ctrl_t ctrl, GETKEY_CTX *retctx, PKT_public_key *pk,
               /* Old key is better.  */
               release_public_key_parts (&new.key);
               free_user_id (new.uid);
+              new.uid = NULL;
             }
           else
             {
               /* A tie.  Keep the old key.  */
               release_public_key_parts (&new.key);
               free_user_id (new.uid);
+              new.uid = NULL;
             }
         }
-      getkey_end (ctx);
+      getkey_end (ctrl, ctx);
       ctx = NULL;
       free_user_id (best.uid);
+      best.uid = NULL;
 
       if (best.valid)
         {
@@ -1628,15 +1516,17 @@ get_best_pubkey_byname (ctrl_t ctrl, GETKEY_CTX *retctx, PKT_public_key *pk,
             {
               ctx = xtrycalloc (1, sizeof **retctx);
               if (! ctx)
-                rc = gpg_error_from_syserror ();
+                err = gpg_error_from_syserror ();
               else
                 {
                   ctx->kr_handle = keydb_new ();
                   if (! ctx->kr_handle)
                     {
+                      err = gpg_error_from_syserror ();
                       xfree (ctx);
-                      *retctx = NULL;
-                      rc = gpg_error_from_syserror ();
+                      ctx = NULL;
+                      if (retctx)
+                        *retctx = NULL;
                     }
                   else
                     {
@@ -1651,7 +1541,7 @@ get_best_pubkey_byname (ctrl_t ctrl, GETKEY_CTX *retctx, PKT_public_key *pk,
                         {
                           release_kbnode (*ret_keyblock);
                           *ret_keyblock = NULL;
-                          rc = getkey_next (ctx, NULL, ret_keyblock);
+                          err = getkey_next (ctrl, ctx, NULL, ret_keyblock);
                         }
                     }
                 }
@@ -1664,18 +1554,18 @@ get_best_pubkey_byname (ctrl_t ctrl, GETKEY_CTX *retctx, PKT_public_key *pk,
         }
     }
 
-  if (rc && ctx)
+  if (err && ctx)
     {
-      getkey_end (ctx);
+      getkey_end (ctrl, ctx);
       ctx = NULL;
     }
 
   if (retctx && ctx)
     *retctx = ctx;
   else
-    getkey_end (ctx);
+    getkey_end (ctrl, ctx);
 
-  return rc;
+  return err;
 }
 
 
@@ -1713,8 +1603,8 @@ get_pubkey_fromfile (ctrl_t ctrl, PKT_public_key *pk, const char *fname)
     {
       /* Warning: node flag bits 0 and 1 should be preserved by
        * merge_selfsigs.  FIXME: Check whether this still holds. */
-      merge_selfsigs (keyblock);
-      found_key = finish_lookup (keyblock, pk->req_usage, 0, &infoflags);
+      merge_selfsigs (ctrl, keyblock);
+      found_key = finish_lookup (keyblock, pk->req_usage, 0, 0, &infoflags);
       print_status_key_considered (keyblock, infoflags);
       if (found_key)
         pk_from_block (pk, keyblock, found_key);
@@ -1756,7 +1646,7 @@ get_pubkey_fromfile (ctrl_t ctrl, PKT_public_key *pk, const char *fname)
  * be done by creating a userID conforming to the unified fingerprint
  * style.  */
 int
-get_pubkey_byfprint (PKT_public_key *pk, kbnode_t *r_keyblock,
+get_pubkey_byfprint (ctrl_t ctrl, PKT_public_key *pk, kbnode_t *r_keyblock,
 		     const byte * fprint, size_t fprint_len)
 {
   int rc;
@@ -1773,6 +1663,8 @@ get_pubkey_byfprint (PKT_public_key *pk, kbnode_t *r_keyblock,
       memset (&ctx, 0, sizeof ctx);
       ctx.exact = 1;
       ctx.not_allocated = 1;
+      /* FIXME: We should get the handle from the cache like we do in
+       * get_pubkey.  */
       ctx.kr_handle = keydb_new ();
       if (!ctx.kr_handle)
         return gpg_error_from_syserror ();
@@ -1781,7 +1673,9 @@ get_pubkey_byfprint (PKT_public_key *pk, kbnode_t *r_keyblock,
       ctx.items[0].mode = fprint_len == 16 ? KEYDB_SEARCH_MODE_FPR16
 	: KEYDB_SEARCH_MODE_FPR20;
       memcpy (ctx.items[0].u.fpr, fprint, fprint_len);
-      rc = lookup (&ctx, &kb, &found_key, 0);
+      if (pk)
+        ctx.req_usage = pk->req_usage;
+      rc = lookup (ctrl, &ctx, 0, &kb, &found_key);
       if (!rc && pk)
 	pk_from_block (pk, kb, found_key);
       if (!rc && r_keyblock)
@@ -1790,7 +1684,7 @@ get_pubkey_byfprint (PKT_public_key *pk, kbnode_t *r_keyblock,
 	  kb = NULL;
 	}
       release_kbnode (kb);
-      getkey_end (&ctx);
+      getkey_end (ctrl, &ctx);
     }
   else
     rc = GPG_ERR_GENERAL; /* Oops */
@@ -1808,15 +1702,46 @@ get_pubkey_byfprint (PKT_public_key *pk, kbnode_t *r_keyblock,
  *
  * Like get_pubkey_byfprint, PK may be NULL.  In that case, this
  * function effectively just checks for the existence of the key.  */
-int
+gpg_error_t
 get_pubkey_byfprint_fast (PKT_public_key * pk,
 			  const byte * fprint, size_t fprint_len)
 {
-  int rc = 0;
-  KEYDB_HANDLE hd;
+  gpg_error_t err;
   KBNODE keyblock;
+
+  err = get_keyblock_byfprint_fast (&keyblock, NULL, fprint, fprint_len, 0);
+  if (!err)
+    {
+      if (pk)
+        copy_public_key (pk, keyblock->pkt->pkt.public_key);
+      release_kbnode (keyblock);
+    }
+
+  return err;
+}
+
+
+/* This function is similar to get_pubkey_byfprint_fast but returns a
+ * keydb handle at R_HD and the keyblock at R_KEYBLOCK.  R_KEYBLOCK or
+ * R_HD may be NULL.  If LOCK is set the handle has been opend in
+ * locked mode and keydb_disable_caching () has been called.  On error
+ * R_KEYBLOCK is set to NULL but R_HD must be released by the caller;
+ * it may have a value of NULL, though.  This allows to do an insert
+ * operation on a locked keydb handle.  */
+gpg_error_t
+get_keyblock_byfprint_fast (kbnode_t *r_keyblock, KEYDB_HANDLE *r_hd,
+                            const byte *fprint, size_t fprint_len, int lock)
+{
+  gpg_error_t err;
+  KEYDB_HANDLE hd;
+  kbnode_t keyblock;
   byte fprbuf[MAX_FINGERPRINT_LEN];
   int i;
+
+  if (r_keyblock)
+    *r_keyblock = NULL;
+  if (r_hd)
+    *r_hd = NULL;
 
   for (i = 0; i < MAX_FINGERPRINT_LEN && i < fprint_len; i++)
     fprbuf[i] = fprint[i];
@@ -1827,31 +1752,57 @@ get_pubkey_byfprint_fast (PKT_public_key * pk,
   if (!hd)
     return gpg_error_from_syserror ();
 
-  rc = keydb_search_fpr (hd, fprbuf);
-  if (gpg_err_code (rc) == GPG_ERR_NOT_FOUND)
+  if (lock)
     {
-      keydb_release (hd);
-      return GPG_ERR_NO_PUBKEY;
+      err = keydb_lock (hd);
+      if (err)
+        {
+          /* If locking did not work, we better don't return a handle
+           * at all - there was a reason that locking has been
+           * requested.  */
+          keydb_release (hd);
+          return err;
+        }
+      keydb_disable_caching (hd);
     }
-  rc = keydb_get_keyblock (hd, &keyblock);
-  keydb_release (hd);
-  if (rc)
+
+  /* Fo all other errors we return the handle.  */
+  if (r_hd)
+    *r_hd = hd;
+
+  err = keydb_search_fpr (hd, fprbuf);
+  if (gpg_err_code (err) == GPG_ERR_NOT_FOUND)
     {
-      log_error ("keydb_get_keyblock failed: %s\n", gpg_strerror (rc));
-      return GPG_ERR_NO_PUBKEY;
+      if (!r_hd)
+        keydb_release (hd);
+      return gpg_error (GPG_ERR_NO_PUBKEY);
+    }
+  err = keydb_get_keyblock (hd, &keyblock);
+  if (err)
+    {
+      log_error ("keydb_get_keyblock failed: %s\n", gpg_strerror (err));
+      if (!r_hd)
+        keydb_release (hd);
+      return gpg_error (GPG_ERR_NO_PUBKEY);
     }
 
   log_assert (keyblock->pkt->pkttype == PKT_PUBLIC_KEY
               || keyblock->pkt->pkttype == PKT_PUBLIC_SUBKEY);
-  if (pk)
-    copy_public_key (pk, keyblock->pkt->pkt.public_key);
-  release_kbnode (keyblock);
 
   /* Not caching key here since it won't have all of the fields
      properly set. */
 
+  if (r_keyblock)
+    *r_keyblock = keyblock;
+  else
+    release_kbnode (keyblock);
+
+  if (!r_hd)
+    keydb_release (hd);
+
   return 0;
 }
+
 
 const char *
 parse_def_secret_key (ctrl_t ctrl)
@@ -1906,7 +1857,7 @@ parse_def_secret_key (ctrl_t ctrl)
           continue;
         }
 
-      merge_selfsigs (kb);
+      merge_selfsigs (ctrl, kb);
 
       err = gpg_error (GPG_ERR_NO_SECKEY);
       node = kb;
@@ -2019,7 +1970,7 @@ get_seckey_default (ctrl_t ctrl, PKT_public_key *pk)
   else
     include_unusable = 0;
 
-  err = key_byname (NULL, namelist, pk, 1, include_unusable, NULL, NULL);
+  err = key_byname (ctrl, NULL, namelist, pk, 1, include_unusable, NULL, NULL);
 
   free_strlist (namelist);
 
@@ -2064,10 +2015,10 @@ get_seckey_default (ctrl_t ctrl, PKT_public_key *pk)
  * returned.  In particular, GPG_ERR_NO_PUBKEY or GPG_ERR_NO_SECKEY
  * (if want_secret is set) is returned if the key is not found.  */
 gpg_error_t
-getkey_bynames (getkey_ctx_t *retctx, PKT_public_key *pk,
+getkey_bynames (ctrl_t ctrl, getkey_ctx_t *retctx, PKT_public_key *pk,
                 strlist_t names, int want_secret, kbnode_t *ret_keyblock)
 {
-  return key_byname (retctx, names, pk, want_secret, 1,
+  return key_byname (ctrl, retctx, names, pk, want_secret, 1,
                      ret_keyblock, NULL);
 }
 
@@ -2131,7 +2082,7 @@ getkey_byname (ctrl_t ctrl, getkey_ctx_t *retctx, PKT_public_key *pk,
   else
     with_unusable = 0;
 
-  err = key_byname (retctx, namelist, pk, want_secret, with_unusable,
+  err = key_byname (ctrl, retctx, namelist, pk, want_secret, with_unusable,
                     ret_keyblock, NULL);
 
   /* FIXME: Check that we really return GPG_ERR_NO_SECKEY if
@@ -2160,7 +2111,8 @@ getkey_byname (ctrl_t ctrl, getkey_ctx_t *retctx, PKT_public_key *pk,
  * The self-signed data has already been merged into the public key
  * using merge_selfsigs.  */
 gpg_error_t
-getkey_next (getkey_ctx_t ctx, PKT_public_key *pk, kbnode_t *ret_keyblock)
+getkey_next (ctrl_t ctrl, getkey_ctx_t ctx,
+             PKT_public_key *pk, kbnode_t *ret_keyblock)
 {
   int rc; /* Fixme:  Make sure this is proper gpg_error */
   KBNODE keyblock = NULL;
@@ -2178,7 +2130,8 @@ getkey_next (getkey_ctx_t ctx, PKT_public_key *pk, kbnode_t *ret_keyblock)
   if (pk && ret_keyblock == NULL)
       ret_keyblock = &keyblock;
 
-  rc = lookup (ctx, ret_keyblock, pk ? &found_key : NULL, ctx->want_secret);
+  rc = lookup (ctrl, ctx, ctx->want_secret,
+               ret_keyblock, pk ? &found_key : NULL);
   if (!rc && pk)
     {
       log_assert (found_key);
@@ -2193,11 +2146,31 @@ getkey_next (getkey_ctx_t ctx, PKT_public_key *pk, kbnode_t *ret_keyblock)
 /* Release any resources used by a key listing context.  This must be
  * called on the context returned by, e.g., getkey_byname.  */
 void
-getkey_end (getkey_ctx_t ctx)
+getkey_end (ctrl_t ctrl, getkey_ctx_t ctx)
 {
   if (ctx)
     {
+#ifdef HAVE_W32_SYSTEM
+
+      /* FIXME: This creates a big regression for Windows because the
+       * keyring is only released after the global ctrl is released.
+       * So if an operation does a getkey and then tries to modify the
+       * keyring it will fail on Windows with a sharing violation.  We
+       * need to modify all keyring write operations to also take the
+       * ctrl and close the cached_getkey_kdb handle to make writing
+       * work.  See: GnuPG-bug-id: 3097  */
+      (void)ctrl;
       keydb_release (ctx->kr_handle);
+
+#else /*!HAVE_W32_SYSTEM*/
+
+      if (ctrl && !ctrl->cached_getkey_kdb)
+        ctrl->cached_getkey_kdb = ctx->kr_handle;
+      else
+        keydb_release (ctx->kr_handle);
+
+#endif /*!HAVE_W32_SYSTEM*/
+
       free_strlist (ctx->extra_list);
       if (!ctx->not_allocated)
 	xfree (ctx);
@@ -2250,12 +2223,12 @@ setup_main_keyids (kbnode_t keyblock)
  * useful, however, if you change the keyblock, e.g., by adding or
  * removing a self-signed data packet.  */
 void
-merge_keys_and_selfsig (KBNODE keyblock)
+merge_keys_and_selfsig (ctrl_t ctrl, kbnode_t keyblock)
 {
   if (!keyblock)
     ;
   else if (keyblock->pkt->pkttype == PKT_PUBLIC_KEY)
-    merge_selfsigs (keyblock);
+    merge_selfsigs (ctrl, keyblock);
   else
     log_debug ("FIXME: merging secret key blocks is not anymore available\n");
 }
@@ -2342,26 +2315,26 @@ fixup_uidnode (KBNODE uidnode, KBNODE signode, u32 keycreated)
   uid->created = 0;		/* Not created == invalid. */
   if (IS_UID_REV (sig))
     {
-      uid->is_revoked = 1;
+      uid->flags.revoked = 1;
       return; /* Has been revoked.  */
     }
   else
-    uid->is_revoked = 0;
+    uid->flags.revoked = 0;
 
   uid->expiredate = sig->expiredate;
 
   if (sig->flags.expired)
     {
-      uid->is_expired = 1;
+      uid->flags.expired = 1;
       return; /* Has expired.  */
     }
   else
-    uid->is_expired = 0;
+    uid->flags.expired = 0;
 
   uid->created = sig->timestamp; /* This one is okay. */
   uid->selfsigversion = sig->version;
   /* If we got this far, it's not expired :) */
-  uid->is_expired = 0;
+  uid->flags.expired = 0;
 
   /* Store the key flags in the helper variable for later processing.  */
   uid->help_key_usage = parse_key_usage (sig);
@@ -2375,10 +2348,10 @@ fixup_uidnode (KBNODE uidnode, KBNODE signode, u32 keycreated)
 
   /* Set the primary user ID flag - we will later wipe out some
    * of them to only have one in our keyblock.  */
-  uid->is_primary = 0;
+  uid->flags.primary = 0;
   p = parse_sig_subpkt (sig->hashed, SIGSUBPKT_PRIMARY_UID, NULL);
   if (p && *p)
-    uid->is_primary = 2;
+    uid->flags.primary = 2;
 
   /* We could also query this from the unhashed area if it is not in
    * the hased area and then later try to decide which is the better
@@ -2449,34 +2422,34 @@ sig_to_revoke_info (PKT_signature * sig, struct revoke_info *rinfo)
 
 
 /* Given a keyblock, parse the key block and extract various pieces of
-   information and save them with the primary key packet and the user
-   id packets.  For instance, some information is stored in signature
-   packets.  We find the latest such valid packet (since the user can
-   change that information) and copy its contents into the
-   PKT_public_key.
-
-   Note that R_REVOKED may be set to 0, 1 or 2.
-
-   This function fills in the following fields in the primary key's
-   keyblock:
-
-     main_keyid          (computed)
-     revkey / numrevkeys (derived from self signed key data)
-     flags.valid         (whether we have at least 1 self-sig)
-     flags.maybe_revoked (whether a designed revoked the key, but
-                          we are missing the key to check the sig)
-     selfsigversion      (highest version of any valid self-sig)
-     pubkey_usage        (derived from most recent self-sig or most
-                          recent user id)
-     has_expired         (various sources)
-     expiredate          (various sources)
-
-  See the documentation for fixup_uidnode for how the user id packets
-  are modified.  In addition to that the primary user id's is_primary
-  field is set to 1 and the other user id's is_primary are set to
-  0.  */
+ * information and save them with the primary key packet and the user
+ * id packets.  For instance, some information is stored in signature
+ * packets.  We find the latest such valid packet (since the user can
+ * change that information) and copy its contents into the
+ * PKT_public_key.
+ *
+ * Note that R_REVOKED may be set to 0, 1 or 2.
+ *
+ * This function fills in the following fields in the primary key's
+ * keyblock:
+ *
+ *   main_keyid          (computed)
+ *   revkey / numrevkeys (derived from self signed key data)
+ *   flags.valid         (whether we have at least 1 self-sig)
+ *   flags.maybe_revoked (whether a designed revoked the key, but
+ *                        we are missing the key to check the sig)
+ *   selfsigversion      (highest version of any valid self-sig)
+ *   pubkey_usage        (derived from most recent self-sig or most
+ *                        recent user id)
+ *   has_expired         (various sources)
+ *   expiredate          (various sources)
+ *
+ * See the documentation for fixup_uidnode for how the user id packets
+ * are modified.  In addition to that the primary user id's is_primary
+ * field is set to 1 and the other user id's is_primary are set to 0.
+ */
 static void
-merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
+merge_selfsigs_main (ctrl_t ctrl, kbnode_t keyblock, int *r_revoked,
 		     struct revoke_info *rinfo)
 {
   PKT_public_key *pk = NULL;
@@ -2495,17 +2468,16 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
   memset (rinfo, 0, sizeof (*rinfo));
 
   /* Section 11.1 of RFC 4880 determines the order of packets within a
-     message.  There are three sections, which must occur in the
-     following order: the public key, the user ids and user attributes
-     and the subkeys.  Within each section, each primary packet (e.g.,
-     a user id packet) is followed by one or more signature packets,
-     which modify that packet.  */
+   * message.  There are three sections, which must occur in the
+   * following order: the public key, the user ids and user attributes
+   * and the subkeys.  Within each section, each primary packet (e.g.,
+   * a user id packet) is followed by one or more signature packets,
+   * which modify that packet.  */
 
   /* According to Section 11.1 of RFC 4880, the public key must be the
-     first packet.  */
+     first packet.  Note that parse_keyblock_image ensures that the
+     first packet is the public key.  */
   if (keyblock->pkt->pkttype != PKT_PUBLIC_KEY)
-    /* parse_keyblock_image ensures that the first packet is the
-       public key.  */
     BUG ();
   pk = keyblock->pkt->pkt.public_key;
   keytimestamp = pk->timestamp;
@@ -2524,16 +2496,16 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
     }
 
   /* First pass:
-
-      - Find the latest direct key self-signature.  We assume that the
-        newest one overrides all others.
-
-      - Determine whether the key has been revoked.
-
-      - Gather all revocation keys (unlike other data, we don't just
-        take them from the latest self-signed packet).
-
-      - Determine max (sig[...]->version).
+   *
+   * - Find the latest direct key self-signature.  We assume that the
+   *   newest one overrides all others.
+   *
+   * - Determine whether the key has been revoked.
+   *
+   * - Gather all revocation keys (unlike other data, we don't just
+   *   take them from the latest self-signed packet).
+   *
+   * - Determine max (sig[...]->version).
    */
 
   /* Reset this in case this key was already merged. */
@@ -2545,8 +2517,8 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
   sigdate = 0; /* Helper variable to find the latest signature.  */
 
   /* According to Section 11.1 of RFC 4880, the public key comes first
-     and is immediately followed by any signature packets that modify
-     it.  */
+   * and is immediately followed by any signature packets that modify
+   * it.  */
   for (k = keyblock;
        k && k->pkt->pkttype != PKT_USER_ID
 	 && k->pkt->pkttype != PKT_ATTRIBUTE
@@ -2557,9 +2529,9 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 	{
 	  PKT_signature *sig = k->pkt->pkt.signature;
 	  if (sig->keyid[0] == kid[0] && sig->keyid[1] == kid[1])
-	    /* Self sig.  */
-	    {
-	      if (check_key_signature (keyblock, k, NULL))
+	    { /* Self sig.  */
+
+	      if (check_key_signature (ctrl, keyblock, k, NULL))
 		; /* Signature did not verify.  */
 	      else if (IS_KEY_REV (sig))
 		{
@@ -2578,11 +2550,11 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 	      else if (IS_KEY_SIG (sig))
 		{
 		  /* Add the indicated revocations keys from all
-		     signatures not just the latest.  We do this
-		     because you need multiple 1F sigs to properly
-		     handle revocation keys (PGP does it this way, and
-		     a revocation key could be sensitive and hence in
-		     a different signature). */
+		   * signatures not just the latest.  We do this
+		   * because you need multiple 1F sigs to properly
+		   * handle revocation keys (PGP does it this way, and
+		   * a revocation key could be sensitive and hence in
+		   * a different signature).  */
 		  if (sig->revkey)
 		    {
 		      int i;
@@ -2598,8 +2570,8 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 		    }
 
 		  if (sig->timestamp >= sigdate)
-		    /* This is the latest signature so far.  */
-		    {
+		    { /* This is the latest signature so far.  */
+
 		      if (sig->flags.expired)
 			; /* Signature has expired - ignore it.  */
 		      else
@@ -2646,9 +2618,9 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 			       sizeof (struct revocation_key));
     }
 
+  /* SIGNODE is the 1F signature packet with the latest creation time.
+   * Extract some information from it.  */
   if (signode)
-    /* SIGNODE is the 1F signature packet with the latest creation
-       time.  Extract some information from it.  */
     {
       /* Some information from a direct key signature take precedence
        * over the same information given in UID sigs.  */
@@ -2670,9 +2642,9 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
     }
 
   /* Pass 1.5: Look for key revocation signatures that were not made
-     by the key (i.e. did a revocation key issue a revocation for
-     us?).  Only bother to do this if there is a revocation key in the
-     first place and we're not revoked already.  */
+   * by the key (i.e. did a revocation key issue a revocation for
+   * us?).  Only bother to do this if there is a revocation key in the
+   * first place and we're not revoked already.  */
 
   if (!*r_revoked && pk->revkey)
     for (k = keyblock; k && k->pkt->pkttype != PKT_USER_ID; k = k->next)
@@ -2684,26 +2656,26 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 	    if (IS_KEY_REV (sig) &&
 		(sig->keyid[0] != kid[0] || sig->keyid[1] != kid[1]))
 	      {
-		int rc = check_revocation_keys (pk, sig);
+		int rc = check_revocation_keys (ctrl, pk, sig);
 		if (rc == 0)
 		  {
 		    *r_revoked = 2;
 		    sig_to_revoke_info (sig, rinfo);
 		    /* Don't continue checking since we can't be any
-		       more revoked than this.  */
+		     * more revoked than this.  */
 		    break;
 		  }
 		else if (gpg_err_code (rc) == GPG_ERR_NO_PUBKEY)
 		  pk->flags.maybe_revoked = 1;
 
 		/* A failure here means the sig did not verify, was
-		   not issued by a revocation key, or a revocation
-		   key loop was broken.  If a revocation key isn't
-		   findable, however, the key might be revoked and
-		   we don't know it.  */
+		 * not issued by a revocation key, or a revocation
+		 * key loop was broken.  If a revocation key isn't
+		 * findable, however, the key might be revoked and
+		 * we don't know it.  */
 
-		/* TODO: In the future handle subkey and cert
-		   revocations?  PGP doesn't, but it's in 2440. */
+		/* Fixme: In the future handle subkey and cert
+		 * revocations?  PGP doesn't, but it's in 2440.  */
 	      }
 	  }
       }
@@ -2711,28 +2683,30 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
   /* Second pass: Look at the self-signature of all user IDs.  */
 
   /* According to RFC 4880 section 11.1, user id and attribute packets
-     are in the second section, after the public key packet and before
-     the subkey packets.  */
+   * are in the second section, after the public key packet and before
+   * the subkey packets.  */
   signode = uidnode = NULL;
   sigdate = 0; /* Helper variable to find the latest signature in one UID. */
   for (k = keyblock; k && k->pkt->pkttype != PKT_PUBLIC_SUBKEY; k = k->next)
     {
       if (k->pkt->pkttype == PKT_USER_ID || k->pkt->pkttype == PKT_ATTRIBUTE)
-	/* New user id packet.  */
-	{
+	{ /* New user id packet.  */
+
+          /* Apply the data from the most recent self-signed packet to
+	   * the preceding user id packet.  */
 	  if (uidnode && signode)
-	    /* Apply the data from the most recent self-signed packet
-	       to the preceding user id packet.  */
 	    {
 	      fixup_uidnode (uidnode, signode, keytimestamp);
 	      pk->flags.valid = 1;
 	    }
+
 	  /* Clear SIGNODE.  The only relevant self-signed data for
-	     UIDNODE follows it.  */
+	   * UIDNODE follows it.  */
 	  if (k->pkt->pkttype == PKT_USER_ID)
 	    uidnode = k;
 	  else
 	    uidnode = NULL;
+
 	  signode = NULL;
 	  sigdate = 0;
 	}
@@ -2741,7 +2715,7 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 	  PKT_signature *sig = k->pkt->pkt.signature;
 	  if (sig->keyid[0] == kid[0] && sig->keyid[1] == kid[1])
 	    {
-	      if (check_key_signature (keyblock, k, NULL))
+	      if (check_key_signature (ctrl, keyblock, k, NULL))
 		;		/* signature did not verify */
 	      else if ((IS_UID_SIG (sig) || IS_UID_REV (sig))
 		       && sig->timestamp >= sigdate)
@@ -2770,7 +2744,7 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
     }
 
   /* If the key isn't valid yet, and we have
-     --allow-non-selfsigned-uid set, then force it valid. */
+   * --allow-non-selfsigned-uid set, then force it valid. */
   if (!pk->flags.valid && opt.allow_non_selfsigned_uid)
     {
       if (opt.verbose)
@@ -2780,7 +2754,7 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
     }
 
   /* The key STILL isn't valid, so try and find an ultimately
-     trusted signature. */
+   * trusted signature. */
   if (!pk->flags.valid)
     {
       uidnode = NULL;
@@ -2800,16 +2774,16 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 
 		  ultimate_pk = xmalloc_clear (sizeof (*ultimate_pk));
 
-		  /* We don't want to use the full get_pubkey to
-		     avoid infinite recursion in certain cases.
-		     There is no reason to check that an ultimately
-		     trusted key is still valid - if it has been
-		     revoked the user should also remove the
-		     ultimate trust flag.  */
+		  /* We don't want to use the full get_pubkey to avoid
+		   * infinite recursion in certain cases.  There is no
+		   * reason to check that an ultimately trusted key is
+		   * still valid - if it has been revoked the user
+		   * should also remove the ultimate trust flag.  */
 		  if (get_pubkey_fast (ultimate_pk, sig->keyid) == 0
-		      && check_key_signature2 (keyblock, k, ultimate_pk,
+		      && check_key_signature2 (ctrl,
+                                               keyblock, k, ultimate_pk,
 					       NULL, NULL, NULL, NULL) == 0
-		      && get_ownertrust (ultimate_pk) == TRUST_ULTIMATE)
+		      && get_ownertrust (ctrl, ultimate_pk) == TRUST_ULTIMATE)
 		    {
 		      free_public_key (ultimate_pk);
 		      pk->flags.valid = 1;
@@ -2822,20 +2796,18 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 	}
     }
 
-  /* Record the highest selfsig version so we know if this is a v3
-     key through and through, or a v3 key with a v4 selfsig
-     somewhere.  This is useful in a few places to know if the key
-     must be treated as PGP2-style or OpenPGP-style.  Note that a
-     selfsig revocation with a higher version number will also raise
-     this value.  This is okay since such a revocation must be
-     issued by the user (i.e. it cannot be issued by someone else to
-     modify the key behavior.) */
+  /* Record the highest selfsig version so we know if this is a v3 key
+   * through and through, or a v3 key with a v4 selfsig somewhere.
+   * This is useful in a few places to know if the key must be treated
+   * as PGP2-style or OpenPGP-style.  Note that a selfsig revocation
+   * with a higher version number will also raise this value.  This is
+   * okay since such a revocation must be issued by the user (i.e. it
+   * cannot be issued by someone else to modify the key behavior.) */
 
   pk->selfsigversion = sigversion;
 
-  /* Now that we had a look at all user IDs we can now get some information
-   * from those user IDs.
-   */
+  /* Now that we had a look at all user IDs we can now get some
+   * information from those user IDs.  */
 
   if (!key_usage)
     {
@@ -2847,6 +2819,7 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 	  if (k->pkt->pkttype == PKT_USER_ID)
 	    {
 	      PKT_user_id *uid = k->pkt->pkt.user_id;
+
 	      if (uid->help_key_usage && uid->created > uiddate)
 		{
 		  key_usage = uid->help_key_usage;
@@ -2855,6 +2828,7 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 	    }
 	}
     }
+
   if (!key_usage)
     {
       /* No key flags at all: get it from the algo.  */
@@ -2893,7 +2867,7 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
     }
 
   /* Currently only v3 keys have a maximum expiration date, but I'll
-     bet v5 keys get this feature again. */
+   * bet v5 keys get this feature again. */
   if (key_expire == 0
       || (pk->max_expiredate && key_expire > pk->max_expiredate))
     key_expire = pk->max_expiredate;
@@ -2901,8 +2875,8 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
   pk->has_expired = key_expire >= curtime ? 0 : key_expire;
   pk->expiredate = key_expire;
 
-  /* Fixme: we should see how to get rid of the expiretime fields  but
-   * this needs changes at other places too. */
+  /* Fixme: we should see how to get rid of the expiretime fields but
+   * this needs changes at other places too.  */
 
   /* And now find the real primary user ID and delete all others.  */
   uiddate = uiddate2 = 0;
@@ -2912,7 +2886,7 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
       if (k->pkt->pkttype == PKT_USER_ID && !k->pkt->pkt.user_id->attrib_data)
 	{
 	  PKT_user_id *uid = k->pkt->pkt.user_id;
-	  if (uid->is_primary)
+	  if (uid->flags.primary)
 	    {
 	      if (uid->created > uiddate)
 		{
@@ -2921,12 +2895,11 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 		}
 	      else if (uid->created == uiddate && uidnode)
 		{
-		  /* The dates are equal, so we need to do a
-		     different (and arbitrary) comparison.  This
-		     should rarely, if ever, happen.  It's good to
-		     try and guarantee that two different GnuPG
-		     users with two different keyrings at least pick
-		     the same primary. */
+		  /* The dates are equal, so we need to do a different
+		   * (and arbitrary) comparison.  This should rarely,
+		   * if ever, happen.  It's good to try and guarantee
+		   * that two different GnuPG users with two different
+		   * keyrings at least pick the same primary.  */
 		  if (cmp_user_ids (uid, uidnode->pkt->pkt.user_id) > 0)
 		    uidnode = k;
 		}
@@ -2956,21 +2929,21 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 	    {
 	      PKT_user_id *uid = k->pkt->pkt.user_id;
 	      if (k != uidnode)
-		uid->is_primary = 0;
+		uid->flags.primary = 0;
 	    }
 	}
     }
   else if (uidnode2)
     {
       /* None is flagged primary - use the latest user ID we have,
-         and disambiguate with the arbitrary packet comparison. */
-      uidnode2->pkt->pkt.user_id->is_primary = 1;
+       * and disambiguate with the arbitrary packet comparison. */
+      uidnode2->pkt->pkt.user_id->flags.primary = 1;
     }
   else
     {
       /* None of our uids were self-signed, so pick the one that
-         sorts first to be the primary.  This is the best we can do
-         here since there are no self sigs to date the uids. */
+       * sorts first to be the primary.  This is the best we can do
+       * here since there are no self sigs to date the uids. */
 
       uidnode = NULL;
 
@@ -2983,7 +2956,7 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 	      if (!uidnode)
 		{
 		  uidnode = k;
-		  uidnode->pkt->pkt.user_id->is_primary = 1;
+		  uidnode->pkt->pkt.user_id->flags.primary = 1;
 		  continue;
 		}
 	      else
@@ -2991,21 +2964,24 @@ merge_selfsigs_main (KBNODE keyblock, int *r_revoked,
 		  if (cmp_user_ids (k->pkt->pkt.user_id,
 				    uidnode->pkt->pkt.user_id) > 0)
 		    {
-		      uidnode->pkt->pkt.user_id->is_primary = 0;
+		      uidnode->pkt->pkt.user_id->flags.primary = 0;
 		      uidnode = k;
-		      uidnode->pkt->pkt.user_id->is_primary = 1;
+		      uidnode->pkt->pkt.user_id->flags.primary = 1;
 		    }
 		  else
-		    k->pkt->pkt.user_id->is_primary = 0;	/* just to be
-								   safe */
+                    {
+                      /* just to be safe: */
+                      k->pkt->pkt.user_id->flags.primary = 0;
+                    }
 		}
 	    }
 	}
     }
 }
 
+
 /* Convert a buffer to a signature.  Useful for 0x19 embedded sigs.
-   Caller must free the signature when they are done. */
+ * Caller must free the signature when they are done. */
 static PKT_signature *
 buf_to_sig (const byte * buf, size_t len)
 {
@@ -3015,7 +2991,7 @@ buf_to_sig (const byte * buf, size_t len)
 
   if (parse_signature (iobuf, PKT_SIGNATURE, len, sig) != 0)
     {
-      xfree (sig);
+      free_seckey_enc (sig);
       sig = NULL;
     }
 
@@ -3025,27 +3001,28 @@ buf_to_sig (const byte * buf, size_t len)
   return sig;
 }
 
+
 /* Use the self-signed data to fill in various fields in subkeys.
-
-   KEYBLOCK is the whole keyblock.  SUBNODE is the subkey to fill in.
-
-   Sets the following fields on the subkey:
-
-     main_keyid
-     flags.valid        if the subkey has a valid self-sig binding
-     flags.revoked
-     flags.backsig
-     pubkey_usage
-     has_expired
-     expired_date
-
-   On this subkey's most revent valid self-signed packet, the
-   following field is set:
-
-     flags.chosen_selfsig
-  */
+ *
+ * KEYBLOCK is the whole keyblock.  SUBNODE is the subkey to fill in.
+ *
+ * Sets the following fields on the subkey:
+ *
+ *   main_keyid
+ *   flags.valid        if the subkey has a valid self-sig binding
+ *   flags.revoked
+ *   flags.backsig
+ *   pubkey_usage
+ *   has_expired
+ *   expired_date
+ *
+ * On this subkey's most revent valid self-signed packet, the
+ * following field is set:
+ *
+ *   flags.chosen_selfsig
+ */
 static void
-merge_selfsigs_subkey (KBNODE keyblock, KBNODE subnode)
+merge_selfsigs_subkey (ctrl_t ctrl, kbnode_t keyblock, kbnode_t subnode)
 {
   PKT_public_key *mainpk = NULL, *subpk = NULL;
   PKT_signature *sig;
@@ -3084,18 +3061,18 @@ merge_selfsigs_subkey (KBNODE keyblock, KBNODE subnode)
 	  sig = k->pkt->pkt.signature;
 	  if (sig->keyid[0] == mainkid[0] && sig->keyid[1] == mainkid[1])
 	    {
-	      if (check_key_signature (keyblock, k, NULL))
+	      if (check_key_signature (ctrl, keyblock, k, NULL))
 		; /* Signature did not verify.  */
 	      else if (IS_SUBKEY_REV (sig))
 		{
 		  /* Note that this means that the date on a
-		     revocation sig does not matter - even if the
-		     binding sig is dated after the revocation sig,
-		     the subkey is still marked as revoked.  This
-		     seems ok, as it is just as easy to make new
-		     subkeys rather than re-sign old ones as the
-		     problem is in the distribution.  Plus, PGP (7)
-		     does this the same way.  */
+		   * revocation sig does not matter - even if the
+		   * binding sig is dated after the revocation sig,
+		   * the subkey is still marked as revoked.  This
+		   * seems ok, as it is just as easy to make new
+		   * subkeys rather than re-sign old ones as the
+		   * problem is in the distribution.  Plus, PGP (7)
+		   * does this the same way.  */
 		  subpk->flags.revoked = 1;
 		  sig_to_revoke_info (sig, &subpk->revoked);
 		  /* Although we could stop now, we continue to
@@ -3145,6 +3122,7 @@ merge_selfsigs_subkey (KBNODE keyblock, KBNODE subnode)
     key_expire = keytimestamp + buf32_to_u32 (p);
   else
     key_expire = 0;
+
   subpk->has_expired = key_expire >= curtime ? 0 : key_expire;
   subpk->expiredate = key_expire;
 
@@ -3164,7 +3142,7 @@ merge_selfsigs_subkey (KBNODE keyblock, KBNODE subnode)
       sigdate = 0;
 
       /* We do this while() since there may be other embedded
-         signatures in the future.  We only want 0x19 here. */
+       * signatures in the future.  We only want 0x19 here. */
 
       while ((p = enum_sig_subpkt (sig->hashed,
 				   SIGSUBPKT_SIGNATURE, &n, &seq, NULL)))
@@ -3190,7 +3168,7 @@ merge_selfsigs_subkey (KBNODE keyblock, KBNODE subnode)
       seq = 0;
 
       /* It is safe to have this in the unhashed area since the 0x19
-         is located on the selfsig for convenience, not security. */
+       * is located on the selfsig for convenience, not security. */
 
       while ((p = enum_sig_subpkt (sig->unhashed, SIGSUBPKT_SIGNATURE,
 				   &n, &seq, NULL)))
@@ -3216,7 +3194,7 @@ merge_selfsigs_subkey (KBNODE keyblock, KBNODE subnode)
       if (backsig)
 	{
 	  /* At this point, backsig contains the most recent 0x19 sig.
-	     Let's see if it is good. */
+	   * Let's see if it is good. */
 
 	  /* 2==valid, 1==invalid, 0==didn't check */
 	  if (check_backsig (mainpk, subpk, backsig) == 0)
@@ -3231,12 +3209,12 @@ merge_selfsigs_subkey (KBNODE keyblock, KBNODE subnode)
 
 
 /* Merge information from the self-signatures with the public key,
-   subkeys and user ids to make using them more easy.
-
-   See documentation for merge_selfsigs_main, merge_selfsigs_subkey
-   and fixup_uidnode for exactly which fields are updated.  */
+ * subkeys and user ids to make using them more easy.
+ *
+ * See documentation for merge_selfsigs_main, merge_selfsigs_subkey
+ * and fixup_uidnode for exactly which fields are updated.  */
 static void
-merge_selfsigs (KBNODE keyblock)
+merge_selfsigs (ctrl_t ctrl, kbnode_t keyblock)
 {
   KBNODE k;
   int revoked;
@@ -3252,21 +3230,21 @@ merge_selfsigs (KBNODE keyblock)
 	  log_error ("expected public key but found secret key "
 		     "- must stop\n");
 	  /* We better exit here because a public key is expected at
-	     other places too.  FIXME: Figure this out earlier and
-	     don't get to here at all */
+	   * other places too.  FIXME: Figure this out earlier and
+	   * don't get to here at all */
 	  g10_exit (1);
 	}
       BUG ();
     }
 
-  merge_selfsigs_main (keyblock, &revoked, &rinfo);
+  merge_selfsigs_main (ctrl, keyblock, &revoked, &rinfo);
 
   /* Now merge in the data from each of the subkeys.  */
   for (k = keyblock; k; k = k->next)
     {
       if (k->pkt->pkttype == PKT_PUBLIC_SUBKEY)
 	{
-	  merge_selfsigs_subkey (keyblock, k);
+	  merge_selfsigs_subkey (ctrl, keyblock, k);
 	}
     }
 
@@ -3310,7 +3288,7 @@ merge_selfsigs (KBNODE keyblock)
     {
       if (k->pkt->pkttype == PKT_USER_ID
 	  && !k->pkt->pkt.user_id->attrib_data
-	  && k->pkt->pkt.user_id->is_primary)
+	  && k->pkt->pkt.user_id->flags.primary)
 	{
 	  prefs = k->pkt->pkt.user_id->prefs;
 	  mdc_feature = k->pkt->pkt.user_id->flags.mdc;
@@ -3381,7 +3359,7 @@ merge_selfsigs (KBNODE keyblock)
  */
 static kbnode_t
 finish_lookup (kbnode_t keyblock, unsigned int req_usage, int want_exact,
-               unsigned int *r_flags)
+               int want_secret, unsigned int *r_flags)
 {
   kbnode_t k;
 
@@ -3523,6 +3501,13 @@ finish_lookup (kbnode_t keyblock, unsigned int req_usage, int want_exact,
 	      continue;
 	    }
 
+          if (want_secret && agent_probe_secret_key (NULL, pk))
+            {
+              if (DBG_LOOKUP)
+                log_debug ("\tno secret key\n");
+              continue;
+            }
+
 	  if (DBG_LOOKUP)
 	    log_debug ("\tsubkey might be fine\n");
 	  /* In case a key has a timestamp of 0 set, we make sure
@@ -3648,25 +3633,25 @@ print_status_key_considered (kbnode_t keyblock, unsigned int flags)
 
 
 /* A high-level function to lookup keys.
-
-   This function builds on top of the low-level keydb API.  It first
-   searches the database using the description stored in CTX->ITEMS,
-   then it filters the results using CTX and, finally, if WANT_SECRET
-   is set, it ignores any keys for which no secret key is available.
-
-   Unlike the low-level search functions, this function also merges
-   all of the self-signed data into the keys, subkeys and user id
-   packets (see the merge_selfsigs for details).
-
-   On success the key's keyblock is stored at *RET_KEYBLOCK, and the
-   specific subkey is stored at *RET_FOUND_KEY.  Note that we do not
-   return a reference in *RET_FOUND_KEY, i.e. the result must not be
-   freed using 'release_kbnode', and it is only valid until
-   *RET_KEYBLOCK is deallocated.  Therefore, if RET_FOUND_KEY is not
-   NULL, then RET_KEYBLOCK must not be NULL.  */
+ *
+ * This function builds on top of the low-level keydb API.  It first
+ * searches the database using the description stored in CTX->ITEMS,
+ * then it filters the results using CTX and, finally, if WANT_SECRET
+ * is set, it ignores any keys for which no secret key is available.
+ *
+ * Unlike the low-level search functions, this function also merges
+ * all of the self-signed data into the keys, subkeys and user id
+ * packets (see the merge_selfsigs for details).
+ *
+ * On success the key's keyblock is stored at *RET_KEYBLOCK, and the
+ * specific subkey is stored at *RET_FOUND_KEY.  Note that we do not
+ * return a reference in *RET_FOUND_KEY, i.e. the result must not be
+ * freed using 'release_kbnode', and it is only valid until
+ * *RET_KEYBLOCK is deallocated.  Therefore, if RET_FOUND_KEY is not
+ * NULL, then RET_KEYBLOCK must not be NULL.  */
 static int
-lookup (getkey_ctx_t ctx, kbnode_t *ret_keyblock, kbnode_t *ret_found_key,
-	int want_secret)
+lookup (ctrl_t ctrl, getkey_ctx_t ctx, int want_secret,
+        kbnode_t *ret_keyblock, kbnode_t *ret_found_key)
 {
   int rc;
   int no_suitable_key = 0;
@@ -3685,9 +3670,8 @@ lookup (getkey_ctx_t ctx, kbnode_t *ret_keyblock, kbnode_t *ret_found_key,
         break;
 
       /* If we are iterating over the entire database, then we need to
-	 change from KEYDB_SEARCH_MODE_FIRST, which does an implicit
-	 reset, to KEYDB_SEARCH_MODE_NEXT, which gets the next
-	 record.  */
+       * change from KEYDB_SEARCH_MODE_FIRST, which does an implicit
+       * reset, to KEYDB_SEARCH_MODE_NEXT, which gets the next record.  */
       if (ctx->nitems && ctx->items->mode == KEYDB_SEARCH_MODE_FIRST)
 	ctx->items->mode = KEYDB_SEARCH_MODE_NEXT;
 
@@ -3698,14 +3682,20 @@ lookup (getkey_ctx_t ctx, kbnode_t *ret_keyblock, kbnode_t *ret_found_key,
 	  goto skip;
 	}
 
-      if (want_secret && agent_probe_any_secret_key (NULL, keyblock))
-        goto skip; /* No secret key available.  */
+      if (want_secret)
+	{
+	  rc = agent_probe_any_secret_key (NULL, keyblock);
+	  if (gpg_err_code(rc) == GPG_ERR_NO_SECKEY)
+	    goto skip; /* No secret key available.  */
+	  if (rc)
+	    goto found; /* Unexpected error.  */
+	}
 
       /* Warning: node flag bits 0 and 1 should be preserved by
        * merge_selfsigs.  */
-      merge_selfsigs (keyblock);
+      merge_selfsigs (ctrl, keyblock);
       found_key = finish_lookup (keyblock, ctx->req_usage, ctx->exact,
-                                 &infoflags);
+                                 want_secret, &infoflags);
       print_status_key_considered (keyblock, infoflags);
       if (found_key)
 	{
@@ -3722,10 +3712,10 @@ lookup (getkey_ctx_t ctx, kbnode_t *ret_keyblock, kbnode_t *ret_found_key,
       release_kbnode (keyblock);
       keyblock = NULL;
       /* The keyblock cache ignores the current "file position".
-         Thus, if we request the next result and the cache matches
-         (and it will since it is what we just looked for), we'll get
-         the same entry back!  We can avoid this infinite loop by
-         disabling the cache.  */
+       * Thus, if we request the next result and the cache matches
+       * (and it will since it is what we just looked for), we'll get
+       * the same entry back!  We can avoid this infinite loop by
+       * disabling the cache.  */
       keydb_disable_caching (ctx->kr_handle);
     }
 
@@ -3821,7 +3811,7 @@ enum_secret_keys (ctrl_t ctrl, void **context, PKT_public_key *sk)
     {
       /* Free the context.  */
       release_kbnode (c->keyblock);
-      getkey_end (c->ctx);
+      getkey_end (ctrl, c->ctx);
       xfree (c);
       *context = NULL;
       return 0;
@@ -3863,12 +3853,13 @@ enum_secret_keys (ctrl_t ctrl, void **context, PKT_public_key *sk)
                   break;
 
                 case 3: /* Init search context to enum all secret keys.  */
-                  err = getkey_bynames (&c->ctx, NULL, NULL, 1, &keyblock);
+                  err = getkey_bynames (ctrl, &c->ctx, NULL, NULL, 1,
+                                        &keyblock);
                   if (err)
                     {
                       release_kbnode (keyblock);
                       keyblock = NULL;
-                      getkey_end (c->ctx);
+                      getkey_end (ctrl, c->ctx);
                       c->ctx = NULL;
                     }
                   c->state++;
@@ -3877,12 +3868,12 @@ enum_secret_keys (ctrl_t ctrl, void **context, PKT_public_key *sk)
                 case 4: /* Get next item from the context.  */
                   if (c->ctx)
                     {
-                      err = getkey_next (c->ctx, NULL, &keyblock);
+                      err = getkey_next (ctrl, c->ctx, NULL, &keyblock);
                       if (err)
                         {
                           release_kbnode (keyblock);
                           keyblock = NULL;
-                          getkey_end (c->ctx);
+                          getkey_end (ctrl, c->ctx);
                           c->ctx = NULL;
                         }
                     }
@@ -3933,20 +3924,77 @@ enum_secret_keys (ctrl_t ctrl, void **context, PKT_public_key *sk)
     }
 }
 
+gpg_error_t
+get_seckey_default_or_card (ctrl_t ctrl, PKT_public_key *pk,
+                            const byte *fpr_card, size_t fpr_len)
+{
+  gpg_error_t err;
+  strlist_t namelist = NULL;
+
+  const char *def_secret_key = parse_def_secret_key (ctrl);
+
+  if (def_secret_key)
+    add_to_strlist (&namelist, def_secret_key);
+  else if (fpr_card)
+    return get_pubkey_byfprint (ctrl, pk, NULL, fpr_card, fpr_len);
+
+  if (!fpr_card
+      || (def_secret_key && def_secret_key[strlen (def_secret_key)-1] == '!'))
+    err = key_byname (ctrl, NULL, namelist, pk, 1, 0, NULL, NULL);
+  else
+    { /* Default key is specified and card key is also available.  */
+      kbnode_t k, keyblock = NULL;
+
+      err = key_byname (ctrl, NULL, namelist, pk, 1, 0, &keyblock, NULL);
+      if (!err)
+        for (k = keyblock; k; k = k->next)
+          {
+            PKT_public_key *pk_candidate;
+            char fpr[MAX_FINGERPRINT_LEN];
+
+            if (k->pkt->pkttype != PKT_PUBLIC_KEY
+                &&k->pkt->pkttype != PKT_PUBLIC_SUBKEY)
+              continue;
+
+            pk_candidate = k->pkt->pkt.public_key;
+            if (!pk_candidate->flags.valid)
+              continue;
+            if (!((pk_candidate->pubkey_usage & USAGE_MASK) & pk->req_usage))
+              continue;
+            fingerprint_from_pk (pk_candidate, fpr, NULL);
+            if (!memcmp (fpr_card, fpr, fpr_len))
+              {
+                release_public_key_parts (pk);
+                copy_public_key (pk, pk_candidate);
+                break;
+              }
+          }
+      release_kbnode (keyblock);
+    }
+
+  free_strlist (namelist);
+
+  return err;
+}
 
 /*********************************************
  ***********  User ID printing helpers *******
  *********************************************/
 
 /* Return a string with a printable representation of the user_id.
- * this string must be freed by xfree.   */
+ * this string must be freed by xfree.  If R_NOUID is not NULL it is
+ * set to true if a user id was not found; otherwise to false.  */
 static char *
-get_user_id_string (u32 * keyid, int mode, size_t *r_len)
+get_user_id_string (ctrl_t ctrl, u32 * keyid, int mode, size_t *r_len,
+                    int *r_nouid)
 {
   user_id_db_t r;
   keyid_list_t a;
   int pass = 0;
   char *p;
+
+  if (r_nouid)
+    *r_nouid = 0;
 
   /* Try it two times; second pass reads from the database.  */
   do
@@ -3985,7 +4033,7 @@ get_user_id_string (u32 * keyid, int mode, size_t *r_len)
 	    }
 	}
     }
-  while (++pass < 2 && !get_pubkey (NULL, keyid));
+  while (++pass < 2 && !get_pubkey (ctrl, NULL, keyid));
 
   if (mode == 2)
     p = xstrdup (user_id_not_found_utf8 ());
@@ -3994,6 +4042,8 @@ get_user_id_string (u32 * keyid, int mode, size_t *r_len)
   else
     p = xasprintf ("%s [?]", keystr (keyid));
 
+  if (r_nouid)
+    *r_nouid = 1;
   if (r_len)
     *r_len = strlen (p);
   return p;
@@ -4001,9 +4051,9 @@ get_user_id_string (u32 * keyid, int mode, size_t *r_len)
 
 
 char *
-get_user_id_string_native (u32 * keyid)
+get_user_id_string_native (ctrl_t ctrl, u32 * keyid)
 {
-  char *p = get_user_id_string (keyid, 0, NULL);
+  char *p = get_user_id_string (ctrl, keyid, 0, NULL, NULL);
   char *p2 = utf8_to_native (p, strlen (p), 0);
   xfree (p);
   return p2;
@@ -4011,26 +4061,26 @@ get_user_id_string_native (u32 * keyid)
 
 
 char *
-get_long_user_id_string (u32 * keyid)
+get_long_user_id_string (ctrl_t ctrl, u32 * keyid)
 {
-  return get_user_id_string (keyid, 1, NULL);
+  return get_user_id_string (ctrl, keyid, 1, NULL, NULL);
 }
 
 
 /* Please try to use get_user_byfpr instead of this one.  */
 char *
-get_user_id (u32 * keyid, size_t * rn)
+get_user_id (ctrl_t ctrl, u32 *keyid, size_t *rn, int *r_nouid)
 {
-  return get_user_id_string (keyid, 2, rn);
+  return get_user_id_string (ctrl, keyid, 2, rn, r_nouid);
 }
 
 
 /* Please try to use get_user_id_byfpr_native instead of this one.  */
 char *
-get_user_id_native (u32 * keyid)
+get_user_id_native (ctrl_t ctrl, u32 *keyid)
 {
   size_t rn;
-  char *p = get_user_id (keyid, &rn);
+  char *p = get_user_id (ctrl, keyid, &rn, NULL);
   char *p2 = utf8_to_native (p, rn, 0);
   xfree (p);
   return p2;
@@ -4043,7 +4093,7 @@ get_user_id_native (u32 * keyid)
    terminated.  To determine the length of the string, you must use
    *RN.  */
 char *
-get_user_id_byfpr (const byte *fpr, size_t *rn)
+get_user_id_byfpr (ctrl_t ctrl, const byte *fpr, size_t *rn)
 {
   user_id_db_t r;
   char *p;
@@ -4071,7 +4121,7 @@ get_user_id_byfpr (const byte *fpr, size_t *rn)
 	}
     }
   while (++pass < 2
-	 && !get_pubkey_byfprint (NULL, NULL, fpr, MAX_FINGERPRINT_LEN));
+	 && !get_pubkey_byfprint (ctrl, NULL, NULL, fpr, MAX_FINGERPRINT_LEN));
   p = xstrdup (user_id_not_found_utf8 ());
   *rn = strlen (p);
   return p;
@@ -4081,10 +4131,10 @@ get_user_id_byfpr (const byte *fpr, size_t *rn)
    encoding.  The returned string needs to be freed.  Unlike
    get_user_id_byfpr, the returned string is NUL terminated.  */
 char *
-get_user_id_byfpr_native (const byte *fpr)
+get_user_id_byfpr_native (ctrl_t ctrl, const byte *fpr)
 {
   size_t rn;
-  char *p = get_user_id_byfpr (fpr, &rn);
+  char *p = get_user_id_byfpr (ctrl, fpr, &rn);
   char *p2 = utf8_to_native (p, rn, 0);
   xfree (p);
   return p2;
@@ -4124,10 +4174,12 @@ release_akl (void)
 
 /* Returns false on error. */
 int
-parse_auto_key_locate (char *options)
+parse_auto_key_locate (const char *options_arg)
 {
   char *tok;
+  char *options, *options_buf;
 
+  options = options_buf = xstrdup (options_arg);
   while ((tok = optsep (&options)))
     {
       struct akl *akl, *check, *last = NULL;
@@ -4166,6 +4218,7 @@ parse_auto_key_locate (char *options)
       else
 	{
 	  free_akl (akl);
+          xfree (options_buf);
 	  return 0;
 	}
 
@@ -4194,10 +4247,81 @@ parse_auto_key_locate (char *options)
 	}
     }
 
+  xfree (options_buf);
   return 1;
 }
 
 
+
+/* The list of key origins. */
+static struct {
+  const char *name;
+  int origin;
+} key_origin_list[] =
+  {
+    { "self",    KEYORG_SELF    },
+    { "file",    KEYORG_FILE    },
+    { "url",     KEYORG_URL     },
+    { "wkd",     KEYORG_WKD     },
+    { "dane",    KEYORG_DANE    },
+    { "ks-pref", KEYORG_KS_PREF },
+    { "ks",      KEYORG_KS      },
+    { "unknown", KEYORG_UNKNOWN }
+  };
+
+/* Parse the argument for --key-origin.  Return false on error. */
+int
+parse_key_origin (char *string)
+{
+  int i;
+  char *comma;
+
+  comma = strchr (string, ',');
+  if (comma)
+    *comma = 0;
+
+  if (!ascii_strcasecmp (string, "help"))
+    {
+      log_info (_("valid values for option '%s':\n"), "--key-origin");
+      for (i=0; i < DIM (key_origin_list); i++)
+        log_info ("  %s\n", key_origin_list[i].name);
+      g10_exit (1);
+    }
+
+  for (i=0; i < DIM (key_origin_list); i++)
+    if (!ascii_strcasecmp (string, key_origin_list[i].name))
+      {
+        opt.key_origin = key_origin_list[i].origin;
+        xfree (opt.key_origin_url);
+        opt.key_origin_url = NULL;
+        if (comma && comma[1])
+          {
+            opt.key_origin_url = xstrdup (comma+1);
+            trim_spaces (opt.key_origin_url);
+          }
+
+        return 1;
+      }
+
+  if (comma)
+    *comma = ',';
+  return 0;
+}
+
+/* Return a string or "?" for the key ORIGIN.  */
+const char *
+key_origin_string (int origin)
+{
+  int i;
+
+  for (i=0; i < DIM (key_origin_list); i++)
+    if (key_origin_list[i].origin == origin)
+      return key_origin_list[i].name;
+  return "?";
+}
+
+
+
 /* Returns true if a secret key is available for the public key with
    key id KEYID; returns false if not.  This function ignores legacy
    keys.  Note: this is just a fast check and does not tell us whether

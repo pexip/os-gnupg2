@@ -19,6 +19,13 @@
 #ifndef GNUPG_G10_CALL_AGENT_H
 #define GNUPG_G10_CALL_AGENT_H
 
+struct key_attr {
+  int algo;              /* Algorithm identifier.  */
+  union {
+    unsigned int nbits;  /* Supported keysize.  */
+    const char *curve;   /* Name of curve.  */
+  };
+};
 
 struct agent_card_info_s
 {
@@ -47,6 +54,9 @@ struct agent_card_info_s
   u32  fpr1time;
   u32  fpr2time;
   u32  fpr3time;
+  char grp1[20];     /* The keygrip for OPENPGP.1 */
+  char grp2[20];     /* The keygrip for OPENPGP.2 */
+  char grp3[20];     /* The keygrip for OPENPGP.3 */
   unsigned long sig_counter;
   int chv1_cached;   /* True if a PIN is not required for each
                         signing.  Note that the gpg-agent might cache
@@ -54,18 +64,14 @@ struct agent_card_info_s
   int is_v2;         /* True if this is a v2 card.  */
   int chvmaxlen[3];  /* Maximum allowed length of a CHV. */
   int chvretry[3];   /* Allowed retries for the CHV; 0 = blocked. */
-  struct {           /* Array with key attributes.  */
-    int algo;              /* Algorithm identifier.  */
-    union {
-      unsigned int nbits;  /* Supported keysize.  */
-      const char *curve;   /* Name of curve.  */
-    };
-  } key_attr[3];
+  struct key_attr key_attr[3];
   struct {
     unsigned int ki:1;     /* Key import available.  */
     unsigned int aac:1;    /* Algorithm attributes are changeable.  */
+    unsigned int kdf:1;    /* KDF object to support PIN hashing available.  */
   } extcap;
   unsigned int status_indicator;
+  int kdf_do_enabled;      /* Card has a KDF object */
 };
 
 
@@ -75,6 +81,12 @@ void agent_release_card_info (struct agent_card_info_s *info);
 
 /* Return card info. */
 int agent_scd_learn (struct agent_card_info_s *info, int force);
+
+/* Return list of cards.  */
+int agent_scd_cardlist (strlist_t *result);
+
+/* Return the serial number, possibly select by DEMAND.  */
+int agent_scd_serialno (char **r_serialno, const char *demand);
 
 /* Send an APDU to the card.  */
 gpg_error_t agent_scd_apdu (const char *hexapdu, unsigned int *r_sw);
@@ -180,13 +192,15 @@ gpg_error_t agent_keywrap_key (ctrl_t ctrl, int forexport,
 /* Send a key to the agent.  */
 gpg_error_t agent_import_key (ctrl_t ctrl, const char *desc,
                               char **cache_nonce_addr, const void *key,
-                              size_t keylen, int unattended, int force);
+                              size_t keylen, int unattended, int force,
+                              u32 *keyid, u32 *mainkeyid, int pubkey_algo);
 
 /* Receive a key from the agent.  */
 gpg_error_t agent_export_key (ctrl_t ctrl, const char *keygrip,
                               const char *desc, int openpgp_protected,
                               char **cache_nonce_addr,
-                              unsigned char **r_result, size_t *r_resultlen);
+                              unsigned char **r_result, size_t *r_resultlen,
+                              u32 *keyid, u32 *mainkeyid, int pubkey_algo);
 
 /* Delete a key from the agent.  */
 gpg_error_t agent_delete_key (ctrl_t ctrl, const char *hexkeygrip,

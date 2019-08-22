@@ -288,7 +288,7 @@ blob_filecopy (int mode, const char *fname, KEYBOXBLOB blob,
         }
 
       /* Skip this blob. */
-      rc = _keybox_read_blob (NULL, fp);
+      rc = _keybox_read_blob (NULL, fp, NULL);
       if (rc)
         {
           fclose (fp);
@@ -353,12 +353,9 @@ blob_filecopy (int mode, const char *fname, KEYBOXBLOB blob,
 }
 
 
-/* Insert the OpenPGP keyblock {IMAGE,IMAGELEN} into HD.  SIGSTATUS is
-   a vector describing the status of the signatures; its first element
-   gives the number of following elements.  */
+/* Insert the OpenPGP keyblock {IMAGE,IMAGELEN} into HD. */
 gpg_error_t
-keybox_insert_keyblock (KEYBOX_HANDLE hd, const void *image, size_t imagelen,
-                        u32 *sigstatus)
+keybox_insert_keyblock (KEYBOX_HANDLE hd, const void *image, size_t imagelen)
 {
   gpg_error_t err;
   const char *fname;
@@ -385,7 +382,7 @@ keybox_insert_keyblock (KEYBOX_HANDLE hd, const void *image, size_t imagelen,
     return err;
   assert (nparsed <= imagelen);
   err = _keybox_create_openpgp_blob (&blob, &info, image, imagelen,
-                                     sigstatus, hd->ephemeral);
+                                      hd->ephemeral);
   _keybox_destroy_openpgp_info (&info);
   if (!err)
     {
@@ -436,7 +433,7 @@ keybox_update_keyblock (KEYBOX_HANDLE hd, const void *image, size_t imagelen)
     return err;
   assert (nparsed <= imagelen);
   err = _keybox_create_openpgp_blob (&blob, &info, image, imagelen,
-                                     NULL, hd->ephemeral);
+                                     hd->ephemeral);
   _keybox_destroy_openpgp_info (&info);
 
   /* Update the keyblock.  */
@@ -668,7 +665,7 @@ keybox_compress (KEYBOX_HANDLE hd)
 
   /* A quick test to see if we need to compress the file at all.  We
      schedule a compress run after 3 hours. */
-  if ( !_keybox_read_blob (&blob, fp) )
+  if ( !_keybox_read_blob (&blob, fp, NULL) )
     {
       const unsigned char *buffer;
       size_t length;
@@ -706,7 +703,7 @@ keybox_compress (KEYBOX_HANDLE hd)
   cut_time = time(NULL) - 86400;
   first_blob = 1;
   skipped_deleted = 0;
-  for (rc=0; !(read_rc = _keybox_read_blob2 (&blob, fp, &skipped_deleted));
+  for (rc=0; !(read_rc = _keybox_read_blob (&blob, fp, &skipped_deleted));
        _keybox_release_blob (blob), blob = NULL )
     {
       unsigned int blobflags;

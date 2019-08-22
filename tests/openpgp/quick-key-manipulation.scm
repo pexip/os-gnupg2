@@ -1,6 +1,6 @@
 #!/usr/bin/env gpgscm
 
-;; Copyright (C) 2016 g10 Code GmbH
+;; Copyright (C) 2016-2017 g10 Code GmbH
 ;;
 ;; This file is part of GnuPG.
 ;;
@@ -17,12 +17,9 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "defs.scm"))
+(load (in-srcdir "tests" "openpgp" "defs.scm"))
+(load (with-path "time.scm"))
 (setup-environment)
-
- ;; XXX because of --always-trust, the trustdb is not created.
- ;; Therefore, we redefine GPG without --always-trust.
-(define GPG `(,(tool 'gpg) --no-permission-warning))
 
 (define (exact id)
   (string-append "=" id))
@@ -36,6 +33,7 @@
 
 (define alpha "Alpha <alpha@invalid.example.net>")
 (define bravo "Bravo <bravo@invalid.example.net>")
+(define charlie "Charlie <charlie@invalid.example.net>")
 
 (define (key-data key)
   (filter (lambda (x) (or (string=? (car x) "pub")
@@ -75,8 +73,29 @@
 (assert (= 2 (count-uids-of-secret-key alpha)))
 (assert (= 2 (count-uids-of-secret-key bravo)))
 
+(info "Checking that we can mark an user ID as primary.")
+(call-check `(,@gpg --quick-set-primary-uid ,(exact alpha) ,alpha))
+(call-check `(,@gpg --quick-set-primary-uid ,(exact alpha) ,bravo))
+;; XXX I don't know how to verify this.  The keylisting does not seem
+;; to indicate the primary UID.
+
+(info "Checking that we get an error making non-existent user ID the primary one.")
+(catch '()
+       (call-check `(,@GPG --quick-set-primary-uid ,(exact alpha) ,charlie))
+       (error "Expected an error, but get none."))
+
 (info "Checking that we can revoke a user ID...")
 (call-check `(,@GPG --quick-revoke-uid ,(exact bravo) ,alpha))
+
+(info "Checking that we get an error revoking a non-existent user ID.")
+(catch '()
+       (call-check `(,@GPG --quick-revoke-uid ,(exact bravo) ,charlie))
+       (error "Expected an error, but get none."))
+
+(info "Checking that we get an error revoking the last valid user ID.")
+(catch '()
+       (call-check `(,@GPG --quick-revoke-uid ,(exact bravo) ,bravo))
+       (error "Expected an error, but get none."))
 
 (assert (= 1 (count-uids-of-secret-key bravo)))
 
@@ -91,8 +110,9 @@
 
 ;; Make the key expire in one year.
 (call-check `(,@gpg --quick-set-expire ,fpr "1y"))
-;; XXX It'd be nice to check that the value is right.
-(assert (not (equal? "" (expiration-time fpr))))
+(assert (time-matches? (+ (get-time) (years->seconds 1))
+		       (string->number (expiration-time fpr))
+		       (minutes->seconds 5)))
 
 
 ;;
@@ -119,6 +139,15 @@
  '(()
    (- - -)
    (default default never)
+   (rsa "sign auth encr" "seconds=600") ;; GPGME uses this
+   (rsa "auth,encr" "2") ;; "without a letter, days is assumed"
+   ;; Sadly, the timestamp is truncated by the use of time_t on
+   ;; systems where time_t is a signed 32 bit value.
+   (rsa "sign" "2038-01-01")      ;; unix millennium
+   (rsa "sign" "20380101T115500") ;; unix millennium
+   ;; Once fixed, we can use later timestamps:
+   ;; (rsa "sign" "2105-01-01")      ;; "last year GnuPG can represent is 2105"
+   ;; (rsa "sign" "21050101T115500") ;; "last year GnuPG can represent is 2105"
    (rsa sign "2d")
    (rsa1024 sign "2w")
    (rsa2048 encr "2m")
@@ -134,21 +163,60 @@
   (lambda (subkey)
     (assert (= 1 (:alg subkey)))
     (assert (string-contains? (:cap subkey) "s"))
-    (assert (not (equal? "" (:expire subkey)))))
+    (assert (string-contains? (:cap subkey) "a"))
+    (assert (string-contains? (:cap subkey) "e"))
+    (assert (time-matches? (+ (get-time) 600)
+			   (string->number (:expire subkey))
+			   (minutes->seconds 5))))
+  (lambda (subkey)
+    (assert (= 1 (:alg subkey)))
+    (assert (string-contains? (:cap subkey) "a"))
+    (assert (string-contains? (:cap subkey) "e"))
+    (assert (time-matches? (+ (get-time) (days->seconds 2))
+			   (string->number (:expire subkey))
+			   (minutes->seconds 5))))
+  (lambda (subkey)
+    (assert (= 1 (:alg subkey)))
+    (assert (string-contains? (:cap subkey) "s"))
+    (assert (time-matches? 2145960000    ;; UTC 2038-01-01 12:00:00
+			   ;; 4260254400 ;; UTC 2105-01-01 12:00:00
+			   (string->number (:expire subkey))
+			   ;; GnuPG choses the middle of the day (local time)
+			   ;; when no hh:mm:ss is specified
+			   (days->seconds 1))))
+  (lambda (subkey)
+    (assert (= 1 (:alg subkey)))
+    (assert (string-contains? (:cap subkey) "s"))
+    (assert (time-matches? 2145959700    ;; UTC 2038-01-01 11:55:00
+			   ;; 4260254100 ;; UTC 2105-01-01 11:55:00
+			   (string->number (:expire subkey))
+			   (minutes->seconds 5))))
+  (lambda (subkey)
+    (assert (= 1 (:alg subkey)))
+    (assert (string-contains? (:cap subkey) "s"))
+    (assert (time-matches? (+ (get-time) (days->seconds 2))
+			   (string->number (:expire subkey))
+			   (minutes->seconds 5))))
   (lambda (subkey)
     (assert (= 1 (:alg subkey)))
     (assert (= 1024 (:length subkey)))
     (assert (string-contains? (:cap subkey) "s"))
-    (assert (not (equal? "" (:expire subkey)))))
+    (assert (time-matches? (+ (get-time) (weeks->seconds 2))
+			   (string->number (:expire subkey))
+			   (minutes->seconds 5))))
   (lambda (subkey)
     (assert (= 1 (:alg subkey)))
     (assert (= 2048 (:length subkey)))
     (assert (string-contains? (:cap subkey) "e"))
-    (assert (not (equal? "" (:expire subkey)))))
+    (assert (time-matches? (+ (get-time) (months->seconds 2))
+			   (string->number (:expire subkey))
+			   (minutes->seconds 5))))
   (lambda (subkey)
     (assert (= 1 (:alg subkey)))
     (assert (= 4096 (:length subkey)))
     (assert (string-contains? (:cap subkey) "s"))
     (assert (string-contains? (:cap subkey) "a"))
-    (assert (not (equal? "" (:expire subkey)))))
+    (assert (time-matches? (+ (get-time) (years->seconds 2))
+			   (string->number (:expire subkey))
+			   (minutes->seconds 5))))
   #f))

@@ -856,9 +856,9 @@ block_filter (void *opaque, int control, iobuf_t chain, byte * buffer,
 		    }
 		  else if (c == 255)
 		    {
-		      a->size = (size_t)iobuf_get (chain) << 24;
-		      a->size |= iobuf_get (chain) << 16;
-		      a->size |= iobuf_get (chain) << 8;
+		      a->size = iobuf_get_noeof (chain) << 24;
+		      a->size |= iobuf_get_noeof (chain) << 16;
+		      a->size |= iobuf_get_noeof (chain) << 8;
 		      if ((c = iobuf_get (chain)) == -1)
 			{
 			  log_error ("block_filter: invalid 4 byte length\n");
@@ -2216,6 +2216,7 @@ iobuf_copy (iobuf_t dest, iobuf_t source)
 
   size_t nread;
   size_t nwrote = 0;
+  size_t max_read = 0;
   int err;
 
   assert (source->use == IOBUF_INPUT || source->use == IOBUF_INPUT_TEMP);
@@ -2232,6 +2233,9 @@ iobuf_copy (iobuf_t dest, iobuf_t source)
         /* EOF.  */
         break;
 
+      if (nread > max_read)
+        max_read = nread;
+
       err = iobuf_write (dest, temp, nread);
       if (err)
         break;
@@ -2239,7 +2243,8 @@ iobuf_copy (iobuf_t dest, iobuf_t source)
     }
 
   /* Burn the buffer.  */
-  wipememory (temp, sizeof (temp));
+  if (max_read)
+    wipememory (temp, max_read);
   xfree (temp);
 
   return nwrote;
@@ -2502,7 +2507,7 @@ iobuf_get_fname_nonnull (iobuf_t a)
  * Enable or disable partial body length mode (RFC 4880 4.2.2.4).
  *
  * If LEN is 0, this disables partial block mode by popping the
- * partial body length filter, which which must be the most recently
+ * partial body length filter, which must be the most recently
  * added filter.
  *
  * If LEN is non-zero, it pushes a partial body length filter.  If
@@ -2552,7 +2557,7 @@ iobuf_read_line (iobuf_t a, byte ** addr_of_buffer,
      NUL character in the buffer.  This requires at least 2 bytes.  We
      don't complicate the code by handling the stupid corner case, but
      simply assert that it can't happen.  */
-  assert (length >= 2 || maxlen >= 2);
+  assert (!buffer || length >= 2 || maxlen >= 2);
 
   if (!buffer || length <= 1)
     /* must allocate a new buffer */

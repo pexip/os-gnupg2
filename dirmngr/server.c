@@ -2,6 +2,7 @@
  * Copyright (C) 2002 Klarälvdalens Datakonsult AB
  * Copyright (C) 2003, 2004, 2005, 2007, 2008, 2009, 2011, 2015 g10 Code GmbH
  * Copyright (C) 2014, 2015, 2016 Werner Koch
+ * Copyright (C) 2016 Bundesamt für Sicherheit in der Informationstechnik
  *
  * This file is part of GnuPG.
  *
@@ -17,6 +18,8 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: GPL-3.0+
  */
 
 #include <config.h>
@@ -51,14 +54,18 @@
 # include "ldap-parse-uri.h"
 #endif
 #include "dns-stuff.h"
-#include "mbox-util.h"
-#include "zb32.h"
-#include "server-help.h"
+#include "../common/mbox-util.h"
+#include "../common/zb32.h"
+#include "../common/server-help.h"
 
 /* To avoid DoS attacks we limit the size of a certificate to
    something reasonable.  The DoS was actually only an issue back when
    Dirmngr was a system service and not a user service. */
 #define MAX_CERT_LENGTH (16*1024)
+
+/* The limit for the CERTLIST inquiry.  We allow for up to 20
+ * certificates but also take PEM encoding into account.  */
+#define MAX_CERTLIST_LENGTH ((MAX_CERT_LENGTH * 20 * 4)/3)
 
 /* The same goes for OpenPGP keyblocks, but here we need to allow for
    much longer blocks; a 200k keyblock is not too unusual for keys
@@ -73,7 +80,8 @@
 
 #define PARM_ERROR(t) assuan_set_error (ctx, \
                                         gpg_error (GPG_ERR_ASS_PARAMETER), (t))
-#define set_error(e,t) assuan_set_error (ctx, gpg_error (e), (t))
+#define set_error(e,t) (ctx ? assuan_set_error (ctx, gpg_error (e), (t)) \
+                        /**/: gpg_error (e))
 
 
 
@@ -82,6 +90,9 @@ struct server_local_s
 {
   /* Data used to associate an Assuan context with local server data */
   assuan_context_t assuan_ctx;
+
+  /* The session id (a counter).  */
+  unsigned int session_id;
 
   /* Per-session LDAP servers.  */
   ldap_server_t ldapservers;
@@ -117,6 +128,9 @@ static es_cookie_io_functions_t data_line_cookie_functions =
     data_line_cookie_close
   };
 
+
+/* Local prototypes */
+static const char *task_check_wkd_support (ctrl_t ctrl, const char *domain);
 
 
 
@@ -186,7 +200,7 @@ data_line_write (assuan_context_t ctx, const void *buffer_arg, size_t size)
   const char *buffer = buffer_arg;
   gpg_error_t err;
 
-  /* If we do not want logging, enable it it here.  */
+  /* If we do not want logging, enable it here.  */
   if (ctrl && ctrl->server_local && ctrl->server_local->inhibit_data_logging)
     ctrl->server_local->inhibit_data_logging_now = 1;
 
@@ -303,8 +317,8 @@ strcpy_escaped_plus (char *d, const unsigned char *s)
 }
 
 
-/* This function returns true if a Tor server is running.  The sattus
-   is cached for the current connection.  */
+/* This function returns true if a Tor server is running.  The status
+ * is cached for the current connection.  */
 static int
 is_tor_running (ctrl_t ctrl)
 {
@@ -366,17 +380,15 @@ do_get_cert_local (ctrl_t ctrl, const char *name, const char *command)
   char *buf;
   ksba_cert_t cert;
 
-  if (name)
-    {
-      buf = xmalloc ( strlen (command) + 1 + strlen(name) + 1);
-      strcpy (stpcpy (stpcpy (buf, command), " "), name);
-    }
+  buf = name? strconcat (command, " ", name, NULL) : xtrystrdup (command);
+  if (!buf)
+    rc = gpg_error_from_syserror ();
   else
-    buf = xstrdup (command);
-
-  rc = assuan_inquire (ctrl->server_local->assuan_ctx, buf,
-                       &value, &valuelen, MAX_CERT_LENGTH);
-  xfree (buf);
+    {
+      rc = assuan_inquire (ctrl->server_local->assuan_ctx, buf,
+                           &value, &valuelen, MAX_CERT_LENGTH);
+      xfree (buf);
+    }
   if (rc)
     {
       log_error (_("assuan_inquire(%s) failed: %s\n"),
@@ -406,12 +418,11 @@ do_get_cert_local (ctrl_t ctrl, const char *name, const char *command)
 
 
 
-/* Ask back to return a certificate for name, given as a regular
-   gpgsm certificate indentificates (e.g. fingerprint or one of the
-   other methods).  Alternatively, NULL may be used for NAME to
-   return the current target certificate. Either return the certificate
-   in a KSBA object or NULL if it is not available.
-*/
+/* Ask back to return a certificate for NAME, given as a regular gpgsm
+ * certificate identifier (e.g. fingerprint or one of the other
+ * methods).  Alternatively, NULL may be used for NAME to return the
+ * current target certificate.  Either return the certificate in a
+ * KSBA object or NULL if it is not available.  */
 ksba_cert_t
 get_cert_local (ctrl_t ctrl, const char *name)
 {
@@ -425,13 +436,12 @@ get_cert_local (ctrl_t ctrl, const char *name)
 
 }
 
-/* Ask back to return the issuing certificate for name, given as a
-   regular gpgsm certificate indentificates (e.g. fingerprint or one
-   of the other methods).  Alternatively, NULL may be used for NAME to
-   return thecurrent target certificate. Either return the certificate
-   in a KSBA object or NULL if it is not available.
 
-*/
+/* Ask back to return the issuing certificate for NAME, given as a
+ * regular gpgsm certificate identifier (e.g. fingerprint or one
+ * of the other methods).  Alternatively, NULL may be used for NAME to
+ * return the current target certificate. Either return the certificate
+ * in a KSBA object or NULL if it is not available.  */
 ksba_cert_t
 get_issuing_cert_local (ctrl_t ctrl, const char *name)
 {
@@ -444,8 +454,9 @@ get_issuing_cert_local (ctrl_t ctrl, const char *name)
   return do_get_cert_local (ctrl, name, "SENDISSUERCERT");
 }
 
+
 /* Ask back to return a certificate with subject NAME and a
-   subjectKeyIdentifier of KEYID. */
+ * subjectKeyIdentifier of KEYID. */
 ksba_cert_t
 get_cert_local_ski (ctrl_t ctrl, const char *name, ksba_sexp_t keyid)
 {
@@ -475,15 +486,13 @@ get_cert_local_ski (ctrl_t ctrl, const char *name, ksba_sexp_t keyid)
       return NULL;
     }
 
-  buf = xtrymalloc (15 + strlen (hexkeyid) + 2 + strlen(name) + 1);
+  buf = strconcat ("SENDCERT_SKI ", hexkeyid, " /", name, NULL);
   if (!buf)
     {
-
       log_error ("can't allocate enough memory: %s\n", strerror (errno));
       xfree (hexkeyid);
       return NULL;
     }
-  strcpy (stpcpy (stpcpy (stpcpy (buf, "SENDCERT_SKI "), hexkeyid)," /"),name);
   xfree (hexkeyid);
 
   rc = assuan_inquire (ctrl->server_local->assuan_ctx, buf,
@@ -625,8 +634,13 @@ option_handler (assuan_context_t ctx, const char *key, const char *value)
   else if (!strcmp (key, "honor-keyserver-url-used"))
     {
       /* Return an error if we are running in Tor mode.  */
-      if (opt.use_tor)
+      if (dirmngr_use_tor ())
         err = gpg_error (GPG_ERR_FORBIDDEN);
+    }
+  else if (!strcmp (key, "http-crl"))
+    {
+      int i = *value? atoi (value) : 0;
+      ctrl->http_no_crl = !i;
     }
   else
     err = gpg_error (GPG_ERR_UNKNOWN_OPTION);
@@ -815,30 +829,31 @@ cmd_dns_cert (assuan_context_t ctx, char *line)
 
 
 
-static const char hlp_wkd_get[] =
-  "WKD_GET [--submission-address|--policy-flags] <user_id>\n"
-  "\n"
-  "Return the key or other info for <user_id>\n"
-  "from the Web Key Directory.";
+/* Core of cmd_wkd_get and task_check_wkd_support.  If CTX is NULL
+ * this function will not write anything to the assuan output.  */
 static gpg_error_t
-cmd_wkd_get (assuan_context_t ctx, char *line)
+proc_wkd_get (ctrl_t ctrl, assuan_context_t ctx, char *line)
 {
-  ctrl_t ctrl = assuan_get_pointer (ctx);
   gpg_error_t err = 0;
   char *mbox = NULL;
   char *domainbuf = NULL;
   char *domain;     /* Points to mbox or domainbuf.  */
+  char *domain_orig;/* Points to mbox.  */
   char sha1buf[20];
   char *uri = NULL;
   char *encodedhash = NULL;
   int opt_submission_addr;
   int opt_policy_flags;
+  int is_wkd_query;   /* True if this is a real WKD query.  */
   int no_log = 0;
   char portstr[20] = { 0 };
 
   opt_submission_addr = has_option (line, "--submission-address");
   opt_policy_flags = has_option (line, "--policy-flags");
+  if (has_option (line, "--quick"))
+    ctrl->timeout = opt.connect_quick_timeout;
   line = skip_options (line);
+  is_wkd_query = !(opt_policy_flags || opt_submission_addr);
 
   mbox = mailbox_from_userid (line);
   if (!mbox || !(domain = strchr (mbox, '@')))
@@ -847,6 +862,18 @@ cmd_wkd_get (assuan_context_t ctx, char *line)
       goto leave;
     }
   *domain++ = 0;
+  domain_orig = domain;
+
+  /* First check whether we already know that the domain does not
+   * support WKD.  */
+  if (is_wkd_query)
+    {
+      if (domaininfo_is_wkd_not_supported (domain_orig))
+        {
+          err = gpg_error (GPG_ERR_NO_DATA);
+          goto leave;
+        }
+    }
 
   /* Check for SRV records.  */
   if (1)
@@ -860,12 +887,25 @@ cmd_wkd_get (assuan_context_t ctx, char *line)
       if (err)
         goto leave;
 
+      /* Check for rogue DNS names.  */
+      for (i = 0; i < srvscount; i++)
+        {
+          if (!is_valid_domain_name (srvs[i].target))
+            {
+              err = gpg_error (GPG_ERR_DNS_ADDRESS);
+              log_error ("rogue openpgpkey SRV record for '%s'\n", domain);
+              xfree (srvs);
+              goto leave;
+            }
+        }
+
       /* Find the first target which also ends in DOMAIN or is equal
        * to DOMAIN.  */
       domainlen = strlen (domain);
       for (i = 0; i < srvscount; i++)
         {
-          log_debug ("srv: trying '%s:%hu'\n", srvs[i].target, srvs[i].port);
+          if (DBG_DNS)
+            log_debug ("srv: trying '%s:%hu'\n", srvs[i].target, srvs[i].port);
           targetlen = strlen (srvs[i].target);
           if ((targetlen > domainlen + 1
                && srvs[i].target[targetlen - domainlen - 1] == '.'
@@ -889,7 +929,6 @@ cmd_wkd_get (assuan_context_t ctx, char *line)
             }
         }
       xfree (srvs);
-      log_debug ("srv: got '%s%s'\n", domain, portstr);
     }
 
   gcry_md_hash_buffer (GCRY_MD_SHA1, sha1buf, mbox, strlen (mbox));
@@ -918,13 +957,29 @@ cmd_wkd_get (assuan_context_t ctx, char *line)
     }
   else
     {
-      uri = strconcat ("https://",
-                       domain,
-                       portstr,
-                       "/.well-known/openpgpkey/hu/",
-                       encodedhash,
-                       NULL);
-      no_log = 1;
+      char *escapedmbox;
+
+      escapedmbox = http_escape_string (mbox, "%;?&=");
+      if (escapedmbox)
+        {
+          uri = strconcat ("https://",
+                           domain,
+                           portstr,
+                           "/.well-known/openpgpkey/hu/",
+                           encodedhash,
+                           "?l=",
+                           escapedmbox,
+                           NULL);
+          xfree (escapedmbox);
+          no_log = 1;
+          if (uri)
+            {
+              err = dirmngr_status_printf (ctrl, "SOURCE", "https://%s%s",
+                                           domain, portstr);
+              if (err)
+                goto leave;
+            }
+        }
     }
   if (!uri)
     {
@@ -936,19 +991,52 @@ cmd_wkd_get (assuan_context_t ctx, char *line)
   {
     estream_t outfp;
 
-    outfp = es_fopencookie (ctx, "w", data_line_cookie_functions);
-    if (!outfp)
+    outfp = ctx? es_fopencookie (ctx, "w", data_line_cookie_functions) : NULL;
+    if (!outfp && ctx)
       err = set_error (GPG_ERR_ASS_GENERAL,
                        "error setting up a data stream");
     else
       {
-        if (no_log)
-          ctrl->server_local->inhibit_data_logging = 1;
-        ctrl->server_local->inhibit_data_logging_now = 0;
-        ctrl->server_local->inhibit_data_logging_count = 0;
+        if (ctrl->server_local)
+          {
+            if (no_log)
+              ctrl->server_local->inhibit_data_logging = 1;
+            ctrl->server_local->inhibit_data_logging_now = 0;
+            ctrl->server_local->inhibit_data_logging_count = 0;
+          }
         err = ks_action_fetch (ctrl, uri, outfp);
         es_fclose (outfp);
-        ctrl->server_local->inhibit_data_logging = 0;
+        if (ctrl->server_local)
+          ctrl->server_local->inhibit_data_logging = 0;
+
+        /* Register the result under the domain name of MBOX. */
+        switch (gpg_err_code (err))
+          {
+          case 0:
+            domaininfo_set_wkd_supported (domain_orig);
+            break;
+
+          case GPG_ERR_NO_NAME:
+            /* There is no such domain.  */
+            domaininfo_set_no_name (domain_orig);
+            break;
+
+          case GPG_ERR_NO_DATA:
+            if (is_wkd_query && ctrl->server_local)
+              {
+                /* Mark that and schedule a check.  */
+                domaininfo_set_wkd_not_found (domain_orig);
+                workqueue_add_task (task_check_wkd_support, domain_orig,
+                                    ctrl->server_local->session_id, 1);
+              }
+            else if (opt_policy_flags) /* No policy file - no support.  */
+              domaininfo_set_wkd_not_supported (domain_orig);
+            break;
+
+          default:
+            /* Don't register other errors.  */
+            break;
+          }
       }
   }
 
@@ -957,7 +1045,47 @@ cmd_wkd_get (assuan_context_t ctx, char *line)
   xfree (encodedhash);
   xfree (mbox);
   xfree (domainbuf);
+  return err;
+}
+
+
+static const char hlp_wkd_get[] =
+  "WKD_GET [--submission-address|--policy-flags] <user_id>\n"
+  "\n"
+  "Return the key or other info for <user_id>\n"
+  "from the Web Key Directory.";
+static gpg_error_t
+cmd_wkd_get (assuan_context_t ctx, char *line)
+{
+  ctrl_t ctrl = assuan_get_pointer (ctx);
+  gpg_error_t err;
+
+  err = proc_wkd_get (ctrl, ctx, line);
+
   return leave_cmd (ctx, err);
+}
+
+
+/* A task to check whether DOMAIN supports WKD.  This is done by
+ * checking whether the policy flags file can be read.  */
+static const char *
+task_check_wkd_support (ctrl_t ctrl, const char *domain)
+{
+  char *string;
+
+  if (!ctrl || !domain)
+    return "check_wkd_support";
+
+  string = strconcat ("--policy-flags foo@", domain, NULL);
+  if (!string)
+    log_error ("%s: %s\n", __func__, gpg_strerror (gpg_error_from_syserror ()));
+  else
+    {
+      proc_wkd_get (ctrl, NULL, string);
+      xfree (string);
+    }
+
+  return NULL;
 }
 
 
@@ -998,7 +1126,7 @@ cmd_ldapserver (assuan_context_t ctx, char *line)
 
 static const char hlp_isvalid[] =
   "ISVALID [--only-ocsp] [--force-default-responder]"
-  " <certificate_id>|<certificate_fpr>\n"
+  " <certificate_id> [<certificate_fpr>]\n"
   "\n"
   "This command checks whether the certificate identified by the\n"
   "certificate_id is valid.  This is done by consulting CRLs or\n"
@@ -1010,8 +1138,9 @@ static const char hlp_isvalid[] =
   "delimited by a single dot.  The first part is the SHA-1 hash of the\n"
   "issuer name and the second part the serial number.\n"
   "\n"
-  "Alternatively the certificate's fingerprint may be given in which\n"
-  "case an OCSP request is done before consulting the CRL.\n"
+  "If an OCSP check is desired CERTIFICATE_FPR with the hex encoded\n"
+  "fingerprint of the certificate is required.  In this case an OCSP\n"
+  "request is done before consulting the CRL.\n"
   "\n"
   "If the option --only-ocsp is given, no fallback to a CRL check will\n"
   "be used.\n"
@@ -1023,7 +1152,7 @@ static gpg_error_t
 cmd_isvalid (assuan_context_t ctx, char *line)
 {
   ctrl_t ctrl = assuan_get_pointer (ctx);
-  char *issuerhash, *serialno;
+  char *issuerhash, *serialno, *fpr;
   gpg_error_t err;
   int did_inquire = 0;
   int ocsp_mode = 0;
@@ -1034,25 +1163,36 @@ cmd_isvalid (assuan_context_t ctx, char *line)
   force_default_responder = has_option (line, "--force-default-responder");
   line = skip_options (line);
 
-  issuerhash = xstrdup (line); /* We need to work on a copy of the
-                                  line because that same Assuan
-                                  context may be used for an inquiry.
-                                  That is because Assuan reuses its
-                                  line buffer.
-                                   */
+  /* We need to work on a copy of the line because that same Assuan
+   * context may be used for an inquiry.  That is because Assuan
+   * reuses its line buffer.  */
+  issuerhash = xstrdup (line);
 
   serialno = strchr (issuerhash, '.');
-  if (serialno)
-    *serialno++ = 0;
-  else
+  if (!serialno)
     {
-      char *endp = strchr (issuerhash, ' ');
+      xfree (issuerhash);
+      return leave_cmd (ctx, PARM_ERROR (_("serialno missing in cert ID")));
+    }
+  *serialno++ = 0;
+  if (strlen (issuerhash) != 40)
+    {
+      xfree (issuerhash);
+      return leave_cmd (ctx, PARM_ERROR ("cert ID is too short"));
+    }
+
+  fpr = strchr (serialno, ' ');
+  while (fpr && spacep (fpr))
+    fpr++;
+  if (fpr && *fpr)
+    {
+      char *endp = strchr (fpr, ' ');
       if (endp)
         *endp = 0;
-      if (strlen (issuerhash) != 40)
+      if (strlen (fpr) != 40)
         {
           xfree (issuerhash);
-          return leave_cmd (ctx, PARM_ERROR (_("serialno missing in cert ID")));
+          return leave_cmd (ctx, PARM_ERROR ("fingerprint too short"));
         }
       ocsp_mode = 1;
     }
@@ -1061,17 +1201,24 @@ cmd_isvalid (assuan_context_t ctx, char *line)
  again:
   if (ocsp_mode)
     {
-      /* Note, that we ignore the given issuer hash and instead rely
-         on the current certificate semantics used with this
-         command. */
+      /* Note, that we currently ignore the supplied fingerprint FPR;
+       * instead ocsp_isvalid does an inquire to ask for the cert.
+       * The fingerprint may eventually be used to lookup the
+       * certificate in a local cache.  */
       if (!opt.allow_ocsp)
         err = gpg_error (GPG_ERR_NOT_SUPPORTED);
       else
         err = ocsp_isvalid (ctrl, NULL, NULL, force_default_responder);
-      /* Fixme: If we got no ocsp response and --only-ocsp is not used
-         we should fall back to CRL mode.  Thus we need to clear
-         OCSP_MODE, get the issuerhash and the serialno from the
-         current certificate and jump to again. */
+
+      if (gpg_err_code (err) == GPG_ERR_CONFIGURATION
+          && gpg_err_source (err) == GPG_ERR_SOURCE_DIRMNGR)
+        {
+          /* No default responder configured - fallback to CRL.  */
+          if (!only_ocsp)
+            log_info ("falling back to CRL check\n");
+          ocsp_mode = 0;
+          goto again;
+        }
     }
   else if (only_ocsp)
     err = gpg_error (GPG_ERR_NO_CRL_KNOWN);
@@ -1409,7 +1556,7 @@ lookup_cert_by_pattern (assuan_context_t ctx, char *line,
         }
     }
 
-  /* First look through the internal cache.  The certifcates returned
+  /* First look through the internal cache.  The certificates returned
      here are not counted towards the truncation limit.  */
   if (single && !cache_only)
     ; /* Do not read from the local cache in this case.  */
@@ -1735,7 +1882,7 @@ cmd_cachecert (assuan_context_t ctx, char *line)
 
 
 static const char hlp_validate[] =
-  "VALIDATE\n"
+  "VALIDATE [--systrust] [--tls] [--no-crl]\n"
   "\n"
   "Validate a certificate using the certificate validation function\n"
   "used internally by dirmngr.  This command is only useful for\n"
@@ -1745,20 +1892,40 @@ static const char hlp_validate[] =
   "  INQUIRE TARGETCERT\n"
   "\n"
   "and the caller is expected to return the certificate for the\n"
-  "request as a binary blob.";
+  "request as a binary blob.  The option --tls modifies this by asking\n"
+  "for list of certificates with\n"
+  "\n"
+  "  INQUIRE CERTLIST\n"
+  "\n"
+  "Here the first certificate is the target certificate, the remaining\n"
+  "certificates are suggested intermediary certificates.  All certificates\n"
+  "need to be PEM encoded.\n"
+  "\n"
+  "The option --systrust changes the behaviour to include the system\n"
+  "provided root certificates as trust anchors.  The option --no-crl\n"
+  "skips CRL checks";
 static gpg_error_t
 cmd_validate (assuan_context_t ctx, char *line)
 {
   ctrl_t ctrl = assuan_get_pointer (ctx);
   gpg_error_t err;
   ksba_cert_t cert = NULL;
+  certlist_t certlist = NULL;
   unsigned char *value = NULL;
   size_t valuelen;
+  int systrust_mode, tls_mode, no_crl;
 
-  (void)line;
+  systrust_mode = has_option (line, "--systrust");
+  tls_mode = has_option (line, "--tls");
+  no_crl = has_option (line, "--no-crl");
+  line = skip_options (line);
 
-  err = assuan_inquire (ctrl->server_local->assuan_ctx, "TARGETCERT",
-                       &value, &valuelen, MAX_CERT_LENGTH);
+  if (tls_mode)
+    err = assuan_inquire (ctrl->server_local->assuan_ctx, "CERTLIST",
+                          &value, &valuelen, MAX_CERTLIST_LENGTH);
+  else
+    err = assuan_inquire (ctrl->server_local->assuan_ctx, "TARGETCERT",
+                          &value, &valuelen, MAX_CERT_LENGTH);
   if (err)
     {
       log_error (_("assuan_inquire failed: %s\n"), gpg_strerror (err));
@@ -1767,6 +1934,27 @@ cmd_validate (assuan_context_t ctx, char *line)
 
   if (!valuelen) /* No data returned; return a comprehensible error. */
     err = gpg_error (GPG_ERR_MISSING_CERT);
+  else if (tls_mode)
+    {
+      estream_t fp;
+
+      fp = es_fopenmem_init (0, "rb", value, valuelen);
+      if (!fp)
+        err = gpg_error_from_syserror ();
+      else
+        {
+          err = read_certlist_from_stream (&certlist, fp);
+          es_fclose (fp);
+          if (!err && !certlist)
+            err = gpg_error (GPG_ERR_MISSING_CERT);
+          if (!err)
+            {
+              /* Extract the first certificate from the list.  */
+              cert = certlist->cert;
+              ksba_cert_ref (cert);
+            }
+        }
+    }
   else
     {
       err = ksba_cert_new (&cert);
@@ -1777,26 +1965,45 @@ cmd_validate (assuan_context_t ctx, char *line)
   if(err)
     goto leave;
 
-  /* If we have this certificate already in our cache, use the cached
-     version for validation because this will take care of any cached
-     results. */
-  {
-    unsigned char fpr[20];
-    ksba_cert_t tmpcert;
+  if (!tls_mode)
+    {
+      /* If we have this certificate already in our cache, use the
+       * cached version for validation because this will take care of
+       * any cached results.  We don't need to do this in tls mode
+       * because this has already been done for certificate in a
+       * certlist_t. */
+      unsigned char fpr[20];
+      ksba_cert_t tmpcert;
 
-    cert_compute_fpr (cert, fpr);
-    tmpcert = get_cert_byfpr (fpr);
-    if (tmpcert)
-      {
-        ksba_cert_release (cert);
-        cert = tmpcert;
-      }
-  }
+      cert_compute_fpr (cert, fpr);
+      tmpcert = get_cert_byfpr (fpr);
+      if (tmpcert)
+        {
+          ksba_cert_release (cert);
+          cert = tmpcert;
+        }
+    }
 
-  err = validate_cert_chain (ctrl, cert, NULL, VALIDATE_MODE_CERT, NULL);
+  /* Quick hack to make verification work by inserting the supplied
+   * certs into the cache.  */
+  if (tls_mode && certlist)
+    {
+      certlist_t cl;
+
+      for (cl = certlist->next; cl; cl = cl->next)
+        cache_cert (cl->cert);
+    }
+
+  err = validate_cert_chain (ctrl, cert, NULL,
+                             (VALIDATE_FLAG_TRUST_CONFIG
+                              | (tls_mode ? VALIDATE_FLAG_TLS : 0)
+                              | (systrust_mode ? VALIDATE_FLAG_TRUST_SYSTEM : 0)
+                              | (no_crl ? VALIDATE_FLAG_NOCRLCHECK : 0)),
+                             NULL);
 
  leave:
   ksba_cert_release (cert);
+  release_certlist (certlist);
   return leave_cmd (ctx, err);
 }
 
@@ -1811,6 +2018,38 @@ make_keyserver_item (const char *uri, uri_item_t *r_item)
   uri_item_t item;
 
   *r_item = NULL;
+
+  /* We used to have DNS CNAME redirection from the URLs below to
+   * sks-keyserver. pools.  The idea was to allow for a quick way to
+   * switch to a different set of pools.  The problem with that
+   * approach is that TLS needs to verify the hostname and - because
+   * DNS is not secured - it can only check the user supplied hostname
+   * and not a hostname from a CNAME RR.  Thus the final server all
+   * need to have certificates with the actual pool name as well as
+   * for keys.gnupg.net - that would render the advantage of
+   * keys.gnupg.net useless and so we better give up on this.  Because
+   * the keys.gnupg.net URL are still in widespread use we do a static
+   * mapping here.
+   */
+  if (!strcmp (uri, "hkps://keys.gnupg.net")
+      || !strcmp (uri, "keys.gnupg.net"))
+    uri = "hkps://hkps.pool.sks-keyservers.net";
+  else if (!strcmp (uri, "https://keys.gnupg.net"))
+    uri = "https://hkps.pool.sks-keyservers.net";
+  else if (!strcmp (uri, "hkp://keys.gnupg.net"))
+    uri = "hkp://hkps.pool.sks-keyservers.net";
+  else if (!strcmp (uri, "http://keys.gnupg.net"))
+    uri = "http://hkps.pool.sks-keyservers.net";
+  else if (!strcmp (uri, "hkps://http-keys.gnupg.net")
+           || !strcmp (uri, "http-keys.gnupg.net"))
+    uri = "hkps://ha.pool.sks-keyservers.net";
+  else if (!strcmp (uri, "https://http-keys.gnupg.net"))
+    uri = "https://ha.pool.sks-keyservers.net";
+  else if (!strcmp (uri, "hkp://http-keys.gnupg.net"))
+    uri = "hkp://ha.pool.sks-keyservers.net";
+  else if (!strcmp (uri, "http://http-keys.gnupg.net"))
+    uri = "http://ha.pool.sks-keyservers.net";
+
   item = xtrymalloc (sizeof *item + strlen (uri));
   if (!item)
     return gpg_error_from_syserror ();
@@ -1876,7 +2115,7 @@ ensure_keyserver (ctrl_t ctrl)
         }
     }
 
-  /* Decide which to use.  Note that the sesssion has no keyservers
+  /* Decide which to use.  Note that the session has no keyservers
      yet set. */
   if (onion_items && !onion_items->next && plain_items && !plain_items->next)
     {
@@ -1967,8 +2206,13 @@ cmd_keyserver (assuan_context_t ctx, char *line)
   if (resolve_flag)
     {
       err = ensure_keyserver (ctrl);
-      if (!err)
-        err = ks_action_resolve (ctrl, ctrl->server_local->keyservers);
+      if (err)
+        {
+          assuan_set_error (ctx, err,
+                            "Bad keyserver configuration in dirmngr.conf");
+          goto leave;
+        }
+      err = ks_action_resolve (ctrl, ctrl->server_local->keyservers);
       if (err)
         goto leave;
     }
@@ -2059,7 +2303,8 @@ cmd_ks_search (assuan_context_t ctx, char *line)
   char *p;
   estream_t outfp;
 
-  /* No options for now.  */
+  if (has_option (line, "--quick"))
+    ctrl->timeout = opt.connect_quick_timeout;
   line = skip_options (line);
 
   /* Break the line down into an strlist.  Each pattern is
@@ -2123,7 +2368,8 @@ cmd_ks_get (assuan_context_t ctx, char *line)
   char *p;
   estream_t outfp;
 
-  /* No options for now.  */
+  if (has_option (line, "--quick"))
+    ctrl->timeout = opt.connect_quick_timeout;
   line = skip_options (line);
 
   /* Break the line into a strlist.  Each pattern is by
@@ -2187,7 +2433,8 @@ cmd_ks_fetch (assuan_context_t ctx, char *line)
   gpg_error_t err;
   estream_t outfp;
 
-  /* No options for now.  */
+  if (has_option (line, "--quick"))
+    ctrl->timeout = opt.connect_quick_timeout;
   line = skip_options (line);
 
   err = ensure_keyserver (ctrl);  /* FIXME: Why do we needs this here?  */
@@ -2264,7 +2511,7 @@ cmd_ks_put (assuan_context_t ctx, char *line)
     }
 
   /* Ask for the key meta data. Not actually needed for HKP servers
-     but we do it anyway to test the client implementaion.  */
+     but we do it anyway to test the client implementation.  */
   err = assuan_inquire (ctx, "KEYBLOCK_INFO",
                         &info, &infolen, MAX_KEYBLOCK_LENGTH);
   if (err)
@@ -2312,12 +2559,16 @@ static const char hlp_getinfo[] =
   "pid         - Return the process id of the server.\n"
   "tor         - Return OK if running in Tor mode\n"
   "dnsinfo     - Return info about the DNS resolver\n"
-  "socket_name - Return the name of the socket.\n";
+  "socket_name - Return the name of the socket.\n"
+  "session_id  - Return the current session_id.\n"
+  "workqueue   - Inspect the work queue\n"
+  "getenv NAME - Return value of envvar NAME\n";
 static gpg_error_t
 cmd_getinfo (assuan_context_t ctx, char *line)
 {
   ctrl_t ctrl = assuan_get_pointer (ctx);
   gpg_error_t err;
+  char numbuf[50];
 
   if (!strcmp (line, "version"))
     {
@@ -2326,8 +2577,6 @@ cmd_getinfo (assuan_context_t ctx, char *line)
     }
   else if (!strcmp (line, "pid"))
     {
-      char numbuf[50];
-
       snprintf (numbuf, sizeof numbuf, "%lu", (unsigned long)getpid ());
       err = assuan_send_data (ctx, numbuf, strlen (numbuf));
     }
@@ -2336,16 +2585,25 @@ cmd_getinfo (assuan_context_t ctx, char *line)
       const char *s = dirmngr_get_current_socket_name ();
       err = assuan_send_data (ctx, s, strlen (s));
     }
+  else if (!strcmp (line, "session_id"))
+    {
+      snprintf (numbuf, sizeof numbuf, "%u", ctrl->server_local->session_id);
+      err = assuan_send_data (ctx, numbuf, strlen (numbuf));
+    }
   else if (!strcmp (line, "tor"))
     {
-      if (opt.use_tor)
+      int use_tor;
+
+      use_tor = dirmngr_use_tor ();
+      if (use_tor)
         {
           if (!is_tor_running (ctrl))
             err = assuan_write_status (ctx, "NO_TOR", "Tor not running");
           else
             err = 0;
           if (!err)
-            assuan_set_okay_line (ctx, "- Tor mode is enabled");
+            assuan_set_okay_line (ctx, use_tor == 1 ? "- Tor mode is enabled"
+                                  /**/              : "- Tor mode is enforced");
         }
       else
         err = set_error (GPG_ERR_FALSE, "Tor mode is NOT enabled");
@@ -2366,6 +2624,28 @@ cmd_getinfo (assuan_context_t ctx, char *line)
 #endif
         }
       err = 0;
+    }
+  else if (!strcmp (line, "workqueue"))
+    {
+      workqueue_dump_queue (ctrl);
+      err = 0;
+    }
+  else if (!strncmp (line, "getenv", 6)
+           && (line[6] == ' ' || line[6] == '\t' || !line[6]))
+    {
+      line += 6;
+      while (*line == ' ' || *line == '\t')
+        line++;
+      if (!*line)
+        err = gpg_error (GPG_ERR_MISSING_VALUE);
+      else
+        {
+          const char *s = getenv (line);
+          if (!s)
+            err = set_error (GPG_ERR_NOT_FOUND, "No such envvar");
+          else
+            err = assuan_send_data (ctx, s, strlen (s));
+        }
     }
   else
     err = set_error (GPG_ERR_ASS_PARAMETER, "unknown value for WHAT");
@@ -2409,6 +2689,20 @@ cmd_reloaddirmngr (assuan_context_t ctx, char *line)
 }
 
 
+static const char hlp_flushcrls[] =
+  "FLUSHCRLS\n"
+  "\n"
+  "Remove all cached CRLs from memory and\n"
+  "the file system.";
+static gpg_error_t
+cmd_flushcrls (assuan_context_t ctx, char *line)
+{
+  (void)line;
+
+  return leave_cmd (ctx, crl_cache_flush () ? GPG_ERR_GENERAL : 0);
+}
+
+
 
 /* Tell the assuan library about our commands. */
 static int
@@ -2439,6 +2733,7 @@ register_commands (assuan_context_t ctx)
     { "LOADSWDB",   cmd_loadswdb,   hlp_loadswdb },
     { "KILLDIRMNGR",cmd_killdirmngr,hlp_killdirmngr },
     { "RELOADDIRMNGR",cmd_reloaddirmngr,hlp_reloaddirmngr },
+    { "FLUSHCRLS",  cmd_flushcrls,  hlp_flushcrls },
     { NULL, NULL }
   };
   int i, j, rc;
@@ -2494,9 +2789,10 @@ dirmngr_assuan_log_monitor (assuan_context_t ctx, unsigned int cat,
 
 
 /* Startup the server and run the main command loop.  With FD = -1,
-   use stdin/stdout. */
+ * use stdin/stdout.  SESSION_ID is either 0 or a unique number
+ * identifying a session.  */
 void
-start_command_handler (assuan_fd_t fd)
+start_command_handler (assuan_fd_t fd, unsigned int session_id)
 {
   static const char hello[] = "Dirmngr " VERSION " at your service";
   static char *hello_line;
@@ -2573,6 +2869,8 @@ start_command_handler (assuan_fd_t fd)
   assuan_register_option_handler (ctx, option_handler);
   assuan_register_reset_notify (ctx, reset_notify);
 
+  ctrl->server_local->session_id = session_id;
+
   for (;;)
     {
       rc = assuan_accept (ctx);
@@ -2641,30 +2939,13 @@ dirmngr_status (ctrl_t ctrl, const char *keyword, ...)
 {
   gpg_error_t err = 0;
   va_list arg_ptr;
-  const char *text;
+  assuan_context_t ctx;
 
   va_start (arg_ptr, keyword);
 
-  if (ctrl->server_local)
+  if (ctrl->server_local && (ctx = ctrl->server_local->assuan_ctx))
     {
-      assuan_context_t ctx = ctrl->server_local->assuan_ctx;
-      char buf[950], *p;
-      size_t n;
-
-      p = buf;
-      n = 0;
-      while ( (text = va_arg (arg_ptr, const char *)) )
-        {
-          if (n)
-            {
-              *p++ = ' ';
-              n++;
-            }
-          for ( ; *text && n < DIM (buf)-2; n++)
-            *p++ = *text++;
-        }
-      *p = 0;
-      err = assuan_write_status (ctx, keyword, buf);
+      err = vprint_assuan_status_strings (ctx, keyword, arg_ptr);
     }
 
   va_end (arg_ptr);
@@ -2672,16 +2953,15 @@ dirmngr_status (ctrl_t ctrl, const char *keyword, ...)
 }
 
 
-/* Print a help status line.  TEXTLEN gives the length of the text
-   from TEXT to be printed.  The function splits text at LFs.  */
+/* Print a help status line.  The function splits text at LFs.  */
 gpg_error_t
 dirmngr_status_help (ctrl_t ctrl, const char *text)
 {
   gpg_error_t err = 0;
+  assuan_context_t ctx;
 
-  if (ctrl->server_local)
+  if (ctrl->server_local && (ctx = ctrl->server_local->assuan_ctx))
     {
-      assuan_context_t ctx = ctrl->server_local->assuan_ctx;
       char buf[950], *p;
       size_t n;
 
@@ -2701,6 +2981,47 @@ dirmngr_status_help (ctrl_t ctrl, const char *text)
 
   return err;
 }
+
+
+/* Print a help status line using a printf like format.  The function
+ * splits text at LFs.  */
+gpg_error_t
+dirmngr_status_helpf (ctrl_t ctrl, const char *format, ...)
+{
+  va_list arg_ptr;
+  gpg_error_t err;
+  char *buf;
+
+  va_start (arg_ptr, format);
+  buf = es_vbsprintf (format, arg_ptr);
+  err = buf? 0 : gpg_error_from_syserror ();
+  va_end (arg_ptr);
+  if (!err)
+    err = dirmngr_status_help (ctrl, buf);
+  es_free (buf);
+  return err;
+}
+
+
+/* This function is similar to print_assuan_status but takes a CTRL
+ * arg instead of an assuan context as first argument.  */
+gpg_error_t
+dirmngr_status_printf (ctrl_t ctrl, const char *keyword,
+                       const char *format, ...)
+{
+  gpg_error_t err;
+  va_list arg_ptr;
+  assuan_context_t ctx;
+
+  if (!ctrl->server_local || !(ctx = ctrl->server_local->assuan_ctx))
+    return 0;
+
+  va_start (arg_ptr, format);
+  err = vprint_assuan_status (ctx, keyword, format, arg_ptr);
+  va_end (arg_ptr);
+  return err;
+}
+
 
 /* Send a tick progress indicator back.  Fixme: This is only done for
    the currently active channel.  */

@@ -28,14 +28,14 @@
 #include <unistd.h>
 
 #include "gpg.h"
-#include "util.h"
+#include "../common/util.h"
 #include "options.h"
 #include "main.h" /*try_make_homedir ()*/
 #include "packet.h"
 #include "keyring.h"
 #include "../kbx/keybox.h"
 #include "keydb.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 
 static int active_handles;
 
@@ -82,7 +82,6 @@ struct keyblock_cache {
   enum keyblock_cache_states state;
   byte fpr[MAX_FINGERPRINT_LEN];
   iobuf_t iobuf; /* Image of the keyblock.  */
-  u32 *sigstatus;
   int pk_no;
   int uid_no;
   /* Offset of the record in the keybox.  */
@@ -96,6 +95,10 @@ struct keydb_handle
   /* When we locked all of the resources in ACTIVE (using keyring_lock
      / keybox_lock, as appropriate).  */
   int locked;
+
+  /* If this flag is set a lock will only be released by
+   * keydb_release.  */
+  int keep_lock;
 
   /* The index into ACTIVE of the resources in which the last search
      result was found.  Initially -1.  */
@@ -149,14 +152,35 @@ struct keydb_handle
 static struct kid_not_found_cache_bucket *
   kid_not_found_cache[KID_NOT_FOUND_CACHE_BUCKETS];
 
-/* The total number of entries in the hash table.  */
-static unsigned int kid_not_found_cache_count;
-
 struct kid_not_found_cache_bucket
 {
   struct kid_not_found_cache_bucket *next;
   u32 kid[2];
 };
+
+struct
+{
+  unsigned int count;   /* The current number of entries in the hash table.  */
+  unsigned int peak;    /* The peak of COUNT.  */
+  unsigned int flushes; /* The number of flushes.  */
+} kid_not_found_stats;
+
+struct
+{
+  unsigned int handles; /* Number of handles created.  */
+  unsigned int locks;   /* Number of locks taken.  */
+  unsigned int parse_keyblocks; /* Number of parse_keyblock_image calls.  */
+  unsigned int get_keyblocks;   /* Number of keydb_get_keyblock calls.    */
+  unsigned int build_keyblocks; /* Number of build_keyblock_image calls.  */
+  unsigned int update_keyblocks;/* Number of update_keyblock calls.       */
+  unsigned int insert_keyblocks;/* Number of update_keyblock calls.       */
+  unsigned int delete_keyblocks;/* Number of delete_keyblock calls.       */
+  unsigned int search_resets;   /* Number of keydb_search_reset calls.    */
+  unsigned int found;           /* Number of successful keydb_search calls. */
+  unsigned int found_cached;    /* Ditto but from the cache.              */
+  unsigned int notfound;        /* Number of failed keydb_search calls.   */
+  unsigned int notfound_cached; /* Ditto but from the cache.              */
+} keydb_stats;
 
 
 static int lock_all (KEYDB_HANDLE hd);
@@ -214,7 +238,7 @@ kid_not_found_insert (u32 *kid)
   k->kid[1] = kid[1];
   k->next = kid_not_found_cache[kid[0] % KID_NOT_FOUND_CACHE_BUCKETS];
   kid_not_found_cache[kid[0] % KID_NOT_FOUND_CACHE_BUCKETS] = k;
-  kid_not_found_cache_count++;
+  kid_not_found_stats.count++;
 }
 
 
@@ -228,7 +252,7 @@ kid_not_found_flush (void)
   if (DBG_CACHE)
     log_debug ("keydb: kid_not_found_flush\n");
 
-  if (!kid_not_found_cache_count)
+  if (!kid_not_found_stats.count)
     return;
 
   for (i=0; i < DIM(kid_not_found_cache); i++)
@@ -240,7 +264,10 @@ kid_not_found_flush (void)
         }
       kid_not_found_cache[i] = NULL;
     }
-  kid_not_found_cache_count = 0;
+  if (kid_not_found_stats.count > kid_not_found_stats.peak)
+    kid_not_found_stats.peak = kid_not_found_stats.count;
+  kid_not_found_stats.count = 0;
+  kid_not_found_stats.flushes++;
 }
 
 
@@ -248,8 +275,6 @@ static void
 keyblock_cache_clear (struct keydb_handle *hd)
 {
   hd->keyblock_cache.state = KEYBLOCK_CACHE_EMPTY;
-  xfree (hd->keyblock_cache.sigstatus);
-  hd->keyblock_cache.sigstatus = NULL;
   iobuf_close (hd->keyblock_cache.iobuf);
   hd->keyblock_cache.iobuf = NULL;
   hd->keyblock_cache.resource = -1;
@@ -834,9 +859,26 @@ keydb_add_resource (const char *url, unsigned int flags)
 void
 keydb_dump_stats (void)
 {
-  if (kid_not_found_cache_count)
-    log_info ("keydb: kid_not_found_cache: total: %u\n",
-	      kid_not_found_cache_count);
+  log_info ("keydb: handles=%u locks=%u parse=%u get=%u\n",
+            keydb_stats.handles,
+            keydb_stats.locks,
+            keydb_stats.parse_keyblocks,
+            keydb_stats.get_keyblocks);
+  log_info ("       build=%u update=%u insert=%u delete=%u\n",
+            keydb_stats.build_keyblocks,
+            keydb_stats.update_keyblocks,
+            keydb_stats.insert_keyblocks,
+            keydb_stats.delete_keyblocks);
+  log_info ("       reset=%u found=%u not=%u cache=%u not=%u\n",
+            keydb_stats.search_resets,
+            keydb_stats.found,
+            keydb_stats.notfound,
+            keydb_stats.found_cached,
+            keydb_stats.notfound_cached);
+  log_info ("kid_not_found_cache: count=%u peak=%u flushes=%u\n",
+            kid_not_found_stats.count,
+            kid_not_found_stats.peak,
+            kid_not_found_stats.flushes);
 }
 
 
@@ -898,6 +940,7 @@ keydb_new (void)
   hd->used = j;
 
   active_handles++;
+  keydb_stats.handles++;
 
   if (die)
     {
@@ -925,6 +968,7 @@ keydb_release (KEYDB_HANDLE hd)
   log_assert (active_handles > 0);
   active_handles--;
 
+  hd->keep_lock = 0;
   unlock_all (hd);
   for (i=0; i < hd->used; i++)
     {
@@ -943,6 +987,24 @@ keydb_release (KEYDB_HANDLE hd)
 
   keyblock_cache_clear (hd);
   xfree (hd);
+}
+
+
+/* Take a lock on the files immediately and not only during insert or
+ * update.  This lock is released with keydb_release.  */
+gpg_error_t
+keydb_lock (KEYDB_HANDLE hd)
+{
+  gpg_error_t err;
+
+  if (!hd)
+    return gpg_error (GPG_ERR_INV_ARG);
+
+  err = lock_all (hd);
+  if (!err)
+    hd->keep_lock = 1;
+
+  return err;
 }
 
 
@@ -1045,7 +1107,10 @@ lock_all (KEYDB_HANDLE hd)
         }
     }
   else
-    hd->locked = 1;
+    {
+      hd->locked = 1;
+      keydb_stats.locks++;
+    }
 
   return rc;
 }
@@ -1056,7 +1121,7 @@ unlock_all (KEYDB_HANDLE hd)
 {
   int i;
 
-  if (!hd->locked)
+  if (!hd->locked || hd->keep_lock)
     return;
 
   for (i=hd->used-1; i >= 0; i--)
@@ -1092,7 +1157,7 @@ unlock_all (KEYDB_HANDLE hd)
  *   keydb_get_keyblock (hd, ...);  // -> Result 1.
  *
  * Note: it is only possible to save a single save state at a time.
- * In other words, the the save stack only has room for a single
+ * In other words, the save stack only has room for a single
  * instance of the state.  */
 void
 keydb_push_found_state (KEYDB_HANDLE hd)
@@ -1153,14 +1218,14 @@ keydb_pop_found_state (KEYDB_HANDLE hd)
 
 static gpg_error_t
 parse_keyblock_image (iobuf_t iobuf, int pk_no, int uid_no,
-                      const u32 *sigstatus, kbnode_t *r_keyblock)
+                      kbnode_t *r_keyblock)
 {
   gpg_error_t err;
+  struct parse_packet_ctx_s parsectx;
   PACKET *pkt;
   kbnode_t keyblock = NULL;
   kbnode_t node, *tail;
   int in_cert, save_mode;
-  u32 n_sigs;
   int pk_count, uid_count;
 
   *r_keyblock = NULL;
@@ -1169,16 +1234,16 @@ parse_keyblock_image (iobuf_t iobuf, int pk_no, int uid_no,
   if (!pkt)
     return gpg_error_from_syserror ();
   init_packet (pkt);
+  init_parse_packet (&parsectx, iobuf);
   save_mode = set_packet_list_mode (0);
   in_cert = 0;
-  n_sigs = 0;
   tail = NULL;
   pk_count = uid_count = 0;
-  while ((err = parse_packet (iobuf, pkt)) != -1)
+  while ((err = parse_packet (&parsectx, pkt)) != -1)
     {
       if (gpg_err_code (err) == GPG_ERR_UNKNOWN_PACKET)
         {
-          free_packet (pkt);
+          free_packet (pkt, &parsectx);
           init_packet (pkt);
           continue;
 	}
@@ -1200,14 +1265,12 @@ parse_keyblock_image (iobuf_t iobuf, int pk_no, int uid_no,
         case PKT_USER_ID:
         case PKT_ATTRIBUTE:
         case PKT_SIGNATURE:
+        case PKT_RING_TRUST:
           break; /* Allowed per RFC.  */
 
         default:
-          /* Note that can't allow ring trust packets here and some of
-             the other GPG specific packets don't make sense either.  */
-          log_error ("skipped packet of type %d in keybox\n",
-                     (int)pkt->pkttype);
-          free_packet(pkt);
+          log_info ("skipped packet of type %d in keybox\n", (int)pkt->pkttype);
+          free_packet(pkt, &parsectx);
           init_packet(pkt);
           continue;
         }
@@ -1229,36 +1292,6 @@ parse_keyblock_image (iobuf_t iobuf, int pk_no, int uid_no,
           break;
         }
       in_cert = 1;
-
-      if (pkt->pkttype == PKT_SIGNATURE && sigstatus)
-        {
-          PKT_signature *sig = pkt->pkt.signature;
-
-          n_sigs++;
-          if (n_sigs > sigstatus[0])
-            {
-              log_error ("parse_keyblock_image: "
-                         "more signatures than found in the meta data\n");
-              err = gpg_error (GPG_ERR_INV_KEYRING);
-              break;
-
-            }
-          if (sigstatus[n_sigs])
-            {
-              sig->flags.checked = 1;
-              if (sigstatus[n_sigs] == 1 )
-                ; /* missing key */
-              else if (sigstatus[n_sigs] == 2 )
-                ; /* bad signature */
-              else if (sigstatus[n_sigs] < 0x10000000)
-                ; /* bad flag */
-              else
-                {
-                  sig->flags.valid = 1;
-                  /* Fixme: Shall we set the expired flag here?  */
-                }
-            }
-        }
 
       node = new_kbnode (pkt);
 
@@ -1299,17 +1332,15 @@ parse_keyblock_image (iobuf_t iobuf, int pk_no, int uid_no,
   if (err == -1 && keyblock)
     err = 0; /* Got the entire keyblock.  */
 
-  if (!err && sigstatus && n_sigs != sigstatus[0])
-    {
-      log_error ("parse_keyblock_image: signature count does not match\n");
-      err = gpg_error (GPG_ERR_INV_KEYRING);
-    }
-
   if (err)
     release_kbnode (keyblock);
   else
-    *r_keyblock = keyblock;
-  free_packet (pkt);
+    {
+      *r_keyblock = keyblock;
+      keydb_stats.parse_keyblocks++;
+    }
+  free_packet (pkt, &parsectx);
+  deinit_parse_packet (&parsectx);
   xfree (pkt);
   return err;
 }
@@ -1350,7 +1381,6 @@ keydb_get_keyblock (KEYDB_HANDLE hd, KBNODE *ret_kb)
 	  err = parse_keyblock_image (hd->keyblock_cache.iobuf,
 				      hd->keyblock_cache.pk_no,
 				      hd->keyblock_cache.uid_no,
-				      hd->keyblock_cache.sigstatus,
 				      ret_kb);
 	  if (err)
 	    keyblock_cache_clear (hd);
@@ -1375,26 +1405,22 @@ keydb_get_keyblock (KEYDB_HANDLE hd, KBNODE *ret_kb)
     case KEYDB_RESOURCE_TYPE_KEYBOX:
       {
         iobuf_t iobuf;
-        u32 *sigstatus;
         int pk_no, uid_no;
 
         err = keybox_get_keyblock (hd->active[hd->found].u.kb,
-                                   &iobuf, &pk_no, &uid_no, &sigstatus);
+                                   &iobuf, &pk_no, &uid_no);
         if (!err)
           {
-            err = parse_keyblock_image (iobuf, pk_no, uid_no, sigstatus,
-                                        ret_kb);
+            err = parse_keyblock_image (iobuf, pk_no, uid_no, ret_kb);
             if (!err && hd->keyblock_cache.state == KEYBLOCK_CACHE_PREPARED)
               {
                 hd->keyblock_cache.state     = KEYBLOCK_CACHE_FILLED;
-                hd->keyblock_cache.sigstatus = sigstatus;
                 hd->keyblock_cache.iobuf     = iobuf;
                 hd->keyblock_cache.pk_no     = pk_no;
                 hd->keyblock_cache.uid_no    = uid_no;
               }
             else
               {
-                xfree (sigstatus);
                 iobuf_close (iobuf);
               }
           }
@@ -1405,6 +1431,9 @@ keydb_get_keyblock (KEYDB_HANDLE hd, KBNODE *ret_kb)
   if (hd->keyblock_cache.state != KEYBLOCK_CACHE_FILLED)
     keyblock_cache_clear (hd);
 
+  if (!err)
+    keydb_stats.get_keyblocks++;
+
   if (DBG_CLOCK)
     log_clock (err? "keydb_get_keyblock leave (failed)"
                : "keydb_get_keyblock leave");
@@ -1413,39 +1442,18 @@ keydb_get_keyblock (KEYDB_HANDLE hd, KBNODE *ret_kb)
 
 
 /* Build a keyblock image from KEYBLOCK.  Returns 0 on success and
-   only then stores a new iobuf object at R_IOBUF and a signature
-   status vecotor at R_SIGSTATUS.  */
+ * only then stores a new iobuf object at R_IOBUF.  */
 static gpg_error_t
-build_keyblock_image (kbnode_t keyblock, iobuf_t *r_iobuf, u32 **r_sigstatus)
+build_keyblock_image (kbnode_t keyblock, iobuf_t *r_iobuf)
 {
   gpg_error_t err;
   iobuf_t iobuf;
   kbnode_t kbctx, node;
-  u32 n_sigs;
-  u32 *sigstatus;
 
   *r_iobuf = NULL;
-  if (r_sigstatus)
-    *r_sigstatus = NULL;
-
-  /* Allocate a vector for the signature cache.  This is an array of
-     u32 values with the first value giving the number of elements to
-     follow and each element descriping the cache status of the
-     signature.  */
-  if (r_sigstatus)
-    {
-      for (kbctx=NULL, n_sigs=0; (node = walk_kbnode (keyblock, &kbctx, 0));)
-        if (node->pkt->pkttype == PKT_SIGNATURE)
-          n_sigs++;
-      sigstatus = xtrycalloc (1+n_sigs, sizeof *sigstatus);
-      if (!sigstatus)
-        return gpg_error_from_syserror ();
-    }
-  else
-    sigstatus = NULL;
 
   iobuf = iobuf_temp ();
-  for (kbctx = NULL, n_sigs = 0; (node = walk_kbnode (keyblock, &kbctx, 0));)
+  for (kbctx = NULL; (node = walk_kbnode (keyblock, &kbctx, 0));)
     {
       /* Make sure to use only packets valid on a keyblock.  */
       switch (node->pkt->pkttype)
@@ -1455,49 +1463,22 @@ build_keyblock_image (kbnode_t keyblock, iobuf_t *r_iobuf, u32 **r_sigstatus)
         case PKT_SIGNATURE:
         case PKT_USER_ID:
         case PKT_ATTRIBUTE:
-          /* Note that we don't want the ring trust packets.  They are
-             not useful. */
+        case PKT_RING_TRUST:
           break;
         default:
           continue;
         }
 
-      err = build_packet (iobuf, node->pkt);
+      err = build_packet_and_meta (iobuf, node->pkt);
       if (err)
         {
           iobuf_close (iobuf);
           return err;
         }
-
-      /* Build signature status vector.  */
-      if (node->pkt->pkttype == PKT_SIGNATURE)
-        {
-          PKT_signature *sig = node->pkt->pkt.signature;
-
-          n_sigs++;
-          /* Fixme: Detect the "missing key" status.  */
-          if (sig->flags.checked && sigstatus)
-            {
-              if (sig->flags.valid)
-                {
-                  if (!sig->expiredate)
-                    sigstatus[n_sigs] = 0xffffffff;
-                  else if (sig->expiredate < 0x1000000)
-                    sigstatus[n_sigs] = 0x10000000;
-                  else
-                    sigstatus[n_sigs] = sig->expiredate;
-                }
-              else
-                sigstatus[n_sigs] = 0x00000002; /* Bad signature.  */
-            }
-        }
     }
-  if (sigstatus)
-    sigstatus[0] = n_sigs;
 
+  keydb_stats.build_keyblocks++;
   *r_iobuf = iobuf;
-  if (r_sigstatus)
-    *r_sigstatus = sigstatus;
   return 0;
 }
 
@@ -1571,7 +1552,7 @@ keydb_update_keyblock (ctrl_t ctrl, KEYDB_HANDLE hd, kbnode_t kb)
       {
         iobuf_t iobuf;
 
-        err = build_keyblock_image (kb, &iobuf, NULL);
+        err = build_keyblock_image (kb, &iobuf);
         if (!err)
           {
             err = keybox_update_keyblock (hd->active[hd->found].u.kb,
@@ -1584,6 +1565,8 @@ keydb_update_keyblock (ctrl_t ctrl, KEYDB_HANDLE hd, kbnode_t kb)
     }
 
   unlock_all (hd);
+  if (!err)
+    keydb_stats.update_keyblocks++;
   return err;
 }
 
@@ -1638,16 +1621,13 @@ keydb_insert_keyblock (KEYDB_HANDLE hd, kbnode_t kb)
            included in the keybox code.  Eventually we can change this
            kludge to have the caller pass the image.  */
         iobuf_t iobuf;
-        u32 *sigstatus;
 
-        err = build_keyblock_image (kb, &iobuf, &sigstatus);
+        err = build_keyblock_image (kb, &iobuf);
         if (!err)
           {
             err = keybox_insert_keyblock (hd->active[idx].u.kb,
                                           iobuf_get_temp_buffer (iobuf),
-                                          iobuf_get_temp_length (iobuf),
-                                          sigstatus);
-            xfree (sigstatus);
+                                          iobuf_get_temp_length (iobuf));
             iobuf_close (iobuf);
           }
       }
@@ -1655,6 +1635,8 @@ keydb_insert_keyblock (KEYDB_HANDLE hd, kbnode_t kb)
     }
 
   unlock_all (hd);
+  if (!err)
+    keydb_stats.insert_keyblocks++;
   return err;
 }
 
@@ -1699,6 +1681,8 @@ keydb_delete_keyblock (KEYDB_HANDLE hd)
     }
 
   unlock_all (hd);
+  if (!rc)
+    keydb_stats.delete_keyblocks++;
   return rc;
 }
 
@@ -1768,7 +1752,7 @@ keydb_locate_writable (KEYDB_HANDLE hd)
 
 /* Rebuild the on-disk caches of all key resources.  */
 void
-keydb_rebuild_caches (int noisy)
+keydb_rebuild_caches (ctrl_t ctrl, int noisy)
 {
   int i, rc;
 
@@ -1781,7 +1765,7 @@ keydb_rebuild_caches (int noisy)
         case KEYDB_RESOURCE_TYPE_NONE: /* ignore */
           break;
         case KEYDB_RESOURCE_TYPE_KEYRING:
-          rc = keyring_rebuild_cache (all_resources[i].token,noisy);
+          rc = keyring_rebuild_cache (ctrl, all_resources[i].token,noisy);
           if (rc)
             log_error (_("failed to rebuild keyring cache: %s\n"),
                        gpg_strerror (rc));
@@ -1845,6 +1829,8 @@ keydb_search_reset (KEYDB_HANDLE hd)
         }
     }
   hd->is_reset = 1;
+  if (!rc)
+    keydb_stats.search_resets++;
   return rc;
 }
 
@@ -1909,6 +1895,7 @@ keydb_search (KEYDB_HANDLE hd, KEYDB_SEARCH_DESC *desc,
     {
       if (DBG_CLOCK)
         log_clock ("keydb_search leave (not found, cached)");
+      keydb_stats.notfound_cached++;
       return gpg_error (GPG_ERR_NOT_FOUND);
     }
 
@@ -1937,6 +1924,7 @@ keydb_search (KEYDB_HANDLE hd, KEYDB_SEARCH_DESC *desc,
          Seek just beyond that.  */
       keybox_seek (hd->active[hd->current].u.kb,
                    hd->keyblock_cache.offset + 1);
+      keydb_stats.found_cached++;
       return 0;
     }
 
@@ -2020,6 +2008,10 @@ keydb_search (KEYDB_HANDLE hd, KEYDB_SEARCH_DESC *desc,
   if (DBG_CLOCK)
     log_clock (rc? "keydb_search leave (not found)"
                  : "keydb_search leave (found)");
+  if (!rc)
+    keydb_stats.found++;
+  else
+    keydb_stats.notfound++;
   return rc;
 }
 

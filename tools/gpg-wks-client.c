@@ -1,19 +1,20 @@
 /* gpg-wks-client.c - A client for the Web Key Service protocols.
  * Copyright (C) 2016 Werner Koch
+ * Copyright (C) 2016 Bundesamt für Sicherheit in der Informationstechnik
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
+ * This file is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation; either version 2.1 of
+ * the License, or (at your option) any later version.
  *
- * GnuPG is distributed in the hope that it will be useful,
+ * This file is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
@@ -21,18 +22,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
-#include "util.h"
-#include "status.h"
-#include "i18n.h"
-#include "sysutils.h"
-#include "init.h"
-#include "asshelp.h"
-#include "userids.h"
-#include "ccparray.h"
-#include "exectool.h"
-#include "mbox-util.h"
-#include "name-value.h"
+#include "../common/util.h"
+#include "../common/status.h"
+#include "../common/i18n.h"
+#include "../common/sysutils.h"
+#include "../common/init.h"
+#include "../common/asshelp.h"
+#include "../common/userids.h"
+#include "../common/ccparray.h"
+#include "../common/exectool.h"
+#include "../common/mbox-util.h"
+#include "../common/name-value.h"
 #include "call-dirmngr.h"
 #include "mime-maker.h"
 #include "send-mail.h"
@@ -47,6 +50,7 @@ enum cmd_and_opt_values
     oQuiet      = 'q',
     oVerbose	= 'v',
     oOutput     = 'o',
+    oDirectory  = 'C',
 
     oDebug      = 500,
 
@@ -55,11 +59,14 @@ enum cmd_and_opt_values
     aCreate,
     aReceive,
     aRead,
+    aInstallKey,
+    aRemoveKey,
 
     oGpgProgram,
     oSend,
     oFakeSubmissionAddr,
     oStatusFD,
+    oWithColons,
 
     oDummy
   };
@@ -79,6 +86,10 @@ static ARGPARSE_OPTS opts[] = {
               ("receive a MIME confirmation request")),
   ARGPARSE_c (aRead,      "read",
               ("receive a plain text confirmation request")),
+  ARGPARSE_c (aInstallKey, "install-key",
+              "install a key into a directory"),
+  ARGPARSE_c (aRemoveKey, "remove-key",
+              "remove a key from a directory"),
 
   ARGPARSE_group (301, ("@\nOptions:\n ")),
 
@@ -89,6 +100,8 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oSend, "send", "send the mail using sendmail"),
   ARGPARSE_s_s (oOutput, "output", "|FILE|write the mail to FILE"),
   ARGPARSE_s_i (oStatusFD, "status-fd", N_("|FD|write status info to this FD")),
+  ARGPARSE_s_n (oWithColons, "with-colons", "@"),
+  ARGPARSE_s_s (oDirectory, "directory", "@"),
 
   ARGPARSE_s_s (oFakeSubmissionAddr, "fake-submission-addr", "@"),
 
@@ -118,7 +131,7 @@ const char *fake_submission_addr;
 static void wrong_args (const char *text) GPGRT_ATTR_NORETURN;
 static gpg_error_t command_supported (char *userid);
 static gpg_error_t command_check (char *userid);
-static gpg_error_t command_send (const char *fingerprint, char *userid);
+static gpg_error_t command_send (const char *fingerprint, const char *userid);
 static gpg_error_t encrypt_response (estream_t *r_output, estream_t input,
                                      const char *addrspec,
                                      const char *fingerprint);
@@ -129,7 +142,7 @@ static gpg_error_t command_receive_cb (void *opaque,
 
 
 
-/* Print usage information and and provide strings for help. */
+/* Print usage information and provide strings for help. */
 static const char *
 my_strusage( int level )
 {
@@ -137,8 +150,8 @@ my_strusage( int level )
 
   switch (level)
     {
-    case 11: p = "gpg-wks-client (@GNUPG@)";
-      break;
+    case 11: p = "gpg-wks-client"; break;
+    case 12: p = "@GNUPG@"; break;
     case 13: p = VERSION; break;
     case 17: p = PRINTABLE_OS_NAME; break;
     case 19: p = ("Please report bugs to <@EMAIL@>.\n"); break;
@@ -191,6 +204,9 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
         case oGpgProgram:
           opt.gpg_program = pargs->r.ret_str;
           break;
+        case oDirectory:
+          opt.directory = pargs->r.ret_str;
+          break;
         case oSend:
           opt.use_sendmail = 1;
           break;
@@ -203,12 +219,17 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
         case oStatusFD:
           wks_set_status_fd (translate_sys2libc_fd_int (pargs->r.ret_int, 1));
           break;
+        case oWithColons:
+          opt.with_colons = 1;
+          break;
 
 	case aSupported:
 	case aCreate:
 	case aReceive:
 	case aRead:
         case aCheck:
+        case aInstallKey:
+        case aRemoveKey:
           cmd = pargs->r_opt;
           break;
 
@@ -263,18 +284,52 @@ main (int argc, char **argv)
   if (!opt.gpg_program)
     opt.gpg_program = gnupg_module_name (GNUPG_MODULE_NAME_GPG);
 
+  if (!opt.directory)
+    opt.directory = "openpgpkey";
+
   /* Tell call-dirmngr what options we want.  */
   set_dirmngr_options (opt.verbose, (opt.debug & DBG_IPC_VALUE), 1);
+
+
+  /* Check that the top directory exists.  */
+  if (cmd == aInstallKey || cmd == aRemoveKey)
+    {
+      struct stat sb;
+
+      if (stat (opt.directory, &sb))
+        {
+          err = gpg_error_from_syserror ();
+          log_error ("error accessing directory '%s': %s\n",
+                     opt.directory, gpg_strerror (err));
+          goto leave;
+        }
+      if (!S_ISDIR(sb.st_mode))
+        {
+          log_error ("error accessing directory '%s': %s\n",
+                     opt.directory, "not a directory");
+          err = gpg_error (GPG_ERR_ENOENT);
+          goto leave;
+        }
+    }
 
   /* Run the selected command.  */
   switch (cmd)
     {
     case aSupported:
-      if (argc != 1)
-        wrong_args ("--supported USER-ID");
-      err = command_supported (argv[0]);
-      if (err && gpg_err_code (err) != GPG_ERR_FALSE)
-        log_error ("checking support failed: %s\n", gpg_strerror (err));
+      if (opt.with_colons)
+        {
+          for (; argc; argc--, argv++)
+            command_supported (*argv);
+          err = 0;
+        }
+      else
+        {
+          if (argc != 1)
+            wrong_args ("--supported DOMAIN");
+          err = command_supported (argv[0]);
+          if (err && gpg_err_code (err) != GPG_ERR_FALSE)
+            log_error ("checking support failed: %s\n", gpg_strerror (err));
+        }
       break;
 
     case aCreate:
@@ -307,12 +362,28 @@ main (int argc, char **argv)
       err = command_check (argv[0]);
       break;
 
+    case aInstallKey:
+      if (!argc)
+        err = wks_cmd_install_key (NULL, NULL);
+      else if (argc == 2)
+        err = wks_cmd_install_key (*argv, argv[1]);
+      else
+        wrong_args ("--install-key [FILE|FINGERPRINT USER-ID]");
+      break;
+
+    case aRemoveKey:
+      if (argc != 1)
+        wrong_args ("--remove-key USER-ID");
+      err = wks_cmd_remove_key (*argv);
+      break;
+
     default:
       usage (1);
       err = 0;
       break;
     }
 
+ leave:
   if (err)
     wks_write_status (STATUS_FAILURE, "- %u", err);
   else if (log_get_errorcount (0))
@@ -324,66 +395,13 @@ main (int argc, char **argv)
 
 
 
-struct get_key_status_parm_s
-{
-  const char *fpr;
-  int found;
-  int count;
-};
-
-static void
-get_key_status_cb (void *opaque, const char *keyword, char *args)
-{
-  struct get_key_status_parm_s *parm = opaque;
-
-  /*log_debug ("%s: %s\n", keyword, args);*/
-  if (!strcmp (keyword, "EXPORTED"))
-    {
-      parm->count++;
-      if (!ascii_strcasecmp (args, parm->fpr))
-        parm->found = 1;
-    }
-}
-
-
-/* Get a key by fingerprint from gpg's keyring and make sure that the
- * mail address ADDRSPEC is included in the key.  The key is returned
- * as a new memory stream at R_KEY.
- *
- * Fixme: After we have implemented import and export filters for gpg
- * this function shall only return a key with just this user id.  */
+/* Add the user id UID to the key identified by FINGERPRINT.  */
 static gpg_error_t
-get_key (estream_t *r_key, const char *fingerprint, const char *addrspec)
+add_user_id (const char *fingerprint, const char *uid)
 {
   gpg_error_t err;
   ccparray_t ccp;
   const char **argv = NULL;
-  estream_t key = NULL;
-  struct get_key_status_parm_s parm;
-  char *filterexp = NULL;
-
-  memset (&parm, 0, sizeof parm);
-
-  *r_key = NULL;
-
-  key = es_fopenmem (0, "w+b");
-  if (!key)
-    {
-      err = gpg_error_from_syserror ();
-      log_error ("error allocating memory buffer: %s\n", gpg_strerror (err));
-      goto leave;
-    }
-  /* Prefix the key with the MIME content type.  */
-  es_fputs ("Content-Type: application/pgp-keys\n"
-            "\n", key);
-
-  filterexp = es_bsprintf ("keep-uid=mbox = %s", addrspec);
-  if (!filterexp)
-    {
-      err = gpg_error_from_syserror ();
-      log_error ("error allocating memory buffer: %s\n", gpg_strerror (err));
-      goto leave;
-    }
 
   ccparray_init (&ccp, 0);
 
@@ -393,15 +411,10 @@ get_key (estream_t *r_key, const char *fingerprint, const char *addrspec)
   else if (opt.verbose > 1)
     ccparray_put (&ccp, "--verbose");
   ccparray_put (&ccp, "--batch");
-  ccparray_put (&ccp, "--status-fd=2");
   ccparray_put (&ccp, "--always-trust");
-  ccparray_put (&ccp, "--armor");
-  ccparray_put (&ccp, "--export-options=export-minimal");
-  ccparray_put (&ccp, "--export-filter");
-  ccparray_put (&ccp, filterexp);
-  ccparray_put (&ccp, "--export");
-  ccparray_put (&ccp, "--");
+  ccparray_put (&ccp, "--quick-add-uid");
   ccparray_put (&ccp, fingerprint);
+  ccparray_put (&ccp, uid);
 
   ccparray_put (&ccp, NULL);
   argv = ccparray_get (&ccp, NULL);
@@ -410,47 +423,54 @@ get_key (estream_t *r_key, const char *fingerprint, const char *addrspec)
       err = gpg_error_from_syserror ();
       goto leave;
     }
-  parm.fpr = fingerprint;
   err = gnupg_exec_tool_stream (opt.gpg_program, argv, NULL,
-                                NULL, key,
-                                get_key_status_cb, &parm);
-  if (!err && parm.count > 1)
-    err = gpg_error (GPG_ERR_TOO_MANY);
-  else if (!err && !parm.found)
-    err = gpg_error (GPG_ERR_NOT_FOUND);
+                                NULL, NULL,
+                                NULL, NULL);
   if (err)
     {
-      log_error ("export failed: %s\n", gpg_strerror (err));
+      log_error ("adding user id failed: %s\n", gpg_strerror (err));
       goto leave;
     }
 
-  es_rewind (key);
-  *r_key = key;
-  key = NULL;
-
  leave:
-  es_fclose (key);
   xfree (argv);
-  xfree (filterexp);
   return err;
 }
 
 
 
+struct decrypt_stream_parm_s
+{
+  char *fpr;
+  char *mainfpr;
+  int  otrust;
+};
+
 static void
 decrypt_stream_status_cb (void *opaque, const char *keyword, char *args)
 {
-  (void)opaque;
+  struct decrypt_stream_parm_s *decinfo = opaque;
 
   if (DBG_CRYPTO)
     log_debug ("gpg status: %s %s\n", keyword, args);
-}
+  if (!strcmp (keyword, "DECRYPTION_KEY") && !decinfo->fpr)
+    {
+      char *fields[3];
 
+      if (split_fields (args, fields, DIM (fields)) >= 3)
+        {
+          decinfo->fpr = xstrdup (fields[0]);
+          decinfo->mainfpr = xstrdup (fields[1]);
+          decinfo->otrust = *fields[2];
+        }
+    }
+}
 
 /* Decrypt the INPUT stream to a new stream which is stored at success
  * at R_OUTPUT.  */
 static gpg_error_t
-decrypt_stream (estream_t *r_output, estream_t input)
+decrypt_stream (estream_t *r_output, struct decrypt_stream_parm_s *decinfo,
+                estream_t input)
 {
   gpg_error_t err;
   ccparray_t ccp;
@@ -458,6 +478,7 @@ decrypt_stream (estream_t *r_output, estream_t input)
   estream_t output;
 
   *r_output = NULL;
+  memset (decinfo, 0, sizeof *decinfo);
 
   output = es_fopenmem (0, "w+b");
   if (!output)
@@ -492,7 +513,9 @@ decrypt_stream (estream_t *r_output, estream_t input)
     }
   err = gnupg_exec_tool_stream (opt.gpg_program, argv, input,
                                 NULL, output,
-                                decrypt_stream_status_cb, NULL);
+                                decrypt_stream_status_cb, decinfo);
+  if (!err && (!decinfo->fpr || !decinfo->mainfpr || !decinfo->otrust))
+    err = gpg_error (GPG_ERR_INV_ENGINE);
   if (err)
     {
       log_error ("decryption failed: %s\n", gpg_strerror (err));
@@ -506,11 +529,145 @@ decrypt_stream (estream_t *r_output, estream_t input)
   output = NULL;
 
  leave:
+  if (err)
+    {
+      xfree (decinfo->fpr);
+      xfree (decinfo->mainfpr);
+      memset (decinfo, 0, sizeof *decinfo);
+    }
   es_fclose (output);
   xfree (argv);
   return err;
 }
 
+
+/* Return the submission address for the address or just the domain in
+ * ADDRSPEC.  The submission address is stored as a malloced string at
+ * R_SUBMISSION_ADDRESS.  At R_POLICY the policy flags of the domain
+ * are stored.  The caller needs to free them with wks_free_policy.
+ * The function returns an error code on failure to find a submission
+ * address or policy file.  Note: The function may store NULL at
+ * R_SUBMISSION_ADDRESS but return success to indicate that the web
+ * key directory is supported but not the web key service.  As per WKD
+ * specs a policy file is always required and will thus be return on
+ * success.  */
+static gpg_error_t
+get_policy_and_sa (const char *addrspec, int silent,
+                   policy_flags_t *r_policy, char **r_submission_address)
+{
+  gpg_error_t err;
+  estream_t mbuf = NULL;
+  const char *domain;
+  const char *s;
+  policy_flags_t policy = NULL;
+  char *submission_to = NULL;
+
+  *r_submission_address = NULL;
+  *r_policy = NULL;
+
+  domain = strchr (addrspec, '@');
+  if (domain)
+    domain++;
+
+  if (opt.with_colons)
+    {
+      s = domain? domain : addrspec;
+      es_write_sanitized (es_stdout, s, strlen (s), ":", NULL);
+      es_putc (':', es_stdout);
+    }
+
+  /* We first try to get the submission address from the policy file
+   * (this is the new method).  If both are available we check that
+   * they match and print a warning if not.  In the latter case we
+   * keep on using the one from the submission-address file.    */
+  err = wkd_get_policy_flags (addrspec, &mbuf);
+  if (err && gpg_err_code (err) != GPG_ERR_NO_DATA
+      && gpg_err_code (err) != GPG_ERR_NO_NAME)
+    {
+      if (!opt.with_colons)
+        log_error ("error reading policy flags for '%s': %s\n",
+                   domain, gpg_strerror (err));
+      goto leave;
+    }
+  if (!mbuf)
+    {
+      if (!opt.with_colons)
+        log_error ("provider for '%s' does NOT support the Web Key Directory\n",
+                   addrspec);
+      err = gpg_error (GPG_ERR_FALSE);
+      goto leave;
+    }
+
+  policy = xtrycalloc (1, sizeof *policy);
+  if (!policy)
+    err = gpg_error_from_syserror ();
+  else
+    err = wks_parse_policy (policy, mbuf, 1);
+  es_fclose (mbuf);
+  mbuf = NULL;
+  if (err)
+    goto leave;
+
+  err = wkd_get_submission_address (addrspec, &submission_to);
+  if (err && !policy->submission_address)
+    {
+      if (!silent && !opt.with_colons)
+        log_error (_("error looking up submission address for domain '%s'"
+                     ": %s\n"), domain, gpg_strerror (err));
+      if (!silent && gpg_err_code (err) == GPG_ERR_NO_DATA && !opt.with_colons)
+        log_error (_("this domain probably doesn't support WKS.\n"));
+      goto leave;
+    }
+
+  if (submission_to && policy->submission_address
+      && ascii_strcasecmp (submission_to, policy->submission_address))
+    log_info ("Warning: different submission addresses (sa=%s, po=%s)\n",
+              submission_to, policy->submission_address);
+
+  if (!submission_to && policy->submission_address)
+    {
+      submission_to = xtrystrdup (policy->submission_address);
+      if (!submission_to)
+        {
+          err = gpg_error_from_syserror ();
+          goto leave;
+        }
+    }
+
+ leave:
+  *r_submission_address = submission_to;
+  submission_to = NULL;
+  *r_policy = policy;
+  policy = NULL;
+
+  if (opt.with_colons)
+    {
+      if (*r_policy && !*r_submission_address)
+        es_fprintf (es_stdout, "1:0::");
+      else if (*r_policy && *r_submission_address)
+        es_fprintf (es_stdout, "1:1::");
+      else if (err && !(gpg_err_code (err) == GPG_ERR_FALSE
+                        || gpg_err_code (err) == GPG_ERR_NO_DATA
+                        || gpg_err_code (err) == GPG_ERR_UNKNOWN_HOST))
+        es_fprintf (es_stdout, "0:0:%d:", err);
+      else
+        es_fprintf (es_stdout, "0:0::");
+      if (*r_policy)
+        {
+          es_fprintf (es_stdout, "%u:%u:%u:",
+                      (*r_policy)->protocol_version,
+                      (*r_policy)->auth_submit,
+                      (*r_policy)->mailbox_only);
+        }
+      es_putc ('\n', es_stdout);
+    }
+
+  xfree (submission_to);
+  wks_free_policy (policy);
+  xfree (policy);
+  es_fclose (mbuf);
+  return err;
+}
 
 
 
@@ -521,8 +678,16 @@ command_supported (char *userid)
   gpg_error_t err;
   char *addrspec = NULL;
   char *submission_to = NULL;
+  policy_flags_t policy = NULL;
 
-  addrspec = mailbox_from_userid (userid);
+  if (!strchr (userid, '@'))
+    {
+      char *tmp = xstrconcat ("foo@", userid, NULL);
+      addrspec = mailbox_from_userid (tmp);
+      xfree (tmp);
+    }
+  else
+    addrspec = mailbox_from_userid (userid);
   if (!addrspec)
     {
       log_error (_("\"%s\" is not a proper mail address\n"), userid);
@@ -531,24 +696,41 @@ command_supported (char *userid)
     }
 
   /* Get the submission address.  */
-  err = wkd_get_submission_address (addrspec, &submission_to);
-  if (err)
+  err = get_policy_and_sa (addrspec, 1, &policy, &submission_to);
+  if (err || !submission_to)
     {
-      if (gpg_err_code (err) == GPG_ERR_NO_DATA
-          || gpg_err_code (err) == GPG_ERR_UNKNOWN_HOST)
+      if (!submission_to
+          || gpg_err_code (err) == GPG_ERR_FALSE
+          || gpg_err_code (err) == GPG_ERR_NO_DATA
+          || gpg_err_code (err) == GPG_ERR_UNKNOWN_HOST
+          )
         {
-          if (opt.verbose)
-            log_info ("provider for '%s' does NOT support WKS (%s)\n",
-                      addrspec, gpg_strerror (err));
+          /* FALSE is returned if we already figured out that even the
+           * Web Key Directory is not supported and thus printed an
+           * error message.  */
+          if (opt.verbose && gpg_err_code (err) != GPG_ERR_FALSE
+              && !opt.with_colons)
+            {
+              if (gpg_err_code (err) == GPG_ERR_NO_DATA)
+                log_info ("provider for '%s' does NOT support WKS\n",
+                          addrspec);
+              else
+                log_info ("provider for '%s' does NOT support WKS (%s)\n",
+                          addrspec, gpg_strerror (err));
+            }
           err = gpg_error (GPG_ERR_FALSE);
-          log_inc_errorcount ();
+          if (!opt.with_colons)
+            log_inc_errorcount ();
         }
       goto leave;
     }
-  if (opt.verbose)
+
+  if (opt.verbose && !opt.with_colons)
     log_info ("provider for '%s' supports WKS\n", addrspec);
 
  leave:
+  wks_free_policy (policy);
+  xfree (policy);
   xfree (submission_to);
   xfree (addrspec);
   return err;
@@ -564,8 +746,8 @@ command_check (char *userid)
   char *addrspec = NULL;
   estream_t key = NULL;
   char *fpr = NULL;
-  strlist_t mboxes = NULL;
-  strlist_t sl;
+  uidinfo_list_t mboxes = NULL;
+  uidinfo_list_t sl;
   int found = 0;
 
   addrspec = mailbox_from_userid (userid);
@@ -611,10 +793,9 @@ command_check (char *userid)
 
   /* Look closer at the key.  */
   err = wks_list_key (key, &fpr, &mboxes);
-  if (err || !fpr)
+  if (err)
     {
-      log_error ("error parsing key: %s\n",
-                 err? gpg_strerror (err) : "no fingerprint found");
+      log_error ("error parsing key: %s\n", gpg_strerror (err));
       err = gpg_error (GPG_ERR_NO_PUBKEY);
       goto leave;
     }
@@ -624,10 +805,15 @@ command_check (char *userid)
 
   for (sl = mboxes; sl; sl = sl->next)
     {
-      if (!strcmp (sl->d, addrspec))
+      if (sl->mbox && !strcmp (sl->mbox, addrspec))
         found = 1;
       if (opt.verbose)
-        log_info ("  addr-spec: %s\n", sl->d);
+        {
+          log_info ("    user-id: %s\n", sl->uid);
+          log_info ("    created: %s\n", asctimestamp (sl->created));
+          if (sl->mbox)
+            log_info ("  addr-spec: %s\n", sl->mbox);
+        }
     }
   if (!found)
     {
@@ -638,7 +824,7 @@ command_check (char *userid)
 
  leave:
   xfree (fpr);
-  free_strlist (mboxes);
+  free_uidinfo_list (mboxes);
   es_fclose (key);
   xfree (addrspec);
   return err;
@@ -649,7 +835,7 @@ command_check (char *userid)
 /* Locate the key by fingerprint and userid and send a publication
  * request.  */
 static gpg_error_t
-command_send (const char *fingerprint, char *userid)
+command_send (const char *fingerprint, const char *userid)
 {
   gpg_error_t err;
   KEYDB_SEARCH_DESC desc;
@@ -658,9 +844,13 @@ command_send (const char *fingerprint, char *userid)
   estream_t keyenc = NULL;
   char *submission_to = NULL;
   mime_maker_t mime = NULL;
-  struct policy_flags_s policy;
-
-  memset (&policy, 0, sizeof policy);
+  policy_flags_t policy = NULL;
+  int no_encrypt = 0;
+  int posteo_hack = 0;
+  const char *domain;
+  uidinfo_list_t uidlist = NULL;
+  uidinfo_list_t uid, thisuid;
+  time_t thistime;
 
   if (classify_user_id (fingerprint, &desc, 1)
       || !(desc.mode == KEYDB_SEARCH_MODE_FPR
@@ -670,6 +860,7 @@ command_send (const char *fingerprint, char *userid)
       err = gpg_error (GPG_ERR_INV_NAME);
       goto leave;
     }
+
   addrspec = mailbox_from_userid (userid);
   if (!addrspec)
     {
@@ -677,63 +868,124 @@ command_send (const char *fingerprint, char *userid)
       err = gpg_error (GPG_ERR_INV_USER_ID);
       goto leave;
     }
-  err = get_key (&key, fingerprint, addrspec);
+  err = wks_get_key (&key, fingerprint, addrspec, 0);
   if (err)
     goto leave;
+
+  domain = strchr (addrspec, '@');
+  log_assert (domain);
+  domain++;
 
   /* Get the submission address.  */
   if (fake_submission_addr)
     {
+      policy = xcalloc (1, sizeof *policy);
       submission_to = xstrdup (fake_submission_addr);
       err = 0;
     }
   else
-    err = wkd_get_submission_address (addrspec, &submission_to);
-  if (err)
     {
-      char *domain = strchr (addrspec, '@');
-      if (domain)
-        domain = domain + 1;
-      log_error (_("looking up WKS submission address for %s: %s\n"),
-                 domain ? domain : addrspec, gpg_strerror (err));
-      if (gpg_err_code (err) == GPG_ERR_NO_DATA)
-        log_error (_("this domain probably doesn't support WKS.\n"));
-      goto leave;
-    }
-  log_info ("submitting request to '%s'\n", submission_to);
-
-  /* Get the policy flags.  */
-  if (!fake_submission_addr)
-    {
-      estream_t mbuf;
-
-      err = wkd_get_policy_flags (addrspec, &mbuf);
-      if (err && gpg_err_code (err) != GPG_ERR_NO_DATA)
+      err = get_policy_and_sa (addrspec, 0, &policy, &submission_to);
+      if (err)
+        goto leave;
+      if (!submission_to)
         {
-          log_error ("error reading policy flags for '%s': %s\n",
-                     submission_to, gpg_strerror (err));
+          log_error (_("this domain probably doesn't support WKS.\n"));
+          err = gpg_error (GPG_ERR_NO_DATA);
           goto leave;
         }
-      if (mbuf)
-        {
-          err = wks_parse_policy (&policy, mbuf, 1);
-          es_fclose (mbuf);
-          if (err)
-            goto leave;
-        }
     }
 
-  if (policy.auth_submit)
+  log_info ("submitting request to '%s'\n", submission_to);
+
+  if (policy->auth_submit)
     log_info ("no confirmation required for '%s'\n", addrspec);
 
-  /* Encrypt the key part.  */
-  es_rewind (key);
-  err = encrypt_response (&keyenc, key, submission_to, fingerprint);
+  /* In case the key has several uids with the same addr-spec we will
+   * use the newest one.  */
+  err = wks_list_key (key, NULL, &uidlist);
   if (err)
-    goto leave;
-  es_fclose (key);
-  key = NULL;
+    {
+      log_error ("error parsing key: %s\n",gpg_strerror (err));
+      err = gpg_error (GPG_ERR_NO_PUBKEY);
+      goto leave;
+    }
+  thistime = 0;
+  thisuid = NULL;
+  for (uid = uidlist; uid; uid = uid->next)
+    {
+      if (!uid->mbox)
+        continue; /* Should not happen anyway.  */
+      if (policy->mailbox_only && ascii_strcasecmp (uid->uid, uid->mbox))
+        continue; /* UID has more than just the mailbox.  */
+      if (uid->created > thistime)
+        {
+          thistime = uid->created;
+          thisuid = uid;
+        }
+    }
+  if (!thisuid)
+    thisuid = uidlist;  /* This is the case for a missing timestamp.  */
+  if (opt.verbose)
+    log_info ("submitting key with user id '%s'\n", thisuid->uid);
 
+  /* If we have more than one user id we need to filter the key to
+   * include only THISUID.  */
+  if (uidlist->next)
+    {
+      estream_t newkey;
+
+      es_rewind (key);
+      err = wks_filter_uid (&newkey, key, thisuid->uid, 0);
+      if (err)
+        {
+          log_error ("error filtering key: %s\n", gpg_strerror (err));
+          err = gpg_error (GPG_ERR_NO_PUBKEY);
+          goto leave;
+        }
+      es_fclose (key);
+      key = newkey;
+    }
+
+  if (policy->mailbox_only
+      && (!thisuid->mbox || ascii_strcasecmp (thisuid->uid, thisuid->mbox)))
+    {
+      log_info ("Warning: policy requires 'mailbox-only'"
+                " - adding user id '%s'\n", addrspec);
+      err = add_user_id (fingerprint, addrspec);
+      if (err)
+        goto leave;
+
+      /* Need to get the key again.  This time we request filtering
+       * for the full user id, so that we do not need check and filter
+       * the key again.  */
+      es_fclose (key);
+      key = NULL;
+      err = wks_get_key (&key, fingerprint, addrspec, 1);
+      if (err)
+        goto leave;
+    }
+
+  /* Hack to support posteo but let them disable this by setting the
+   * new policy-version flag.  */
+  if (policy->protocol_version < 3
+      && !ascii_strcasecmp (domain, "posteo.de"))
+    {
+      log_info ("Warning: Using draft-1 method for domain '%s'\n", domain);
+      no_encrypt = 1;
+      posteo_hack = 1;
+    }
+
+  /* Encrypt the key part.  */
+  if (!no_encrypt)
+    {
+      es_rewind (key);
+      err = encrypt_response (&keyenc, key, submission_to, fingerprint);
+      if (err)
+        goto leave;
+      es_fclose (key);
+      key = NULL;
+    }
 
   /* Send the key.  */
   err = mime_maker_new (&mime, NULL);
@@ -749,43 +1001,92 @@ command_send (const char *fingerprint, char *userid)
   if (err)
     goto leave;
 
-  /* Tell server that we support draft version 3.  */
-  err = mime_maker_add_header (mime, "Wks-Draft-Version", "3");
+  /* Tell server which draft we support.  */
+  err = mime_maker_add_header (mime, "Wks-Draft-Version",
+                                 STR2(WKS_DRAFT_VERSION));
   if (err)
     goto leave;
 
-  err = mime_maker_add_header (mime, "Content-Type",
-                               "multipart/encrypted; "
-                               "protocol=\"application/pgp-encrypted\"");
-  if (err)
-    goto leave;
-  err = mime_maker_add_container (mime);
-  if (err)
-    goto leave;
+  if (no_encrypt)
+    {
+      void *data;
+      size_t datalen, n;
 
-  err = mime_maker_add_header (mime, "Content-Type",
-                               "application/pgp-encrypted");
-  if (err)
-    goto leave;
-  err = mime_maker_add_body (mime, "Version: 1\n");
-  if (err)
-    goto leave;
-  err = mime_maker_add_header (mime, "Content-Type",
-                               "application/octet-stream");
-  if (err)
-    goto leave;
+      if (posteo_hack)
+        {
+          /* Needs a multipart/mixed with one(!) attachment.  It does
+           * not grok a non-multipart mail.  */
+          err = mime_maker_add_header (mime, "Content-Type", "multipart/mixed");
+          if (err)
+            goto leave;
+          err = mime_maker_add_container (mime);
+          if (err)
+            goto leave;
+        }
 
-  err = mime_maker_add_stream (mime, &keyenc);
-  if (err)
-    goto leave;
+      err = mime_maker_add_header (mime, "Content-type",
+                                   "application/pgp-keys");
+      if (err)
+        goto leave;
+
+      if (es_fclose_snatch (key, &data, &datalen))
+        {
+          err = gpg_error_from_syserror ();
+          goto leave;
+        }
+      key = NULL;
+      /* We need to skip over the first line which has a content-type
+       * header not needed here.  */
+      for (n=0; n < datalen ; n++)
+        if (((const char *)data)[n] == '\n')
+          {
+            n++;
+            break;
+          }
+
+      err = mime_maker_add_body_data (mime, (char*)data + n, datalen - n);
+      xfree (data);
+      if (err)
+        goto leave;
+    }
+  else
+    {
+      err = mime_maker_add_header (mime, "Content-Type",
+                                   "multipart/encrypted; "
+                                   "protocol=\"application/pgp-encrypted\"");
+      if (err)
+        goto leave;
+      err = mime_maker_add_container (mime);
+      if (err)
+        goto leave;
+
+      err = mime_maker_add_header (mime, "Content-Type",
+                                   "application/pgp-encrypted");
+      if (err)
+        goto leave;
+      err = mime_maker_add_body (mime, "Version: 1\n");
+      if (err)
+        goto leave;
+      err = mime_maker_add_header (mime, "Content-Type",
+                                   "application/octet-stream");
+      if (err)
+        goto leave;
+
+      err = mime_maker_add_stream (mime, &keyenc);
+      if (err)
+        goto leave;
+    }
 
   err = wks_send_mime (mime);
 
  leave:
   mime_maker_release (mime);
   xfree (submission_to);
+  free_uidinfo_list (uidlist);
   es_fclose (keyenc);
   es_fclose (key);
+  wks_free_policy (policy);
+  xfree (policy);
   xfree (addrspec);
   return err;
 }
@@ -948,6 +1249,10 @@ send_confirmation_response (const char *sender, const char *address,
   err = mime_maker_add_header (mime, "Subject", "Key publication confirmation");
   if (err)
     goto leave;
+  err = mime_maker_add_header (mime, "Wks-Draft-Version",
+                               STR2(WKS_DRAFT_VERSION));
+  if (err)
+    goto leave;
 
   if (encrypt)
     {
@@ -998,9 +1303,11 @@ send_confirmation_response (const char *sender, const char *address,
 
 
 /* Reply to a confirmation request.  The MSG has already been
- * decrypted and we only need to send the nonce back.  */
+ * decrypted and we only need to send the nonce back.  MAINFPR is
+ * either NULL or the primary key fingerprint of the key used to
+ * decrypt the request.  */
 static gpg_error_t
-process_confirmation_request (estream_t msg)
+process_confirmation_request (estream_t msg, const char *mainfpr)
 {
   gpg_error_t err;
   nvc_t nvc;
@@ -1044,8 +1351,20 @@ process_confirmation_request (estream_t msg)
     }
   fingerprint = value;
 
-  /* FIXME: Check that the fingerprint matches the key used to decrypt the
-   * message.  */
+  /* Check that the fingerprint matches the key used to decrypt the
+   * message.  In --read mode or with the old format we don't have the
+   * decryption key; thus we can't bail out.  */
+  if (!mainfpr || ascii_strcasecmp (mainfpr, fingerprint))
+    {
+      log_info ("target fingerprint: %s\n", fingerprint);
+      log_info ("but decrypted with: %s\n", mainfpr);
+      log_error ("confirmation request not decrypted with target key\n");
+      if (mainfpr)
+        {
+          err = gpg_error (GPG_ERR_INV_DATA);
+          goto leave;
+        }
+    }
 
   /* Get the address.  */
   if (!((item = nvc_lookup (nvc, "address:")) && (value = nve_value (item))
@@ -1058,10 +1377,7 @@ process_confirmation_request (estream_t msg)
     }
   address = value;
   /* FIXME: Check that the "address" matches the User ID we want to
-   * publish.  Also get the "fingerprint" and compare that to our to
-   * be published key.  Further we should make sure that we actually
-   * decrypted using that fingerprint (which is a bit problematic if
-   * --read is used). */
+   * publish.  */
 
   /* Get the sender.  */
   if (!((item = nvc_lookup (nvc, "sender:")) && (value = nve_value (item))
@@ -1130,14 +1446,24 @@ read_confirmation_request (estream_t msg)
     }
 
   if (c != '-')
-    err = process_confirmation_request (msg);
+    err = process_confirmation_request (msg, NULL);
   else
     {
-      err = decrypt_stream (&plaintext, msg);
+      struct decrypt_stream_parm_s decinfo;
+
+      err = decrypt_stream (&plaintext, &decinfo, msg);
       if (err)
         log_error ("decryption failed: %s\n", gpg_strerror (err));
+      else if (decinfo.otrust != 'u')
+        {
+          err = gpg_error (GPG_ERR_WRONG_SECKEY);
+          log_error ("key used to decrypt the confirmation request"
+                     " was not generated by us\n");
+        }
       else
-        err = process_confirmation_request (plaintext);
+        err = process_confirmation_request (plaintext, decinfo.mainfpr);
+      xfree (decinfo.fpr);
+      xfree (decinfo.mainfpr);
     }
 
   es_fclose (plaintext);

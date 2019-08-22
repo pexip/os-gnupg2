@@ -54,9 +54,11 @@
 #include "gpg.h"
 #include "main.h"
 #include "../common/types.h"
-#include "util.h"
+#include "../common/util.h"
 #include "dek.h"
 #include "../common/logging.h"
+
+#include "test.c"
 
 static void
 log_hexdump (byte *buffer, int length)
@@ -368,8 +370,8 @@ oracle_test (unsigned int d, int b, int debug)
   return oracle (debug, probe, blocksize + 2, NULL, NULL) == 0;
 }
 
-int
-main (int argc, char *argv[])
+static void
+do_test (int argc, char *argv[])
 {
   int i;
   int debug = 0;
@@ -379,8 +381,7 @@ main (int argc, char *argv[])
   byte *raw_data;
   int raw_data_len;
 
-  int failed = 0;
-
+  (void)current_test_group_failed;
   for (i = 1; i < argc; i ++)
     {
       if (strcmp (argv[i], "--debug") == 0)
@@ -396,11 +397,10 @@ main (int argc, char *argv[])
         }
     }
 
-  if (! blocksize && ! filename && (filename = getenv ("srcdir")))
+  if (! blocksize && ! filename && (filename = prepend_srcdir ("t-stutter-data.asc")))
     /* Try defaults.  */
     {
       parse_session_key ("9:9274A8EC128E850C6DDDF9EAC68BFA84FC7BC05F340DA41D78C93D0640C7C503");
-      filename = xasprintf ("%s/t-stutter-data.asc", filename);
     }
 
   if (help || ! blocksize || ! filename)
@@ -601,7 +601,7 @@ main (int argc, char *argv[])
                        isprint (pt[0]) ? pt[0] : '?',
                        isprint (pt[1]) ? pt[1] : '?',
                        hexstr (m));
-            failed = 1;
+            tests_failed++;
           }
       }
 
@@ -610,5 +610,4 @@ main (int argc, char *argv[])
   }
 
   xfree (filename);
-  return failed;
 }

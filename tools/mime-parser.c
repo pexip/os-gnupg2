@@ -1,19 +1,20 @@
 /* mime-parser.c - Parse MIME structures (high level rfc822 parser).
  * Copyright (C) 2016 g10 Code GmbH
+ * Copyright (C) 2016 Bundesamt für Sicherheit in der Informationstechnik
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
+ * This file is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation; either version 2.1 of
+ * the License, or (at your option) any later version.
  *
- * GnuPG is distributed in the hope that it will be useful,
+ * This file is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
@@ -22,7 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "util.h"
+#include "../common/util.h"
 #include "rfc822parse.h"
 #include "mime-parser.h"
 
@@ -48,6 +49,9 @@ enum pgpmime_states
 struct mime_parser_context_s
 {
   void *cookie;                /* Cookie passed to all callbacks.  */
+
+  /* The callback to announce the transation from header to body.  */
+  gpg_error_t (*t2body) (void *cookie, int level);
 
   /* The callback to announce a new part.  */
   gpg_error_t (*new_part) (void *cookie,
@@ -224,6 +228,14 @@ parse_message_cb (void *opaque, rfc822parse_event_t event, rfc822parse_t msg)
 
       ctx->want_part = 0;
       ctx->decode_part = 0;
+
+      if (ctx->t2body)
+        {
+          rc = ctx->t2body (ctx->cookie, ctx->nesting_level);
+          if (rc)
+            goto t2body_leave;
+        }
+
       field = rfc822parse_parse_field (msg, "Content-Type", -1);
       if (field)
         {
@@ -412,6 +424,7 @@ parse_message_cb (void *opaque, rfc822parse_event_t event, rfc822parse_t msg)
             }
         }
 
+    t2body_leave:
       ctx->show.header = 0;
       ctx->show.data = 1;
       ctx->show.n_skip = 1;
@@ -538,6 +551,19 @@ mime_parser_set_verbose (mime_parser_t ctx, int level)
       if (level > 10)
         ctx->debug = 1;
     }
+}
+
+
+/* Set a callback for the transition from header to body.  LEVEL is
+ * the current nesting level, starting with 0.  This callback can be
+ * used to evaluate headers before any other action is done.  Note
+ * that if a new NEW_PART callback needs to be called it is done after
+ * this T2BODY callback.  */
+void
+mime_parser_set_t2body (mime_parser_t ctx,
+                        gpg_error_t (*fnc) (void *cookie, int level))
+{
+  ctx->t2body = fnc;
 }
 
 

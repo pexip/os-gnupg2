@@ -27,7 +27,7 @@
 #include <unistd.h>
 #include <assert.h>
 
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "../common/exectool.h"
 #include "../common/sysutils.h"
 #include "../common/ccparray.h"
@@ -345,21 +345,21 @@ gpgtar_extract (const char *filename, int decrypt)
     dirname = xtrystrdup (opt.directory);
   else
     {
-      if (filename)
-        {
-          dirprefix = strrchr (filename, '/');
-          if (dirprefix)
-            dirprefix++;
-          else
-            dirprefix = filename;
-        }
-      else if (opt.filename)
+      if (opt.filename)
         {
           dirprefix = strrchr (opt.filename, '/');
           if (dirprefix)
             dirprefix++;
           else
             dirprefix = opt.filename;
+        }
+      else if (filename)
+        {
+          dirprefix = strrchr (filename, '/');
+          if (dirprefix)
+            dirprefix++;
+          else
+            dirprefix = filename;
         }
 
       if (!dirprefix || !*dirprefix)

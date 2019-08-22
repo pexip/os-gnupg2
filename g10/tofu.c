@@ -31,18 +31,17 @@
 #include <time.h>
 
 #include "gpg.h"
-#include "types.h"
-#include "logging.h"
-#include "stringhelp.h"
+#include "../common/types.h"
+#include "../common/logging.h"
+#include "../common/stringhelp.h"
 #include "options.h"
-#include "mbox-util.h"
-#include "i18n.h"
-#include "ttyio.h"
+#include "../common/mbox-util.h"
+#include "../common/i18n.h"
+#include "../common/ttyio.h"
 #include "trustdb.h"
-#include "mkdir_p.h"
+#include "../common/mkdir_p.h"
 #include "gpgsql.h"
-#include "status.h"
-#include "sqrtu32.h"
+#include "../common/status.h"
 
 #include "tofu.h"
 
@@ -1305,7 +1304,7 @@ signature_stats_collect_cb (void *cookie, int argc, char **argv,
 }
 
 /* Format the first part of a conflict message and return that as a
- * malloced string.  */
+ * malloced string. Returns NULL on error. */
 static char *
 format_conflict_msg_part1 (int policy, strlist_t conflict_set,
                            const char *email)
@@ -1355,7 +1354,7 @@ format_conflict_msg_part1 (int policy, strlist_t conflict_set,
   es_fputc (0, fp);
   if (es_fclose_snatch (fp, (void **)&tmpstr, NULL))
     log_fatal ("error snatching memory stream\n");
-  text = format_text (tmpstr, 0, 72, 80);
+  text = format_text (tmpstr, 72, 80);
   es_free (tmpstr);
 
   return text;
@@ -1573,7 +1572,7 @@ ask_about_binding (ctrl_t ctrl,
   struct signature_stats *stats = NULL;
   struct signature_stats *stats_iter = NULL;
   char *prompt = NULL;
-  char *choices;
+  const char *choices;
 
   dbs = ctrl->tofu.dbs;
   log_assert (dbs);
@@ -1586,6 +1585,10 @@ ask_about_binding (ctrl_t ctrl,
 
   {
     char *text = format_conflict_msg_part1 (*policy, conflict_set, email);
+    if (!text) /* FIXME: Return the error all the way up.  */
+      log_fatal ("format failed: %s\n",
+                 gpg_strerror (gpg_error_from_syserror()));
+
     es_fputs (text, fp);
     es_fputc ('\n', fp);
     xfree (text);
@@ -1782,12 +1785,12 @@ ask_about_binding (ctrl_t ctrl,
               if ((binding->flags & BINDING_REVOKED))
                 {
                   es_fprintf (fp, _("revoked"));
-                  es_fprintf (fp, _(", "));
+                  es_fprintf (fp, ", ");
                 }
               else if ((binding->flags & BINDING_EXPIRED))
                 {
                   es_fprintf (fp, _("expired"));
-                  es_fprintf (fp, _(", "));
+                  es_fprintf (fp, ", ");
                 }
 
               if (this_key)
@@ -1913,7 +1916,7 @@ ask_about_binding (ctrl_t ctrl,
       /* TRANSLATORS: Please translate the text found in the source
        * file below.  We don't directly internationalize that text so
        * that we can tweak it without breaking translations.  */
-      char *text = _("TOFU detected a binding conflict");
+      const char *text = _("TOFU detected a binding conflict");
       char *textbuf;
       if (!strcmp (text, "TOFU detected a binding conflict"))
         {
@@ -1926,8 +1929,8 @@ ask_about_binding (ctrl_t ctrl,
             "attack!  Before accepting this association, you should talk to or "
             "call the person to make sure this new key is legitimate.";
         }
-      textbuf = format_text (text, 0, 72, 80);
-      es_fprintf (fp, "\n%s\n", textbuf);
+      textbuf = format_text (text, 72, 80);
+      es_fprintf (fp, "\n%s\n", textbuf? textbuf : "[OUT OF CORE!]");
       xfree (textbuf);
     }
 
@@ -1941,7 +1944,7 @@ ask_about_binding (ctrl_t ctrl,
   /* I think showing the large message once is sufficient.  If we
    * would move it right before the cpr_get many lines will scroll
    * away and the user might not realize that he merely entered a
-   * wrong choise (because he does not see that either).  As a small
+   * wrong choice (because he does not see that either).  As a small
    * benefit we allow C-L to redisplay everything.  */
   tty_printf ("%s", prompt);
 
@@ -1969,7 +1972,7 @@ ask_about_binding (ctrl_t ctrl,
       else if (!response[0])
         /* Default to unknown.  Don't save it.  */
         {
-          tty_printf (_("Defaulting to unknown."));
+          tty_printf (_("Defaulting to unknown.\n"));
           *policy = TOFU_POLICY_UNKNOWN;
           break;
         }
@@ -2031,7 +2034,7 @@ ask_about_binding (ctrl_t ctrl,
    email> (including the binding itself, which will be first in the
    list).  For each returned key also sets BINDING_NEW, etc.  */
 static strlist_t
-build_conflict_set (tofu_dbs_t dbs,
+build_conflict_set (ctrl_t ctrl, tofu_dbs_t dbs,
                     PKT_public_key *pk, const char *fingerprint,
                     const char *email)
 {
@@ -2174,7 +2177,7 @@ build_conflict_set (tofu_dbs_t dbs,
           continue;
         }
 
-      merge_keys_and_selfsig (kb);
+      merge_keys_and_selfsig (ctrl, kb);
 
       log_assert (kb->pkt->pkttype == PKT_PUBLIC_KEY);
 
@@ -2209,9 +2212,9 @@ build_conflict_set (tofu_dbs_t dbs,
             {
               found_user_id = 1;
 
-              if (user_id2->is_revoked)
+              if (user_id2->flags.revoked)
                 iter->flags |= BINDING_REVOKED;
-              if (user_id2->is_expired)
+              if (user_id2->flags.expired)
                 iter->flags |= BINDING_EXPIRED;
             }
 
@@ -2239,7 +2242,7 @@ build_conflict_set (tofu_dbs_t dbs,
     if (!die)
       {
         /*err = gpg_error_from_syserror ();*/
-        xoutofcore (); /* Fixme: Let the fucntion return an error.  */
+        xoutofcore (); /* Fixme: Let the function return an error.  */
       }
 
     for (i = 0; i < conflict_set_count; i ++)
@@ -2304,11 +2307,20 @@ build_conflict_set (tofu_dbs_t dbs,
 
 
 /* Return the effective policy for the binding <FINGERPRINT, EMAIL>
- * (email has already been normalized) and any conflict information in
- * *CONFLICT_SETP, if CONFLICT_SETP is not NULL.  Returns
- * _tofu_GET_POLICY_ERROR if an error occurs.  */
+ * (email has already been normalized).  Returns
+ * _tofu_GET_POLICY_ERROR if an error occurs.  Returns any conflict
+ * information in *CONFLICT_SETP if CONFLICT_SETP is not NULL and the
+ * returned policy is TOFU_POLICY_ASK (consequently, if there is a
+ * conflict, but the user set the policy to good *CONFLICT_SETP will
+ * empty).  Note: as per build_conflict_set, which is used to build
+ * the conflict information, the conflict information includes the
+ * current user id as the first element of the linked list.
+ *
+ * This function registers the binding in the bindings table if it has
+ * not yet been registered.
+ */
 static enum tofu_policy
-get_policy (tofu_dbs_t dbs, PKT_public_key *pk,
+get_policy (ctrl_t ctrl, tofu_dbs_t dbs, PKT_public_key *pk,
             const char *fingerprint, const char *user_id, const char *email,
 	    strlist_t *conflict_setp, time_t now)
 {
@@ -2474,7 +2486,7 @@ get_policy (tofu_dbs_t dbs, PKT_public_key *pk,
         int lookup_err;
         kbnode_t kb;
 
-        lookup_err = get_pubkey_byfprint (NULL, &kb,
+        lookup_err = get_pubkey_byfprint (ctrl, NULL, &kb,
                                           fingerprint_raw,
                                           fingerprint_raw_len);
         if (lookup_err)
@@ -2500,7 +2512,7 @@ get_policy (tofu_dbs_t dbs, PKT_public_key *pk,
    * disappeared.  The latter can happen if the conflicting bindings
    * are now cross signed, for instance.  */
 
-  conflict_set = build_conflict_set (dbs, pk, fingerprint, email);
+  conflict_set = build_conflict_set (ctrl, dbs, pk, fingerprint, email);
   conflict_set_count = strlist_length (conflict_set);
   if (conflict_set_count == 0)
     {
@@ -2606,7 +2618,7 @@ get_policy (tofu_dbs_t dbs, PKT_public_key *pk,
   if (effective_policy == TOFU_POLICY_ASK && conflict_setp)
     {
       if (! conflict_set)
-        conflict_set = build_conflict_set (dbs, pk, fingerprint, email);
+        conflict_set = build_conflict_set (ctrl, dbs, pk, fingerprint, email);
       *conflict_setp = conflict_set;
     }
   else
@@ -2644,7 +2656,9 @@ get_policy (tofu_dbs_t dbs, PKT_public_key *pk,
 static enum tofu_policy
 get_trust (ctrl_t ctrl, PKT_public_key *pk,
            const char *fingerprint, const char *email,
-	   const char *user_id, int may_ask, time_t now)
+           const char *user_id, int may_ask,
+           enum tofu_policy *policyp, strlist_t *conflict_setp,
+           time_t now)
 {
   tofu_dbs_t dbs = ctrl->tofu.dbs;
   int in_transaction = 0;
@@ -2675,6 +2689,23 @@ get_trust (ctrl_t ctrl, PKT_public_key *pk,
               && _tofu_GET_TRUST_ERROR != TRUST_FULLY
               && _tofu_GET_TRUST_ERROR != TRUST_ULTIMATE);
 
+  begin_transaction (ctrl, 0);
+  in_transaction = 1;
+
+  /* We need to call get_policy even if the key is ultimately trusted
+   * to make sure the binding has been registered.  */
+  policy = get_policy (ctrl, dbs, pk, fingerprint, user_id, email,
+                       &conflict_set, now);
+
+  if (policy == TOFU_POLICY_ASK)
+    /* The conflict set should always contain at least one element:
+     * the current key.  */
+    log_assert (conflict_set);
+  else
+    /* If the policy is not TOFU_POLICY_ASK, then conflict_set will be
+     * NULL.  */
+    log_assert (! conflict_set);
+
   /* If the key is ultimately trusted, there is nothing to do.  */
   {
     u32 kid[2];
@@ -2683,14 +2714,11 @@ get_trust (ctrl_t ctrl, PKT_public_key *pk,
     if (tdb_keyid_is_utk (kid))
       {
         trust_level = TRUST_ULTIMATE;
+        policy = TOFU_POLICY_GOOD;
         goto out;
       }
   }
 
-  begin_transaction (ctrl, 0);
-  in_transaction = 1;
-
-  policy = get_policy (dbs, pk, fingerprint, user_id, email, &conflict_set, now);
   if (policy == TOFU_POLICY_AUTO)
     {
       policy = opt.tofu_default_policy;
@@ -2699,6 +2727,14 @@ get_trust (ctrl_t ctrl, PKT_public_key *pk,
                    " auto (default: %s).\n",
 		   fingerprint, email,
 		   tofu_policy_str (opt.tofu_default_policy));
+
+      if (policy == TOFU_POLICY_ASK)
+        /* The default policy is ASK, but there is no conflict (policy
+         * was 'auto').  In this case, we need to make sure the
+         * conflict set includes at least the current user id.  */
+        {
+          add_to_strlist (&conflict_set, fingerprint);
+        }
     }
   switch (policy)
     {
@@ -2758,10 +2794,6 @@ get_trust (ctrl_t ctrl, PKT_public_key *pk,
     }
   else
     {
-      for (iter = conflict_set; iter; iter = iter->next)
-        show_statistics (dbs, iter->d, email,
-                         TOFU_POLICY_ASK, NULL, 1, now);
-
       trust_level = TRUST_UNDEFINED;
     }
 
@@ -2807,7 +2839,13 @@ get_trust (ctrl_t ctrl, PKT_public_key *pk,
   if (in_transaction)
     end_transaction (ctrl, 0);
 
-  free_strlist (conflict_set);
+  if (policyp)
+    *policyp = policy;
+
+  if (conflict_setp)
+    *conflict_setp = conflict_set;
+  else
+    free_strlist (conflict_set);
 
   return trust_level;
 }
@@ -2883,19 +2921,18 @@ write_stats_status (estream_t fp,
 {
   int summary;
   int validity;
-  unsigned long days;
+  unsigned long days_sq;
 
   /* Use the euclidean distance (m = sqrt(a^2 + b^2)) rather then the
      sum of the magnitudes (m = a + b) to ensure a balance between
      verified signatures and encrypted messages.  */
-  days = sqrtu32 (signature_days * signature_days
-                  + encryption_days * encryption_days);
+  days_sq = signature_days * signature_days + encryption_days * encryption_days;
 
-  if (days < 1)
+  if (days_sq < 1)
     validity = 1; /* Key without history.  */
-  else if (days < 2 * BASIC_TRUST_THRESHOLD)
+  else if (days_sq < (2 * BASIC_TRUST_THRESHOLD) * (2 * BASIC_TRUST_THRESHOLD))
     validity = 2; /* Key with too little history.  */
-  else if (days < 2 * FULL_TRUST_THRESHOLD)
+  else if (days_sq < (2 * FULL_TRUST_THRESHOLD) * (2 * FULL_TRUST_THRESHOLD))
     validity = 3; /* Key with enough history for basic trust.  */
   else
     validity = 4; /* Key with a lot of history.  */
@@ -2936,7 +2973,7 @@ write_stats_status (estream_t fp,
  *
  * POLICY is the key's policy (as returned by get_policy).
  *
- * Returns 0 if if ONLY_STATUS_FD is set.  Otherwise, returns whether
+ * Returns 0 if ONLY_STATUS_FD is set.  Otherwise, returns whether
  * the caller should call show_warning after iterating over all user
  * ids.
  */
@@ -2970,7 +3007,8 @@ show_statistics (tofu_dbs_t dbs,
   /* Get the signature stats.  */
   rc = gpgsql_exec_printf
     (dbs->db, strings_collect_cb, &strlist, &err,
-     "select count (*), min (signatures.time), max (signatures.time)\n"
+     "select count (*), coalesce (min (signatures.time), 0),\n"
+     "  coalesce (max (signatures.time), 0)\n"
      " from signatures\n"
      " left join bindings on signatures.binding = bindings.oid\n"
      " where fingerprint = %Q and email = %Q;",
@@ -3023,7 +3061,8 @@ show_statistics (tofu_dbs_t dbs,
   /* Get the encryption stats.  */
   rc = gpgsql_exec_printf
     (dbs->db, strings_collect_cb, &strlist, &err,
-     "select count (*), min (encryptions.time), max (encryptions.time)\n"
+     "select count (*), coalesce (min (encryptions.time), 0),\n"
+     "  coalesce (max (encryptions.time), 0)\n"
      " from encryptions\n"
      " left join bindings on encryptions.binding = bindings.oid\n"
      " where fingerprint = %Q and email = %Q;",
@@ -3153,7 +3192,10 @@ show_statistics (tofu_dbs_t dbs,
         es_fputc (0, fp);
         if (es_fclose_snatch (fp, (void **) &tmpmsg, NULL))
           log_fatal ("error snatching memory stream\n");
-        msg = format_text (tmpmsg, 0, 72, 80);
+        msg = format_text (tmpmsg, 72, 80);
+        if (!msg) /* FIXME: Return the error all the way up.  */
+          log_fatal ("format failed: %s\n",
+                     gpg_strerror (gpg_error_from_syserror()));
         es_free (tmpmsg);
 
         /* Print a status line but suppress the trailing LF.
@@ -3188,9 +3230,9 @@ show_statistics (tofu_dbs_t dbs,
                         " one message to this key!\n"));
 
           /* Cf. write_stats_status  */
-          if (sqrtu32 (encryption_count * encryption_count
-                       + signature_count * signature_count)
-              < 2 * BASIC_TRUST_THRESHOLD)
+          if ((encryption_count * encryption_count
+	       + signature_count * signature_count)
+	      < ((2 * BASIC_TRUST_THRESHOLD) * (2 * BASIC_TRUST_THRESHOLD)))
             show_warning = 1;
         }
     }
@@ -3228,7 +3270,10 @@ show_warning (const char *fingerprint, strlist_t user_id_list)
       strlist_length (user_id_list)),
      set_policy_command);
 
-  text = format_text (tmpmsg, 0, 72, 80);
+  text = format_text (tmpmsg, 72, 80);
+  if (!text) /* FIXME: Return the error all the way up.  */
+    log_fatal ("format failed: %s\n",
+               gpg_strerror (gpg_error_from_syserror()));
   xfree (tmpmsg);
   log_string (GPGRT_LOG_INFO, text);
   xfree (text);
@@ -3287,8 +3332,8 @@ tofu_register_signature (ctrl_t ctrl,
   char *fingerprint = NULL;
   strlist_t user_id;
   char *email = NULL;
-  char *err = NULL;
-  char *sig_digest;
+  char *sqlerr = NULL;
+  char *sig_digest = NULL;
   unsigned long c;
 
   dbs = opendbs (ctrl);
@@ -3309,11 +3354,20 @@ tofu_register_signature (ctrl_t ctrl,
   log_assert (pk_is_primary (pk));
 
   sig_digest = make_radix64_string (sig_digest_bin, sig_digest_bin_len);
+  if (!sig_digest)
+    {
+      rc = gpg_error_from_syserror ();
+      goto leave;
+    }
   fingerprint = hexfingerprint (pk, NULL, 0);
+  if (!fingerprint)
+    {
+      rc = gpg_error_from_syserror ();
+      goto leave;
+    }
 
   if (! origin)
-    /* The default origin is simply "unknown".  */
-    origin = "unknown";
+    origin = "unknown";  /* The default origin is simply "unknown".  */
 
   for (user_id = user_id_list; user_id; user_id = user_id->next)
     {
@@ -3326,7 +3380,8 @@ tofu_register_signature (ctrl_t ctrl,
 
       /* Make sure the binding exists and record any TOFU
          conflicts.  */
-      if (get_trust (ctrl, pk, fingerprint, email, user_id->d, 0, now)
+      if (get_trust (ctrl, pk, fingerprint, email, user_id->d,
+                     0, NULL, NULL, now)
           == _tofu_GET_TRUST_ERROR)
         {
           rc = gpg_error (GPG_ERR_GENERAL);
@@ -3338,7 +3393,7 @@ tofu_register_signature (ctrl_t ctrl,
          it again.  */
       rc = gpgsql_stepx
         (dbs->db, &dbs->s.register_already_seen,
-         get_single_unsigned_long_cb2, &c, &err,
+         get_single_unsigned_long_cb2, &c, &sqlerr,
          "select count (*)\n"
          " from signatures left join bindings\n"
          "  on signatures.binding = bindings.oid\n"
@@ -3350,9 +3405,9 @@ tofu_register_signature (ctrl_t ctrl,
          GPGSQL_ARG_END);
       if (rc)
         {
-          log_error (_("error reading TOFU database: %s\n"), err);
+          log_error (_("error reading TOFU database: %s\n"), sqlerr);
           print_further_info ("checking existence");
-          sqlite3_free (err);
+          sqlite3_free (sqlerr);
           rc = gpg_error (GPG_ERR_GENERAL);
         }
       else if (c > 1)
@@ -3390,7 +3445,7 @@ tofu_register_signature (ctrl_t ctrl,
           log_assert (c == 0);
 
           rc = gpgsql_stepx
-            (dbs->db, &dbs->s.register_signature, NULL, NULL, &err,
+            (dbs->db, &dbs->s.register_signature, NULL, NULL, &sqlerr,
              "insert into signatures\n"
              " (binding, sig_digest, origin, sig_time, time)\n"
              " values\n"
@@ -3404,9 +3459,9 @@ tofu_register_signature (ctrl_t ctrl,
              GPGSQL_ARG_END);
           if (rc)
             {
-              log_error (_("error updating TOFU database: %s\n"), err);
+              log_error (_("error updating TOFU database: %s\n"), sqlerr);
               print_further_info ("insert signatures");
-              sqlite3_free (err);
+              sqlite3_free (sqlerr);
               rc = gpg_error (GPG_ERR_GENERAL);
             }
         }
@@ -3417,6 +3472,7 @@ tofu_register_signature (ctrl_t ctrl,
         break;
     }
 
+ leave:
   if (rc)
     rollback_transaction (ctrl);
   else
@@ -3440,7 +3496,8 @@ tofu_register_encryption (ctrl_t ctrl,
   int free_user_id_list = 0;
   char *fingerprint = NULL;
   strlist_t user_id;
-  char *err = NULL;
+  char *sqlerr = NULL;
+  int in_batch = 0;
 
   dbs = opendbs (ctrl);
   if (! dbs)
@@ -3455,7 +3512,7 @@ tofu_register_encryption (ctrl_t ctrl,
       ! pk_is_primary (pk)
       /* We need the key block to find all user ids.  */
       || ! user_id_list)
-    kb = get_pubkeyblock (pk->keyid);
+    kb = get_pubkeyblock (ctrl, pk->keyid);
 
   /* Make sure PK is a primary key.  */
   if (! pk_is_primary (pk))
@@ -3470,7 +3527,7 @@ tofu_register_encryption (ctrl_t ctrl,
         {
 	  PKT_user_id *uid = n->pkt->pkt.user_id;
 
-          if (uid->is_revoked)
+          if (uid->flags.revoked)
             continue;
 
           add_to_strlist (&user_id_list, uid->name);
@@ -3480,33 +3537,63 @@ tofu_register_encryption (ctrl_t ctrl,
 
       if (! user_id_list)
         log_info (_("WARNING: Encrypting to %s, which has no "
-                    "non-revoked user ids.\n"),
+                    "non-revoked user ids\n"),
                   keystr (pk->keyid));
     }
 
   fingerprint = hexfingerprint (pk, NULL, 0);
+  if (!fingerprint)
+    {
+      rc = gpg_error_from_syserror ();
+      goto leave;
+    }
 
   tofu_begin_batch_update (ctrl);
+  in_batch = 1;
   tofu_resume_batch_transaction (ctrl);
 
   for (user_id = user_id_list; user_id; user_id = user_id->next)
     {
       char *email = email_from_user_id (user_id->d);
+      strlist_t conflict_set = NULL;
+      enum tofu_policy policy;
 
       /* Make sure the binding exists and that we recognize any
          conflicts.  */
       int tl = get_trust (ctrl, pk, fingerprint, email, user_id->d,
-                          may_ask, now);
+                          may_ask, &policy, &conflict_set, now);
       if (tl == _tofu_GET_TRUST_ERROR)
         {
           /* An error.  */
           rc = gpg_error (GPG_ERR_GENERAL);
           xfree (email);
-          goto die;
+          goto leave;
         }
 
+
+      /* If there is a conflict and MAY_ASK is true, we need to show
+       * the TOFU statistics for the current binding and the
+       * conflicting bindings.  But, if we are not in batch mode, then
+       * they have already been printed (this is required to make sure
+       * the information is available to the caller before cpr_get is
+       * called).  */
+      if (policy == TOFU_POLICY_ASK && may_ask && opt.batch)
+        {
+          strlist_t iter;
+
+          /* The conflict set should contain at least the current
+           * key.  */
+          log_assert (conflict_set);
+
+          for (iter = conflict_set; iter; iter = iter->next)
+            show_statistics (dbs, iter->d, email,
+                             TOFU_POLICY_ASK, NULL, 1, now);
+        }
+
+      free_strlist (conflict_set);
+
       rc = gpgsql_stepx
-        (dbs->db, &dbs->s.register_encryption, NULL, NULL, &err,
+        (dbs->db, &dbs->s.register_encryption, NULL, NULL, &sqlerr,
          "insert into encryptions\n"
          " (binding, time)\n"
          " values\n"
@@ -3518,24 +3605,22 @@ tofu_register_encryption (ctrl_t ctrl,
          GPGSQL_ARG_END);
       if (rc)
         {
-          log_error (_("error updating TOFU database: %s\n"), err);
+          log_error (_("error updating TOFU database: %s\n"), sqlerr);
           print_further_info ("insert encryption");
-          sqlite3_free (err);
+          sqlite3_free (sqlerr);
           rc = gpg_error (GPG_ERR_GENERAL);
         }
 
       xfree (email);
     }
 
- die:
-  tofu_end_batch_update (ctrl);
+ leave:
+  if (in_batch)
+    tofu_end_batch_update (ctrl);
 
-  if (kb)
-    release_kbnode (kb);
-
+  release_kbnode (kb);
   if (free_user_id_list)
     free_strlist (user_id_list);
-
   xfree (fingerprint);
 
   return rc;
@@ -3611,10 +3696,10 @@ tofu_write_tfs_record (ctrl_t ctrl, estream_t fp,
                        PKT_public_key *pk, const char *user_id)
 {
   time_t now = gnupg_get_time ();
-  gpg_error_t err;
+  gpg_error_t err = 0;
   tofu_dbs_t dbs;
   char *fingerprint;
-  char *email;
+  char *email = NULL;
   enum tofu_policy policy;
 
   if (!*user_id)
@@ -3629,14 +3714,20 @@ tofu_write_tfs_record (ctrl_t ctrl, estream_t fp,
     }
 
   fingerprint = hexfingerprint (pk, NULL, 0);
+  if (!fingerprint)
+    {
+      err = gpg_error_from_syserror ();
+      goto leave;
+    }
   email = email_from_user_id (user_id);
-  policy = get_policy (dbs, pk, fingerprint, user_id, email, NULL, now);
+  policy = get_policy (ctrl, dbs, pk, fingerprint, user_id, email, NULL, now);
 
   show_statistics (dbs, fingerprint, email, policy, fp, 0, now);
 
+ leave:
   xfree (email);
   xfree (fingerprint);
-  return 0;
+  return err;
 }
 
 
@@ -3650,7 +3741,10 @@ tofu_write_tfs_record (ctrl_t ctrl, estream_t fp,
    will be prompted to choose a policy.  If MAY_ASK is 0 and the
    policy is TOFU_POLICY_ASK, then TRUST_UNKNOWN is returned.
 
-   Returns TRUST_UNDEFINED if an error occurs.  */
+   Returns TRUST_UNDEFINED if an error occurs.
+
+   Fixme: eturn an error code
+  */
 int
 tofu_get_validity (ctrl_t ctrl, PKT_public_key *pk, strlist_t user_id_list,
 		   int may_ask)
@@ -3663,6 +3757,7 @@ tofu_get_validity (ctrl_t ctrl, PKT_public_key *pk, strlist_t user_id_list,
   int bindings = 0;
   int bindings_valid = 0;
   int need_warning = 0;
+  int had_conflict = 0;
 
   dbs = opendbs (ctrl);
   if (! dbs)
@@ -3673,6 +3768,8 @@ tofu_get_validity (ctrl_t ctrl, PKT_public_key *pk, strlist_t user_id_list,
     }
 
   fingerprint = hexfingerprint (pk, NULL, 0);
+  if (!fingerprint)
+    log_fatal ("%s: malloc failed\n", __func__);
 
   tofu_begin_batch_update (ctrl);
   /* Start the batch transaction now.  */
@@ -3681,11 +3778,13 @@ tofu_get_validity (ctrl_t ctrl, PKT_public_key *pk, strlist_t user_id_list,
   for (user_id = user_id_list; user_id; user_id = user_id->next, bindings ++)
     {
       char *email = email_from_user_id (user_id->d);
+      strlist_t conflict_set = NULL;
+      enum tofu_policy policy;
 
       /* Always call get_trust to make sure the binding is
          registered.  */
       int tl = get_trust (ctrl, pk, fingerprint, email, user_id->d,
-                          may_ask, now);
+                          may_ask, &policy, &conflict_set, now);
       if (tl == _tofu_GET_TRUST_ERROR)
         {
           /* An error.  */
@@ -3708,12 +3807,35 @@ tofu_get_validity (ctrl_t ctrl, PKT_public_key *pk, strlist_t user_id_list,
 
       if (may_ask && tl != TRUST_ULTIMATE && tl != TRUST_EXPIRED)
         {
-          enum tofu_policy policy =
-            get_policy (dbs, pk, fingerprint, user_id->d, email, NULL, now);
+          /* If policy is ask, then we already printed out the
+           * conflict information in ask_about_binding or will do so
+           * in a moment.  */
+          if (policy != TOFU_POLICY_ASK)
+            need_warning |=
+              show_statistics (dbs, fingerprint, email, policy, NULL, 0, now);
 
-          need_warning |=
-            show_statistics (dbs, fingerprint, email, policy, NULL, 0, now);
+          /* If there is a conflict and MAY_ASK is true, we need to
+           * show the TOFU statistics for the current binding and the
+           * conflicting bindings.  But, if we are not in batch mode,
+           * then they have already been printed (this is required to
+           * make sure the information is available to the caller
+           * before cpr_get is called).  */
+          if (policy == TOFU_POLICY_ASK && opt.batch)
+            {
+              strlist_t iter;
+
+              /* The conflict set should contain at least the current
+               * key.  */
+              log_assert (conflict_set);
+
+              had_conflict = 1;
+              for (iter = conflict_set; iter; iter = iter->next)
+                show_statistics (dbs, iter->d, email,
+                                 TOFU_POLICY_ASK, NULL, 1, now);
+            }
         }
+
+      free_strlist (conflict_set);
 
       if (tl == TRUST_NEVER)
         trust_level = TRUST_NEVER;
@@ -3739,7 +3861,7 @@ tofu_get_validity (ctrl_t ctrl, PKT_public_key *pk, strlist_t user_id_list,
       xfree (email);
     }
 
-  if (need_warning)
+  if (need_warning && ! had_conflict)
     show_warning (fingerprint, user_id_list);
 
  die:
@@ -3769,7 +3891,7 @@ tofu_get_validity (ctrl_t ctrl, PKT_public_key *pk, strlist_t user_id_list,
 gpg_error_t
 tofu_set_policy (ctrl_t ctrl, kbnode_t kb, enum tofu_policy policy)
 {
-  gpg_error_t err;
+  gpg_error_t err = 0;
   time_t now = gnupg_get_time ();
   tofu_dbs_t dbs;
   PKT_public_key *pk;
@@ -3793,6 +3915,8 @@ tofu_set_policy (ctrl_t ctrl, kbnode_t kb, enum tofu_policy policy)
     log_bug ("%s: Passed a subkey, but expecting a primary key.\n", __func__);
 
   fingerprint = hexfingerprint (pk, NULL, 0);
+  if (!fingerprint)
+    return gpg_error_from_syserror ();
 
   begin_transaction (ctrl, 0);
 
@@ -3805,7 +3929,7 @@ tofu_set_policy (ctrl_t ctrl, kbnode_t kb, enum tofu_policy policy)
 	continue;
 
       user_id = kb->pkt->pkt.user_id;
-      if (user_id->is_revoked)
+      if (user_id->flags.revoked)
 	/* Skip revoked user ids.  (Don't skip expired user ids, the
 	   expiry can be changed.)  */
 	continue;
@@ -3862,10 +3986,13 @@ tofu_get_policy (ctrl_t ctrl, PKT_public_key *pk, PKT_user_id *user_id,
     }
 
   fingerprint = hexfingerprint (pk, NULL, 0);
+  if (!fingerprint)
+    return gpg_error_from_syserror ();
 
   email = email_from_user_id (user_id->name);
 
-  *policy = get_policy (dbs, pk, fingerprint, user_id->name, email, NULL, now);
+  *policy = get_policy (ctrl, dbs, pk, fingerprint,
+                        user_id->name, email, NULL, now);
 
   xfree (email);
   xfree (fingerprint);
@@ -3897,6 +4024,8 @@ tofu_notice_key_changed (ctrl_t ctrl, kbnode_t kb)
     }
 
   fingerprint = hexfingerprint (pk, NULL, 0);
+  if (!fingerprint)
+    return gpg_error_from_syserror ();
 
   rc = gpgsql_stepx (dbs->db, NULL, NULL, NULL, &sqlerr,
                      "update bindings set effective_policy = ?"

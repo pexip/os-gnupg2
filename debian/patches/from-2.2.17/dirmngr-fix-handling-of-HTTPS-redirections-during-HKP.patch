@@ -1,0 +1,46 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Tue, 11 Jun 2019 08:25:46 +0100
+Subject: dirmngr: fix handling of HTTPS redirections during HKP
+
+* dirmngr/ks-engine-hkp.c (send_request): Reinitialize HTTP session when
+following a HTTP redirection.
+
+--
+inspired by patch from Damien Goutte-Gattat <dgouttegattat@incenp.org>
+
+GnuPG-Bug_id: 4566
+Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+(cherry picked from commit efb6e08ea2ca1cf2d39135d94195802cd69b9ea6)
+---
+ dirmngr/ks-engine-hkp.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/dirmngr/ks-engine-hkp.c b/dirmngr/ks-engine-hkp.c
+index 3ebd651..9ca1cae 100644
+--- a/dirmngr/ks-engine-hkp.c
++++ b/dirmngr/ks-engine-hkp.c
+@@ -1174,6 +1174,7 @@ send_request (ctrl_t ctrl, const char *request, const char *hostportstr,
+   /* FIXME: I am not sure whey we allow a downgrade for hkp requests.
+    * Needs at least an explanation here..  */
+ 
++ once_more:
+   err = http_session_new (&session, httphost,
+                           ((ctrl->http_no_crl? HTTP_FLAG_NO_CRL : 0)
+                            | HTTP_FLAG_TRUST_DEF),
+@@ -1183,7 +1184,6 @@ send_request (ctrl_t ctrl, const char *request, const char *hostportstr,
+   http_session_set_log_cb (session, cert_log_cb);
+   http_session_set_timeout (session, ctrl->timeout);
+ 
+- once_more:
+   err = http_open (&http,
+                    post_cb? HTTP_REQ_POST : HTTP_REQ_GET,
+                    request,
+@@ -1263,6 +1263,8 @@ send_request (ctrl_t ctrl, const char *request, const char *hostportstr,
+         request = request_buffer;
+         http_close (http, 0);
+         http = NULL;
++        http_session_release (session);
++        session = NULL;
+       }
+       goto once_more;
+ 

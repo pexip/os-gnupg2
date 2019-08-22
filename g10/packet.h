@@ -22,14 +22,14 @@
 #ifndef G10_PACKET_H
 #define G10_PACKET_H
 
-#include "types.h"
+#include "../common/types.h"
 #include "../common/iobuf.h"
 #include "../common/strlist.h"
 #include "dek.h"
 #include "filter.h"
 #include "../common/openpgpdefs.h"
 #include "../common/userids.h"
-#include "util.h"
+#include "../common/util.h"
 
 #define DEBUG_PARSE_PACKET 1
 
@@ -230,6 +230,7 @@ typedef struct
   const byte *trust_regexp;
   struct revocation_key *revkey;
   int numrevkeys;
+  int help_counter;          /* Used internally bu some fucntions.  */
   pka_info_t *pka_info;      /* Malloced PKA data or NULL if not
                                 available.  See also flags.pka_tried. */
   char *signers_uid;         /* Malloced value of the SIGNERS_UID
@@ -280,24 +281,28 @@ typedef struct
   u32 help_key_expire;
   int help_full_count;
   int help_marginal_count;
-  int is_primary;       /* 2 if set via the primary flag, 1 if calculated */
-  int is_revoked;
-  int is_expired;
   u32 expiredate;       /* expires at this date or 0 if not at all */
   prefitem_t *prefs;    /* list of preferences (may be NULL)*/
   u32 created;          /* according to the self-signature */
+  u32 keyupdate;        /* From the ring trust packet.  */
+  char *updateurl;      /* NULL or the URL of the last update origin.  */
+  byte keyorg;          /* From the ring trust packet.  */
   byte selfsigversion;
   struct
   {
-    /* TODO: Move more flags here */
     unsigned int mdc:1;
     unsigned int ks_modify:1;
     unsigned int compacted:1;
+    unsigned int primary:2; /* 2 if set via the primary flag, 1 if calculated */
+    unsigned int revoked:1;
+    unsigned int expired:1;
   } flags;
+
   char *mbox;   /* NULL or the result of mailbox_from_userid.  */
+
   /* The text contained in the user id packet, which is normally the
-     name and email address of the key holder (See RFC 4880 5.11).
-     (Serialized.). For convenience an extra Nul is always appended.  */
+   * name and email address of the key holder (See RFC 4880 5.11).
+   * (Serialized.). For convenience an extra Nul is always appended.  */
   char name[1];
 } PKT_user_id;
 
@@ -403,6 +408,9 @@ typedef struct
   u32     trust_timestamp;
   byte    trust_depth;
   byte    trust_value;
+  byte    keyorg;         /* From the ring trust packet.  */
+  u32     keyupdate;      /* From the ring trust packet.  */
+  char    *updateurl;     /* NULL or the URL of the last update origin.  */
   const byte *trust_regexp;
   char    *serialno;      /* Malloced hex string or NULL if it is
                              likely not on a card.  See also
@@ -421,7 +429,7 @@ typedef struct
    there is no disable value cached, fill one in. */
 #define pk_is_disabled(a)                                       \
   (((a)->flags.disabled_valid)?                                 \
-   ((a)->flags.disabled):(cache_disabled_value((a))))
+   ((a)->flags.disabled):(cache_disabled_value(ctrl,(a))))
 
 
 typedef struct {
@@ -475,10 +483,27 @@ typedef struct {
     byte hash[20];
 } PKT_mdc;
 
+
+/* Subtypes for the ring trust packet.  */
+#define RING_TRUST_SIG 0  /* The classical signature cache.  */
+#define RING_TRUST_KEY 1  /* A KEYORG on a primary key.      */
+#define RING_TRUST_UID 2  /* A KEYORG on a user id.          */
+
+/* The local only ring trust packet which OpenPGP declares as
+ * implementation defined.  GnuPG uses this to cache signature
+ * verification status and since 2.1.18 also to convey information
+ * about the origin of a key.  Note that this packet is not part
+ * struct packet_struct because we use it only local in the packet
+ * parser and builder. */
 typedef struct {
-    unsigned int trustval;
-    unsigned int sigcache;
+  unsigned int trustval;
+  unsigned int sigcache;
+  unsigned char subtype; /* The subtype of this ring trust packet.   */
+  unsigned char keyorg;  /* The origin of the key (KEYORG_*).        */
+  u32 keyupdate;         /* The wall time the key was last updated.  */
+  char *url;             /* NULL or the URL of the source.           */
 } PKT_ring_trust;
+
 
 /* A plaintext packet (see RFC 4880, 5.9).  */
 typedef struct {
@@ -520,7 +545,6 @@ struct packet_struct {
 	PKT_compressed	*compressed;	/* PKT_COMPRESSED */
 	PKT_encrypted	*encrypted;	/* PKT_ENCRYPTED[_MDC] */
 	PKT_mdc 	*mdc;		/* PKT_MDC */
-	PKT_ring_trust	*ring_trust;	/* PKT_RING_TRUST */
 	PKT_plaintext	*plaintext;	/* PKT_PLAINTEXT */
         PKT_gpg_control *gpg_control;   /* PKT_GPG_CONTROL */
     } pkt;
@@ -581,7 +605,13 @@ int proc_signature_packets_by_fd (ctrl_t ctrl,
 int proc_encryption_packets (ctrl_t ctrl, void *ctx, iobuf_t a);
 int list_packets( iobuf_t a );
 
+const byte *issuer_fpr_raw (PKT_signature *sig, size_t *r_len);
+char *issuer_fpr_string (PKT_signature *sig);
+
 /*-- parse-packet.c --*/
+
+
+void register_known_notation (const char *string);
 
 /* Sets the packet list mode to MODE (i.e., whether we are dumping a
    packet or not).  Returns the current mode.  This allows for
@@ -593,12 +623,40 @@ int list_packets( iobuf_t a );
 */
 int set_packet_list_mode( int mode );
 
+
+/* A context used with parse_packet.  */
+struct parse_packet_ctx_s
+{
+  iobuf_t inp;       /* The input stream with the packets.  */
+  struct packet_struct last_pkt; /* The last parsed packet.  */
+  int free_last_pkt; /* Indicates that LAST_PKT must be freed.  */
+  int skip_meta;     /* Skip ring trust packets.  */
+  unsigned int n_parsed_packets;	/* Number of parsed packets.  */
+};
+typedef struct parse_packet_ctx_s *parse_packet_ctx_t;
+
+#define init_parse_packet(a,i) do { \
+    (a)->inp = (i);                 \
+    (a)->last_pkt.pkttype = 0;      \
+    (a)->last_pkt.pkt.generic= NULL;\
+    (a)->free_last_pkt = 0;         \
+    (a)->skip_meta = 0;             \
+    (a)->n_parsed_packets = 0;      \
+  } while (0)
+
+#define deinit_parse_packet(a) do { \
+    if ((a)->free_last_pkt)         \
+      free_packet (NULL, (a));      \
+  } while (0)
+
+
 #if DEBUG_PARSE_PACKET
 /* There are debug functions and should not be used directly.  */
-int dbg_search_packet( iobuf_t inp, PACKET *pkt, off_t *retpos, int with_uid,
+int dbg_search_packet (parse_packet_ctx_t ctx, PACKET *pkt,
+                       off_t *retpos, int with_uid,
                        const char* file, int lineno  );
-int dbg_parse_packet( iobuf_t inp, PACKET *ret_pkt,
-                      const char* file, int lineno );
+int dbg_parse_packet (parse_packet_ctx_t ctx, PACKET *ret_pkt,
+                      const char *file, int lineno);
 int dbg_copy_all_packets( iobuf_t inp, iobuf_t out,
                           const char* file, int lineno  );
 int dbg_copy_some_packets( iobuf_t inp, iobuf_t out, off_t stopoff,
@@ -617,51 +675,53 @@ int dbg_skip_some_packets( iobuf_t inp, unsigned n,
              dbg_skip_some_packets((a),(b), __FILE__, __LINE__ )
 #else
 /* Return the next valid OpenPGP packet in *PKT.  (This function will
-   skip any packets whose type is 0.)
-
-   Returns 0 on success, -1 if EOF is reached, and an error code
-   otherwise.  In the case of an error, the packet in *PKT may be
-   partially constructed.  As such, even if there is an error, it is
-   necessary to free *PKT to avoid a resource leak.  To detect what
-   has been allocated, clear *PKT before calling this function.  */
-int parse_packet( iobuf_t inp, PACKET *pkt);
+ * skip any packets whose type is 0.)  CTX must have been setup prior to
+ * calling this function.
+ *
+ * Returns 0 on success, -1 if EOF is reached, and an error code
+ * otherwise.  In the case of an error, the packet in *PKT may be
+ * partially constructed.  As such, even if there is an error, it is
+ * necessary to free *PKT to avoid a resource leak.  To detect what
+ * has been allocated, clear *PKT before calling this function.  */
+int parse_packet (parse_packet_ctx_t ctx, PACKET *pkt);
 
 /* Return the first OpenPGP packet in *PKT that contains a key (either
-   a public subkey, a public key, a secret subkey or a secret key) or,
-   if WITH_UID is set, a user id.
-
-   Saves the position in the pipeline of the start of the returned
-   packet (according to iobuf_tell) in RETPOS, if it is not NULL.
-
-   The return semantics are the same as parse_packet.  */
-int search_packet( iobuf_t inp, PACKET *pkt, off_t *retpos, int with_uid );
+ * a public subkey, a public key, a secret subkey or a secret key) or,
+ * if WITH_UID is set, a user id.
+ *
+ * Saves the position in the pipeline of the start of the returned
+ * packet (according to iobuf_tell) in RETPOS, if it is not NULL.
+ *
+ * The return semantics are the same as parse_packet.  */
+int search_packet (parse_packet_ctx_t ctx, PACKET *pkt,
+                   off_t *retpos, int with_uid);
 
 /* Copy all packets (except invalid packets, i.e., those with a type
-   of 0) from INP to OUT until either an error occurs or EOF is
-   reached.
-
-   Returns -1 when end of file is reached or an error code, if an
-   error occurred.  (Note: this function never returns 0, because it
-   effectively keeps going until it gets an EOF.)  */
-int copy_all_packets( iobuf_t inp, iobuf_t out );
+ * of 0) from INP to OUT until either an error occurs or EOF is
+ * reached.
+ *
+ * Returns -1 when end of file is reached or an error code, if an
+ * error occurred.  (Note: this function never returns 0, because it
+ * effectively keeps going until it gets an EOF.)  */
+int copy_all_packets (iobuf_t inp, iobuf_t out );
 
 /* Like copy_all_packets, but stops at the first packet that starts at
-   or after STOPOFF (as indicated by iobuf_tell).
-
-   Example: if STOPOFF is 100, the first packet in INP goes from 0 to
-   110 and the next packet starts at offset 111, then the packet
-   starting at offset 0 will be completely processed (even though it
-   extends beyond STOPOFF) and the packet starting at offset 111 will
-   not be processed at all.  */
-int copy_some_packets( iobuf_t inp, iobuf_t out, off_t stopoff );
+ * or after STOPOFF (as indicated by iobuf_tell).
+ *
+ * Example: if STOPOFF is 100, the first packet in INP goes from
+ * 0 to 110 and the next packet starts at offset 111, then the packet
+ * starting at offset 0 will be completely processed (even though it
+ * extends beyond STOPOFF) and the packet starting at offset 111 will
+ * not be processed at all.  */
+int copy_some_packets (iobuf_t inp, iobuf_t out, off_t stopoff);
 
 /* Skips the next N packets from INP.
-
-   If parsing a packet returns an error code, then the function stops
-   immediately and returns the error code.  Note: in the case of an
-   error, this function does not indicate how many packets were
-   successfully processed.  */
-int skip_some_packets( iobuf_t inp, unsigned n );
+ *
+ * If parsing a packet returns an error code, then the function stops
+ * immediately and returns the error code.  Note: in the case of an
+ * error, this function does not indicate how many packets were
+ * successfully processed.  */
+int skip_some_packets (iobuf_t inp, unsigned int n);
 #endif
 
 /* Parse a signature packet and store it in *SIG.
@@ -762,7 +822,8 @@ PACKET *create_gpg_control ( ctrlpkttype_t type,
                              size_t datalen );
 
 /*-- build-packet.c --*/
-int build_packet( iobuf_t inp, PACKET *pkt );
+int build_packet (iobuf_t out, PACKET *pkt);
+gpg_error_t build_packet_and_meta (iobuf_t out, PACKET *pkt);
 gpg_error_t gpg_mpi_write (iobuf_t out, gcry_mpi_t a);
 gpg_error_t gpg_mpi_write_nohdr (iobuf_t out, gcry_mpi_t a);
 u32 calc_packet_length( PACKET *pkt );
@@ -788,7 +849,7 @@ void free_public_key( PKT_public_key *key );
 void free_attributes(PKT_user_id *uid);
 void free_user_id( PKT_user_id *uid );
 void free_comment( PKT_comment *rem );
-void free_packet( PACKET *pkt );
+void free_packet (PACKET *pkt, parse_packet_ctx_t parsectx);
 prefitem_t *copy_prefs (const prefitem_t *prefs);
 PKT_public_key *copy_public_key( PKT_public_key *d, PKT_public_key *s );
 PKT_signature *copy_signature( PKT_signature *d, PKT_signature *s );
@@ -801,14 +862,15 @@ int cmp_user_ids( PKT_user_id *a, PKT_user_id *b );
 /*-- sig-check.c --*/
 /* Check a signature.  This is shorthand for check_signature2 with
    the unnamed arguments passed as NULL.  */
-int check_signature (PKT_signature *sig, gcry_md_hd_t digest);
+int check_signature (ctrl_t ctrl, PKT_signature *sig, gcry_md_hd_t digest);
 
 /* Check a signature.  Looks up the public key from the key db.  (If
  * R_PK is not NULL, it is stored at RET_PK.)  DIGEST contains a
  * valid hash context that already includes the signed data.  This
  * function adds the relevant meta-data to the hash before finalizing
  * it and verifying the signature.  */
-gpg_error_t check_signature2 (PKT_signature *sig, gcry_md_hd_t digest,
+gpg_error_t check_signature2 (ctrl_t ctrl,
+                              PKT_signature *sig, gcry_md_hd_t digest,
                               u32 *r_expiredate, int *r_expired, int *r_revoked,
                               PKT_public_key **r_pk);
 
@@ -833,14 +895,16 @@ int ask_for_detached_datafile( gcry_md_hd_t md, gcry_md_hd_t md2,
 			       const char *inname, int textmode );
 
 /*-- sign.c --*/
-int make_keysig_packet( PKT_signature **ret_sig, PKT_public_key *pk,
+int make_keysig_packet (ctrl_t ctrl,
+                        PKT_signature **ret_sig, PKT_public_key *pk,
 			PKT_user_id *uid, PKT_public_key *subpk,
 			PKT_public_key *pksk, int sigclass, int digest_algo,
 			u32 timestamp, u32 duration,
 			int (*mksubpkt)(PKT_signature *, void *),
 			void *opaque,
                         const char *cache_nonce);
-gpg_error_t update_keysig_packet (PKT_signature **ret_sig,
+gpg_error_t update_keysig_packet (ctrl_t ctrl,
+                      PKT_signature **ret_sig,
                       PKT_signature *orig_sig,
                       PKT_public_key *pk,
                       PKT_user_id *uid,

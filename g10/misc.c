@@ -42,6 +42,7 @@
 #include <time.h>
 #include <process.h>
 #ifdef HAVE_WINSOCK2_H
+# define WIN32_LEAN_AND_MEAN 1
 # include <winsock2.h>
 #endif
 #include <windows.h>
@@ -59,15 +60,15 @@
 
 #include "gpg.h"
 #ifdef HAVE_W32_SYSTEM
-# include "status.h"
+# include "../common/status.h"
 #endif /*HAVE_W32_SYSTEM*/
-#include "util.h"
+#include "../common/util.h"
 #include "main.h"
 #include "photoid.h"
 #include "options.h"
 #include "call-agent.h"
-#include "i18n.h"
-#include "zb32.h"
+#include "../common/i18n.h"
+#include "../common/zb32.h"
 
 
 #ifdef ENABLE_SELINUX_HACKS
@@ -473,8 +474,8 @@ map_cipher_openpgp_to_gcry (cipher_algo_t algo)
 #else
     case CIPHER_ALGO_CAMELLIA256: return 0;
 #endif
+    default: return 0;
     }
-  return 0;
 }
 
 /* The inverse function of above.  */
@@ -509,7 +510,7 @@ map_pk_gcry_to_openpgp (enum gcry_pk_algos algo)
     {
     case GCRY_PK_ECDSA:  return PUBKEY_ALGO_ECDSA;
     case GCRY_PK_ECDH:   return PUBKEY_ALGO_ECDH;
-    default: return algo < 110 ? algo : 0;
+    default: return algo < 110 ? (pubkey_algo_t)algo : 0;
     }
 }
 
@@ -522,7 +523,7 @@ openpgp_cipher_blocklen (cipher_algo_t algo)
      block length.  This is so that the packet parsing code works even
      for unknown algorithms (for which we assume 8 due to tradition).
 
-     NOTE: If you change the the returned blocklen above 16, check
+     NOTE: If you change the returned blocklen above 16, check
      the callers because they may use a fixed size buffer of that
      size. */
   switch (algo)
@@ -565,7 +566,6 @@ openpgp_cipher_algo_name (cipher_algo_t algo)
 {
   switch (algo)
     {
-    case CIPHER_ALGO_NONE:        break;
     case CIPHER_ALGO_IDEA:        return "IDEA";
     case CIPHER_ALGO_3DES:	  return "3DES";
     case CIPHER_ALGO_CAST5:	  return "CAST5";
@@ -577,8 +577,9 @@ openpgp_cipher_algo_name (cipher_algo_t algo)
     case CIPHER_ALGO_CAMELLIA128: return "CAMELLIA128";
     case CIPHER_ALGO_CAMELLIA192: return "CAMELLIA192";
     case CIPHER_ALGO_CAMELLIA256: return "CAMELLIA256";
+    case CIPHER_ALGO_NONE:
+    default: return "?";
     }
-  return "?";
 }
 
 
@@ -636,11 +637,14 @@ openpgp_pk_test_algo2 (pubkey_algo_t algo, unsigned int use)
       if (RFC2440)
         ga = GCRY_PK_ELG;
       break;
+
+    default:
+      break;
     }
   if (!ga)
     return gpg_error (GPG_ERR_PUBKEY_ALGO);
 
-  /* No check whether Libgcrypt has support for the algorithm.  */
+  /* Now check whether Libgcrypt has support for the algorithm.  */
   return gcry_pk_algo_info (ga, GCRYCTL_TEST_ALGO, NULL, &use_buf);
 }
 
@@ -699,8 +703,8 @@ openpgp_pk_algo_name (pubkey_algo_t algo)
     case PUBKEY_ALGO_ECDH:      return "ECDH";
     case PUBKEY_ALGO_ECDSA:     return "ECDSA";
     case PUBKEY_ALGO_EDDSA:     return "EDDSA";
+    default: return "?";
     }
-  return "?";
 }
 
 
@@ -744,8 +748,8 @@ map_md_openpgp_to_gcry (digest_algo_t algo)
 #else
     case DIGEST_ALGO_SHA512: return 0;
 #endif
+    default: return 0;
     }
-  return 0;
 }
 
 
@@ -1239,24 +1243,6 @@ default_compress_algo(void)
     return DEFAULT_COMPRESS_ALGO;
 }
 
-const char *
-compliance_option_string(void)
-{
-  char *ver="???";
-
-  switch(opt.compliance)
-    {
-    case CO_GNUPG:   return "--gnupg";
-    case CO_RFC4880: return "--openpgp";
-    case CO_RFC2440: return "--rfc2440";
-    case CO_PGP6:    return "--pgp6";
-    case CO_PGP7:    return "--pgp7";
-    case CO_PGP8:    return "--pgp8";
-    case CO_DE_VS:   return "--compliance=de-vs";
-    }
-
-  return ver;
-}
 
 void
 compliance_failure(void)
@@ -1564,8 +1550,8 @@ pubkey_get_npkey (pubkey_algo_t algo)
     case PUBKEY_ALGO_ECDSA:     return 2;
     case PUBKEY_ALGO_ELGAMAL:   return 3;
     case PUBKEY_ALGO_EDDSA:     return 2;
+    default: return 0;
     }
-  return 0;
 }
 
 
@@ -1584,8 +1570,8 @@ pubkey_get_nskey (pubkey_algo_t algo)
     case PUBKEY_ALGO_ECDSA:     return 3;
     case PUBKEY_ALGO_ELGAMAL:   return 4;
     case PUBKEY_ALGO_EDDSA:     return 3;
+    default: return 0;
     }
-  return 0;
 }
 
 /* Temporary helper. */
@@ -1603,8 +1589,8 @@ pubkey_get_nsig (pubkey_algo_t algo)
     case PUBKEY_ALGO_ECDSA:     return 2;
     case PUBKEY_ALGO_ELGAMAL:   return 2;
     case PUBKEY_ALGO_EDDSA:     return 2;
+    default: return 0;
     }
-  return 0;
 }
 
 
@@ -1623,8 +1609,8 @@ pubkey_get_nenc (pubkey_algo_t algo)
     case PUBKEY_ALGO_ECDSA:     return 0;
     case PUBKEY_ALGO_ELGAMAL:   return 2;
     case PUBKEY_ALGO_EDDSA:     return 0;
+    default: return 0;
     }
-  return 0;
 }
 
 

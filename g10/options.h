@@ -22,12 +22,13 @@
 #define G10_OPTIONS_H
 
 #include <sys/types.h>
-#include <types.h>
+#include "../common/types.h"
 #include <stdint.h>
 #include "main.h"
 #include "packet.h"
 #include "tofu.h"
 #include "../common/session-env.h"
+#include "../common/compliance.h"
 
 #ifndef EXTERN_UNLESS_MAIN_MODULE
 /* Norcraft can't cope with common symbols */
@@ -84,13 +85,12 @@ struct
   int with_tofu_info;   /* Option --with-tofu_info active.  */
   int with_secret;      /* Option --with-secret active.  */
   int with_wkd_hash;    /* Option --with-wkd-hash.  */
+  int with_key_origin;  /* Option --with-key-origin.  */
   int fingerprint; /* list fingerprints */
   int list_sigs;   /* list signatures */
   int no_armor;
   int list_packets; /* Option --list-packets active.  */
   int def_cipher_algo;
-  int force_mdc;
-  int disable_mdc;
   int def_digest_algo;
   int cert_digest_algo;
   int compress_algo;
@@ -119,6 +119,7 @@ struct
   int max_cert_depth;
   const char *agent_program;
   const char *dirmngr_program;
+  int disable_dirmngr;
 
   const char *def_new_key_algo;
 
@@ -139,16 +140,11 @@ struct
     } trust_model;
   enum tofu_policy tofu_default_policy;
   int force_ownertrust;
-  enum
-    {
-      CO_GNUPG, CO_RFC4880, CO_RFC2440,
-      CO_PGP6, CO_PGP7, CO_PGP8, CO_DE_VS
-    } compliance;
+  enum gnupg_compliance_mode compliance;
   enum
     {
       KF_DEFAULT, KF_NONE, KF_SHORT, KF_LONG, KF_0xSHORT, KF_0xLONG
     } keyid_format;
-  int shm_coprocess;
   const char *set_filename;
   strlist_t comments;
   int throw_keyids;
@@ -182,7 +178,6 @@ struct
   prefitem_t *personal_compress_prefs;
   struct weakhash *weak_digests;
   int no_perm_warn;
-  int no_mdc_warn;
   char *temp_dir;
   int no_encrypt_to;
   int encrypt_to_default_key;
@@ -244,7 +239,7 @@ struct
     unsigned int allow_weak_digest_algos:1;
     unsigned int large_rsa:1;
     unsigned int disable_signer_uid:1;
-    /* Flag to enbale experimental features from RFC4880bis.  */
+    /* Flag to enable experimental features from RFC4880bis.  */
     unsigned int rfc4880bis:1;
   } flags;
 
@@ -267,11 +262,18 @@ struct
     struct akl *next;
   } *auto_key_locate;
 
+  /* The value of --key-origin.  See parse_key_origin().  */
+  int key_origin;
+  char *key_origin_url;
+
   int passphrase_repeat;
   int pinentry_mode;
+  int request_origin;
 
   int unwrap_encryption;
   int only_sign_text_ids;
+
+  int no_symkey_cache;   /* Disable the cache used for --symmetric.  */
 } opt;
 
 /* CTRL is used to keep some global variables we currently can't
@@ -350,6 +352,8 @@ EXTERN_UNLESS_MAIN_MODULE int memory_stat_debug_mode;
 #define IMPORT_KEEP_OWNERTTRUST          (1<<8)
 #define IMPORT_EXPORT                    (1<<9)
 #define IMPORT_RESTORE                   (1<<10)
+#define IMPORT_REPAIR_KEYS               (1<<11)
+#define IMPORT_DRY_RUN                   (1<<12)
 
 #define EXPORT_LOCAL_SIGS                (1<<0)
 #define EXPORT_ATTRIBUTES                (1<<1)
@@ -374,6 +378,7 @@ EXTERN_UNLESS_MAIN_MODULE int memory_stat_debug_mode;
 #define LIST_SHOW_SIG_EXPIRE             (1<<9)
 #define LIST_SHOW_SIG_SUBPACKETS         (1<<10)
 #define LIST_SHOW_USAGE                  (1<<11)
+#define LIST_SHOW_ONLY_FPR_MBOX          (1<<12)
 
 #define VERIFY_SHOW_PHOTOS               (1<<0)
 #define VERIFY_SHOW_POLICY_URLS          (1<<1)

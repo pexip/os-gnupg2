@@ -18,12 +18,13 @@
 
 ## Process this file with automake to produce Makefile.in
 
-EXTRA_DIST = options.skel dirmngr-conf.skel distsigkey.gpg \
+EXTRA_DIST = distsigkey.gpg \
 	     ChangeLog-2011 gpg-w32info.rc \
 	     gpg.w32-manifest.in test.c t-keydb-keyring.kbx \
-	     t-keydb-get-keyblock.gpg t-stutter-data.asc
+	     t-keydb-get-keyblock.gpg t-stutter-data.asc \
+	     all-tests.scm
 
-AM_CPPFLAGS = -I$(top_srcdir)/common
+AM_CPPFLAGS =
 
 include $(top_srcdir)/am/cmacros.am
 
@@ -54,6 +55,8 @@ noinst_PROGRAMS += gpgcompose
 endif
 noinst_PROGRAMS += $(module_tests)
 TESTS = $(module_tests)
+TESTS_ENVIRONMENT = \
+	abs_top_srcdir=$(abs_top_srcdir)
 
 if ENABLE_BZIP2_SUPPORT
 bzip2_source = compress-bz2.c
@@ -74,7 +77,7 @@ trust_source = trustdb.c trustdb.h tdbdump.c tdbio.c tdbio.h
 endif
 
 if USE_TOFU
-tofu_source = tofu.h tofu.c gpgsql.c gpgsql.h sqrtu32.c sqrtu32.h
+tofu_source = tofu.h tofu.c gpgsql.c gpgsql.h
 else
 tofu_source =
 endif
@@ -147,10 +150,12 @@ gpg_sources = server.c          \
 	      call-agent.c call-agent.h \
 	      trust.c $(trust_source) $(tofu_source) \
 	      $(card_source) \
-	      exec.c exec.h
+	      exec.c exec.h \
+              key-clean.c key-clean.h \
+	      key-check.c key-check.h
 
 gpg_SOURCES  = gpg.c \
-	keyedit.c 	\
+	keyedit.c keyedit.h	\
 	$(gpg_sources)
 
 gpgcompose_SOURCES  = gpgcompose.c  $(gpg_sources)
@@ -238,18 +243,12 @@ install-exec-hook:
 
 install-data-local:
 	$(mkinstalldirs) $(DESTDIR)$(pkgdatadir)
-	$(INSTALL_DATA) $(srcdir)/options.skel \
-				$(DESTDIR)$(pkgdatadir)/gpg-conf.skel
-	$(INSTALL_DATA) $(srcdir)/dirmngr-conf.skel \
-				$(DESTDIR)$(pkgdatadir)/dirmngr-conf.skel
 	$(INSTALL_DATA) $(srcdir)/distsigkey.gpg \
 				$(DESTDIR)$(pkgdatadir)/distsigkey.gpg
 
 # NB: For uninstalling gpg and gpgv we use -local because there is
 # no need for a specific order the targets need to be run.
 uninstall-local:
-	-@rm $(DESTDIR)$(pkgdatadir)/gpg-conf.skel
-	-@rm $(DESTDIR)$(pkgdatadir)/dirmngr-conf.skel
 	-@rm $(DESTDIR)$(pkgdatadir)/distsigkey.gpg
 	-@files=`for p in $(gpg2_hack_uninst); do echo "$$p"; done | \
 	  sed -e 'h;s,^.*/,,;s/$(EXEEXT)$$//;$(transform)' \
