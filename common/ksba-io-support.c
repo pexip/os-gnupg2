@@ -1,14 +1,25 @@
-/* base64.c
- * Copyright (C) 2001, 2003, 2010 Free Software Foundation, Inc.
+/* kska-io-support.c - Supporting functions for ksba reader and writer
+ * Copyright (C) 2001-2005, 2007, 2010-2011, 2017  Werner Koch
+ * Copyright (C) 2006  g10 Code GmbH
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
+ * This file is free software; you can redistribute it and/or modify
+ * it under the terms of either
  *
- * GnuPG is distributed in the hope that it will be useful,
+ *   - the GNU Lesser General Public License as published by the Free
+ *     Software Foundation; either version 3 of the License, or (at
+ *     your option) any later version.
+ *
+ * or
+ *
+ *   - the GNU General Public License as published by the Free
+ *     Software Foundation; either version 2 of the License, or (at
+ *     your option) any later version.
+ *
+ * or both in parallel, as here.
+ *
+ * This file is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
@@ -25,19 +36,19 @@
 #include <unistd.h>
 #include <time.h>
 #include <assert.h>
-
-#include "gpgsm.h"
-
-
 #include <ksba.h>
 
+#include "util.h"
 #include "i18n.h"
+#include "ksba-io-support.h"
+
 
 #ifdef HAVE_DOSISH_SYSTEM
   #define LF "\r\n"
 #else
   #define LF "\n"
 #endif
+
 
 /* Data used by the reader callbacks.  */
 struct reader_cb_parm_s
@@ -76,7 +87,7 @@ struct writer_cb_parm_s
 {
   estream_t stream;    /* Output stream.  */
 
-  const char *pem_name;
+  char *pem_name;      /* Malloced.  */
 
   int wrote_begin;
   int did_finish;
@@ -90,8 +101,8 @@ struct writer_cb_parm_s
 };
 
 
-/* context for this module's functions */
-struct base64_context_s {
+/* Context for this module's functions.  */
+struct gnupg_ksba_io_s {
   union {
     struct reader_cb_parm_s rparm;
     struct writer_cb_parm_s wparm;
@@ -464,7 +475,7 @@ base64_writer_cb (void *cb_value, const void *buffer, size_t count)
 }
 
 
-/* This callback is only used in stream mode.  Hiowever, we don't
+/* This callback is only used in stream mode.  However, we don't
    restrict it to this.  */
 static int
 plain_writer_cb (void *cb_value, const void *buffer, size_t count)
@@ -539,18 +550,30 @@ base64_finish_write (struct writer_cb_parm_s *parm)
 
 
 
-/* Create a reader for the given file descriptor.  Depending on the
-   control information an input decoding is automagically chosen.
-   The function returns a Base64Context object which must be passed to
-   the gpgme_destroy_reader function.  The created KsbaReader object
-   is also returned, but the caller must not call the
-   ksba_reader_release function on.  If ALLOW_MULTI_PEM is true, the
-   reader expects that the caller uses ksba_reader_clear after EOF
-   until no more objects were found. */
-int
-gpgsm_create_reader (Base64Context *ctx,
-                     ctrl_t ctrl, estream_t fp, int allow_multi_pem,
-                     ksba_reader_t *r_reader)
+/* Create a reader for the stream FP.  FLAGS can be used to specify
+ * the expected input encoding.
+ *
+ * The function returns a gnupg_ksba_io_t object which must be passed to
+ * the gpgme_destroy_reader function.  The created ksba_reader_t
+ * object is stored at R_READER - the caller must not call the
+ * ksba_reader_release function on.
+ *
+ * The supported flags are:
+ *
+ * GNUPG_KSBA_IO_PEM        - Assume the input is PEM encoded
+ * GNUPG_KSBA_IO_BASE64     - Assume the input is Base64 encoded.
+ * GNUPG_KSBA_IO_AUTODETECT - The reader tries to detect the encoding.
+ * GNUPG_KSBA_IO_MULTIPEM   - The reader expects that the caller uses
+ *                            ksba_reader_clear after EOF until no more
+ *                            objects were found.
+ *
+ * Note that the PEM flag has a higher priority than the BASE64 flag
+ * which in turn has a gight priority than the AUTODETECT flag.
+ */
+gpg_error_t
+gnupg_ksba_create_reader (gnupg_ksba_io_t *ctx,
+                          unsigned int flags, estream_t fp,
+                          ksba_reader_t *r_reader)
 {
   int rc;
   ksba_reader_t r;
@@ -559,7 +582,7 @@ gpgsm_create_reader (Base64Context *ctx,
   *ctx = xtrycalloc (1, sizeof **ctx);
   if (!*ctx)
     return out_of_core ();
-  (*ctx)->u.rparm.allow_multi_pem = allow_multi_pem;
+  (*ctx)->u.rparm.allow_multi_pem = !!(flags & GNUPG_KSBA_IO_MULTIPEM);
 
   rc = ksba_reader_new (&r);
   if (rc)
@@ -569,18 +592,18 @@ gpgsm_create_reader (Base64Context *ctx,
     }
 
   (*ctx)->u.rparm.fp = fp;
-  if (ctrl->is_pem)
+  if ((flags & GNUPG_KSBA_IO_PEM))
     {
       (*ctx)->u.rparm.assume_pem = 1;
       (*ctx)->u.rparm.assume_base64 = 1;
       rc = ksba_reader_set_cb (r, base64_reader_cb, &(*ctx)->u.rparm);
     }
-  else if (ctrl->is_base64)
+  else if ((flags & GNUPG_KSBA_IO_BASE64))
     {
       (*ctx)->u.rparm.assume_base64 = 1;
       rc = ksba_reader_set_cb (r, base64_reader_cb, &(*ctx)->u.rparm);
     }
-  else if (ctrl->autodetect_encoding)
+  else if ((flags & GNUPG_KSBA_IO_AUTODETECT))
     {
       (*ctx)->u.rparm.autodetect = 1;
       rc = ksba_reader_set_cb (r, base64_reader_cb, &(*ctx)->u.rparm);
@@ -601,14 +624,17 @@ gpgsm_create_reader (Base64Context *ctx,
 }
 
 
+/* Return True if an EOF as been seen.  */
 int
-gpgsm_reader_eof_seen (Base64Context ctx)
+gnupg_ksba_reader_eof_seen (gnupg_ksba_io_t ctx)
 {
   return ctx && ctx->u.rparm.eof_seen;
 }
 
+
+/* Destroy a reader object.  */
 void
-gpgsm_destroy_reader (Base64Context ctx)
+gnupg_ksba_destroy_reader (gnupg_ksba_io_t ctx)
 {
   if (!ctx)
     return;
@@ -619,15 +645,27 @@ gpgsm_destroy_reader (Base64Context ctx)
 
 
 
-/* Create a writer for the given STREAM.  Depending on
-   the control information an output encoding is automagically
-   chosen.  The function returns a Base64Context object which must be
-   passed to the gpgme_destroy_writer function.  The created
-   KsbaWriter object is also returned, but the caller must not call
-   the ksba_reader_release function on it. */
-int
-gpgsm_create_writer (Base64Context *ctx, ctrl_t ctrl, estream_t stream,
-                     ksba_writer_t *r_writer)
+/* Create a writer for the given STREAM.  Depending on FLAGS an output
+ * encoding is chosen.  In PEM mode PEM_NAME is used for the header
+ * and footer lines; if PEM_NAME is NULL the string "CMS OBJECT" is
+ * used.
+ *
+ * The function returns a gnupg_ksba_io_t object which must be passed to
+ * the gpgme_destroy_writer function.  The created ksba_writer_t
+ * object is stored at R_WRITER - the caller must not call the
+ * ksba_reader_release function on it.
+ *
+ * The supported flags are:
+ *
+ * GNUPG_KSBA_IO_PEM    - Write output as PEM
+ * GNUPG_KSBA_IO_BASE64 - Write output as plain Base64; note that the PEM
+ *                        flag overrides this flag.
+ *
+ */
+gpg_error_t
+gnupg_ksba_create_writer (gnupg_ksba_io_t *ctx, unsigned int flags,
+                          const char *pem_name, estream_t stream,
+                          ksba_writer_t *r_writer)
 {
   int rc;
   ksba_writer_t w;
@@ -635,7 +673,7 @@ gpgsm_create_writer (Base64Context *ctx, ctrl_t ctrl, estream_t stream,
   *r_writer = NULL;
   *ctx = xtrycalloc (1, sizeof **ctx);
   if (!*ctx)
-    return out_of_core ();
+    return gpg_error_from_syserror ();
 
   rc = ksba_writer_new (&w);
   if (rc)
@@ -644,12 +682,22 @@ gpgsm_create_writer (Base64Context *ctx, ctrl_t ctrl, estream_t stream,
       return rc;
     }
 
-  if (ctrl->create_pem || ctrl->create_base64)
+  if ((flags & GNUPG_KSBA_IO_PEM) || (flags & GNUPG_KSBA_IO_BASE64))
     {
       (*ctx)->u.wparm.stream = stream;
-      if (ctrl->create_pem)
-        (*ctx)->u.wparm.pem_name = ctrl->pem_name? ctrl->pem_name
-                                                 : "CMS OBJECT";
+      if ((flags & GNUPG_KSBA_IO_PEM))
+        {
+          (*ctx)->u.wparm.pem_name = xtrystrdup (pem_name
+                                                 ? pem_name
+                                                 : "CMS OBJECT");
+          if (!(*ctx)->u.wparm.pem_name)
+            {
+              rc = gpg_error_from_syserror ();
+              ksba_writer_release (w);
+              xfree (*ctx); *ctx = NULL;
+              return rc;
+            }
+        }
       rc = ksba_writer_set_cb (w, base64_writer_cb, &(*ctx)->u.wparm);
     }
   else if (stream)
@@ -673,8 +721,10 @@ gpgsm_create_writer (Base64Context *ctx, ctrl_t ctrl, estream_t stream,
 }
 
 
-int
-gpgsm_finish_writer (Base64Context ctx)
+/* Flush a writer.  This is for example required to write the padding
+ * or the PEM footer.  */
+gpg_error_t
+gnupg_ksba_finish_writer (gnupg_ksba_io_t ctx)
 {
   struct writer_cb_parm_s *parm;
 
@@ -689,12 +739,15 @@ gpgsm_finish_writer (Base64Context ctx)
   return base64_finish_write (parm);
 }
 
+
+/* Destroy a writer object.  */
 void
-gpgsm_destroy_writer (Base64Context ctx)
+gnupg_ksba_destroy_writer (gnupg_ksba_io_t ctx)
 {
   if (!ctx)
     return;
 
   ksba_writer_release (ctx->u2.writer);
+  xfree (ctx->u.wparm.pem_name);
   xfree (ctx);
 }

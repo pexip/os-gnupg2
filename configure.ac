@@ -1,6 +1,6 @@
 # configure.ac - for GnuPG 2.1
-# Copyright (C) 1998-2012 Free Software Foundation, Inc.
-# Copyright (C) 1998-2016 Werner Koch
+# Copyright (C) 1998-2018 Free Software Foundation, Inc.
+# Copyright (C) 1998-2018 Werner Koch
 #
 # This file is part of GnuPG.
 #
@@ -27,8 +27,8 @@ min_automake_version="1.14"
 # another commit and push so that the git magic is able to work.
 m4_define([mym4_package],[gnupg])
 m4_define([mym4_major], [2])
-m4_define([mym4_minor], [1])
-m4_define([mym4_micro], [18])
+m4_define([mym4_minor], [2])
+m4_define([mym4_micro], [12])
 
 # To start a new development series, i.e a new major or minor number
 # you need to mark an arbitrary commit before the first beta release
@@ -49,13 +49,17 @@ m4_define([mym4_revision_dec], m4_argn(8, mym4_verslist))
 m4_esyscmd([echo ]mym4_version[>VERSION])
 AC_INIT([mym4_package],[mym4_version], [https://bugs.gnupg.org])
 
+# When changing the SWDB tag please also adjust the hard coded tags in
+# build-aux/speedo.mk and Makefile.am
+AC_DEFINE_UNQUOTED(GNUPG_SWDB_TAG, "gnupg22", [swdb tag for this branch])
+
 NEED_GPG_ERROR_VERSION=1.24
 
 NEED_LIBGCRYPT_API=1
 NEED_LIBGCRYPT_VERSION=1.7.0
 
 NEED_LIBASSUAN_API=2
-NEED_LIBASSUAN_VERSION=2.4.3
+NEED_LIBASSUAN_VERSION=2.5.0
 
 NEED_KSBA_API=1
 NEED_KSBA_VERSION=1.3.4
@@ -85,12 +89,6 @@ AB_INIT
 
 AC_GNU_SOURCE
 
-# Before we do anything with the C compiler, we first save the user's
-# CFLAGS (they are restored at the end of the configure script).  This
-# is because some configure checks don't work with -Werror, but we'd
-# like to use -Werror with our build.
-CFLAGS_orig=$CFLAGS
-CFLAGS=
 
 # Some status variables.
 have_gpg_error=no
@@ -118,7 +116,6 @@ use_tls_library=no
 large_secmem=no
 show_tor_support=no
 
-
 GNUPG_BUILD_PROGRAM(gpg, yes)
 GNUPG_BUILD_PROGRAM(gpgsm, yes)
 # The agent is a required part and can't be disabled anymore.
@@ -126,13 +123,15 @@ build_agent=yes
 GNUPG_BUILD_PROGRAM(scdaemon, yes)
 GNUPG_BUILD_PROGRAM(g13, no)
 GNUPG_BUILD_PROGRAM(dirmngr, yes)
-GNUPG_BUILD_PROGRAM(tools, yes)
 GNUPG_BUILD_PROGRAM(doc, yes)
 GNUPG_BUILD_PROGRAM(symcryptrun, no)
 # We use gpgtar to unpack test data, hence we always build it.  If the
 # user opts out, we simply don't install it.
 GNUPG_BUILD_PROGRAM(gpgtar, yes)
-GNUPG_BUILD_PROGRAM(wks-tools, no)
+# We also install the gpg-wks-server tool by default but disable it
+# later for platforms where it can't be build.
+GNUPG_BUILD_PROGRAM(wks-tools, yes)
+
 
 AC_SUBST(PACKAGE)
 AC_SUBST(PACKAGE_GT)
@@ -209,20 +208,18 @@ show_gnupg_dirmngr_ldap_pgm="(default)"
 test -n "$GNUPG_DIRMNGR_LDAP_PGM" \
       && show_gnupg_dirmngr_ldap_pgm="$GNUPG_DIRMNGR_LDAP_PGM"
 
+
 #
-# On some platforms gpg2 is usually installed as gpg without using a
-# symlink.  For correct operation of gpgconf it needs to know the
-# installed name of gpg.  This option sets "gpg2"'s installed name to
-# just "gpg".  Note that it might be required to rename gpg2 to gpg
-# manually after the build process.
+# For a long time gpg 2.x was installed as gpg2.  This changed with
+# 2.2.  This option can be used to install gpg under the name gpg2.
 #
-AC_ARG_ENABLE(gpg2-is-gpg,
-    AC_HELP_STRING([--enable-gpg2-is-gpg],[Set installed name of gpg2 to gpg]),
-    gpg2_is_gpg=$enableval)
-if test "$gpg2_is_gpg" != "yes"; then
+AC_ARG_ENABLE(gpg-is-gpg2,
+    AC_HELP_STRING([--enable-gpg-is-gpg2],[Set installed name of gpg to gpg2]),
+    gpg_is_gpg2=$enableval)
+if test "$gpg_is_gpg2" = "yes"; then
    AC_DEFINE(USE_GPG2_HACK, 1, [Define to install gpg as gpg2])
 fi
-AM_CONDITIONAL(USE_GPG2_HACK, test "$gpg2_is_gpg" != "yes")
+AM_CONDITIONAL(USE_GPG2_HACK, test "$gpg_is_gpg2" = "yes")
 
 
 # SELinux support includes tracking of sensitive files to avoid
@@ -248,6 +245,15 @@ else
 fi
 AC_DEFINE_UNQUOTED(SECMEM_BUFFER_SIZE,$SECMEM_BUFFER_SIZE,
                    [Size of secure memory buffer])
+
+AC_MSG_CHECKING([calibrated passphrase-stretching (s2k) duration])
+AC_ARG_WITH(agent-s2k-calibration,
+              AC_HELP_STRING([--with-agent-s2k-calibration=MSEC],
+                             [calibrate passphrase stretching (s2k) to MSEC milliseconds]),
+              agent_s2k_calibration=$withval, agent_s2k_calibration=100)
+AC_MSG_RESULT($agent_s2k_calibration milliseconds)
+AC_DEFINE_UNQUOTED(AGENT_S2K_CALIBRATION, $agent_s2k_calibration,
+                   [Agent s2k calibration time (ms)])
 
 AC_MSG_CHECKING([whether to enable trust models])
 AC_ARG_ENABLE(trust-models,
@@ -487,7 +493,8 @@ AH_BOTTOM([
 #define SAFE_VERSION_DOT  '.'
 #define SAFE_VERSION_DASH '-'
 
-/* Some global constants. */
+/* Some global constants.
+ * Note that the homedir must not end in a slash.  */
 #ifdef HAVE_DOSISH_SYSTEM
 # ifdef HAVE_DRIVE_LETTERS
 #  define GNUPG_DEFAULT_HOMEDIR "c:/gnupg"
@@ -606,6 +613,9 @@ AC_PROG_RANLIB
 AC_CHECK_TOOL(AR, ar, :)
 AC_PATH_PROG(PERL,"perl")
 AC_CHECK_TOOL(WINDRES, windres, :)
+AC_PATH_PROG(YAT2M, "yat2m")
+AC_ARG_VAR(YAT2M, [tool to convert texi to man pages])
+AM_CONDITIONAL(HAVE_YAT2M, test -n "$ac_cv_path_YAT2M")
 AC_ISC_POSIX
 AC_SYS_LARGEFILE
 GNUPG_CHECK_USTAR
@@ -640,6 +650,7 @@ have_android_system=no
 use_simple_gettext=no
 use_ldapwrapper=yes
 mmap_needed=yes
+require_pipe_to_unblock_pselect=yes
 case "${host}" in
     *-mingw32*)
         # special stuff for Windoze NT
@@ -653,7 +664,7 @@ case "${host}" in
         have_dosish_system=yes
         have_w32_system=yes
         require_iconv=no
-        use_ldapwrapper=no  # Fixme: Do this only for CE.
+        require_pipe_to_unblock_pselect=no
         case "${host}" in
           *-mingw32ce*)
             have_w32ce_system=yes
@@ -666,6 +677,7 @@ case "${host}" in
         try_gettext="no"
 	use_simple_gettext=yes
 	mmap_needed=no
+        build_wks_tools=no
         ;;
     i?86-emx-os2 | i?86-*-os2*emx )
         # OS/2 with the EMX environment
@@ -673,6 +685,7 @@ case "${host}" in
         AC_DEFINE(HAVE_DRIVE_LETTERS)
         have_dosish_system=yes
         try_gettext="no"
+        build_wks_tools=no
         ;;
 
     i?86-*-msdosdjgpp*)
@@ -681,6 +694,7 @@ case "${host}" in
         AC_DEFINE(HAVE_DRIVE_LETTERS)
         have_dosish_system=yes
         try_gettext="no"
+        build_wks_tools=no
         ;;
 
     *-*-hpux*)
@@ -711,10 +725,25 @@ case "${host}" in
         # Android is fully utf-8 and we do not want to use iconv to
         # keeps things simple
         require_iconv=no
+        build_wks_tools=no
+        ;;
+    *-apple-darwin*)
+        AC_DEFINE(_DARWIN_C_SOURCE, 900000L,
+                  Expose all libc features (__DARWIN_C_FULL).)
+        ;;
+    *-*-netbsd*)
+        require_pipe_to_unblock_pselect=yes
         ;;
     *)
-       ;;
+        ;;
 esac
+
+if test "$require_pipe_to_unblock_pselect" = yes; then
+   AC_DEFINE(HAVE_PSELECT_NO_EINTR, 1,
+             [Defined if we run on systems like NetBSD, where
+              pselect cannot be unblocked by signal from a thread
+              within the same process.  We use pipe in this case, instead.])
+fi
 
 if test "$have_dosish_system" = yes; then
    AC_DEFINE(HAVE_DOSISH_SYSTEM,1,
@@ -817,7 +846,8 @@ if test x"$LIBUSB_NAME" != x ; then
                   have_libusb=yes ])
    AC_MSG_CHECKING([libusb include dir])
    usb_incdir_found="no"
-   for _incdir in "" "/usr/include/libusb-1.0" "/usr/local/include/libusb-1.0"; do
+   for _incdir in "" "/usr/include/libusb-1.0" \
+       "/usr/local/include/libusb-1.0" "/usr/pkg/include/libusb-1.0"; do
      _libusb_save_cppflags=$CPPFLAGS
      if test -n "${_incdir}"; then
        CPPFLAGS="-I${_incdir} ${CPPFLAGS}"
@@ -854,7 +884,7 @@ AC_SUBST(LIBUSB_LIBS)
 AC_SUBST(LIBUSB_CPPFLAGS)
 
 #
-# Check wether it is necessary to link against libdl.
+# Check whether it is necessary to link against libdl.
 # (For example to load libpcsclite)
 #
 gnupg_dlopen_save_libs="$LIBS"
@@ -948,6 +978,17 @@ else
 *** we need the support of the New Portable Threads Library.
 ***]])
 fi
+#
+# Enable debugging of nPth
+#
+AC_ARG_ENABLE(npth-debug,
+   AC_HELP_STRING([--enable-npth-debug],
+                  [build with debug version of npth]),
+                  [if test $enableval = yes ; then
+                     AC_DEFINE(NPTH_ENABLE_DEBUG,1,
+                              [Build with debug version of nPth])
+                  fi])
+
 
 
 #
@@ -988,6 +1029,22 @@ else
 ***
 *** $tmp]])
   fi
+fi
+
+#
+# Allow to set a fixed trust store file for system provided certificates.
+#
+AC_ARG_WITH([default-trust-store-file],
+            [AC_HELP_STRING([--with-default-trust-store-file=FILE],
+                            [Use FILE as system trust store])],
+            default_trust_store_file="$withval",
+            default_trust_store_file="")
+if test x"$default_trust_store_file" = xno;then
+  default_trust_store_file=""
+fi
+if test x"$default_trust_store_file" != x ; then
+  AC_DEFINE_UNQUOTED([DEFAULT_TRUST_STORE_FILE],
+    ["$default_trust_store_file"], [Use as default system trust store file])
 fi
 
 
@@ -1258,7 +1315,9 @@ AC_MSG_NOTICE([checking for header files])
 AC_HEADER_STDC
 AC_CHECK_HEADERS([string.h unistd.h langinfo.h termio.h locale.h getopt.h \
                   pty.h utmp.h pwd.h inttypes.h signal.h sys/select.h     \
-                  stdint.h signal.h])
+                  stdint.h signal.h util.h libutil.h termios.h \
+                  ucred.h sys/ucred.h sys/sysmacros.h sys/mkdev.h])
+
 AC_HEADER_TIME
 
 
@@ -1331,18 +1390,17 @@ AC_CHECK_DECLS(getpagesize)
 AC_FUNC_FSEEKO
 AC_FUNC_VPRINTF
 AC_FUNC_FORK
-AC_CHECK_FUNCS([strerror strlwr tcgetattr mmap canonicalize_file_name])
-AC_CHECK_FUNCS([strcasecmp strncasecmp ctermid times gmtime_r strtoull])
-AC_CHECK_FUNCS([setenv unsetenv fcntl ftruncate inet_ntop])
-AC_CHECK_FUNCS([canonicalize_file_name])
-AC_CHECK_FUNCS([gettimeofday getrusage getrlimit setrlimit clock_gettime])
-AC_CHECK_FUNCS([atexit raise getpagesize strftime nl_langinfo setlocale])
-AC_CHECK_FUNCS([waitpid wait4 sigaction sigprocmask pipe getaddrinfo])
-AC_CHECK_FUNCS([ttyname rand ftello fsync stat lstat])
-AC_CHECK_FUNCS([memicmp stpcpy strsep strlwr strtoul memmove stricmp strtol \
-                memrchr isascii timegm getrusage setrlimit stat setlocale   \
-                flockfile funlockfile getpwnam getpwuid \
-                getenv inet_pton strpbrk])
+AC_CHECK_FUNCS([atexit canonicalize_file_name clock_gettime ctermid  \
+                explicit_bzero fcntl flockfile fsync ftello          \
+                ftruncate funlockfile getaddrinfo getenv getpagesize \
+                getpwnam getpwuid getrlimit getrusage gettimeofday   \
+                gmtime_r inet_ntop inet_pton isascii lstat memicmp   \
+                memmove memrchr mmap nl_langinfo pipe raise rand     \
+                setenv setlocale setrlimit sigaction sigprocmask     \
+                stat stpcpy strcasecmp strerror strftime stricmp     \
+                strlwr strncasecmp strpbrk strsep strtol strtoul     \
+                strtoull tcgetattr timegm times ttyname unsetenv     \
+                wait4 waitpid ])
 
 # On some systems (e.g. Solaris) nanosleep requires linking to librl.
 # Given that we use nanosleep only as an optimization over a select
@@ -1372,8 +1430,19 @@ AC_CHECK_TYPES([struct sigaction, sigset_t],,,[#include <signal.h>])
 
 # Dirmngr requires mmap on Unix systems.
 if test $ac_cv_func_mmap != yes -a $mmap_needed = yes; then
-  AC_MSG_ERROR([[Sorry, the current implemenation requires mmap.]])
+  AC_MSG_ERROR([[Sorry, the current implementation requires mmap.]])
 fi
+
+
+#
+# Check for the getsockopt SO_PEERCRED, etc.
+#
+AC_CHECK_MEMBERS([struct ucred.pid, struct ucred.cr_pid, struct sockpeercred.pid], [], [], [#include <sys/types.h>
+#include <sys/socket.h> ])
+
+# (Open)Solaris
+AC_CHECK_FUNCS([getpeerucred])
+
 
 #
 # W32 specific test
@@ -1508,6 +1577,11 @@ if test "$development_version" = yes; then
             [Defined if this is not a regular release])
 fi
 
+if test "$USE_MAINTAINER_MODE" = "yes"; then
+    AC_DEFINE(MAINTAINER_MODE,1,
+            [Defined if this build is in maintainer mode])
+fi
+
 AM_CONDITIONAL(CROSS_COMPILING, test x$cross_compiling = xyes)
 
 GNUPG_CHECK_GNUMAKE
@@ -1538,7 +1612,7 @@ if test "$GCC" = yes; then
     mycflags=
     mycflags_save=$CFLAGS
 
-    # Check whether gcc does not emit a diagnositc for unknow -Wno-*
+    # Check whether gcc does not emit a diagnositc for unknown -Wno-*
     # options.  This is the case for gcc >= 4.6
     AC_MSG_CHECKING([if gcc ignores unknown -Wno-* options])
     AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
@@ -1575,12 +1649,20 @@ if test "$GCC" = yes; then
           mycflags="$mycflags -Wdeclaration-after-statement"
         fi
 
-        AC_MSG_CHECKING([if gcc supports -Wlogical-op and -Wvla])
-        CFLAGS="-Wlogical-op -Wvla"
+        AC_MSG_CHECKING([if gcc supports -Wlogical-op])
+        CFLAGS="-Wlogical-op -Werror"
         AC_COMPILE_IFELSE([AC_LANG_PROGRAM([],[])],_gcc_wopt=yes,_gcc_wopt=no)
         AC_MSG_RESULT($_gcc_wopt)
         if test x"$_gcc_wopt" = xyes ; then
-          mycflags="$mycflags -Wlogical-op -Wvla"
+          mycflags="$mycflags -Wlogical-op"
+        fi
+
+        AC_MSG_CHECKING([if gcc supports -Wvla])
+        CFLAGS="-Wvla"
+        AC_COMPILE_IFELSE([AC_LANG_PROGRAM([],[])],_gcc_wopt=yes,_gcc_wopt=no)
+        AC_MSG_RESULT($_gcc_wopt)
+        if test x"$_gcc_wopt" = xyes ; then
+          mycflags="$mycflags -Wvla"
         fi
 
     else
@@ -1630,9 +1712,60 @@ AC_ARG_ENABLE(optimization,
                    fi])
 
 #
-# Add user CFLAGS.
+# Add -Werror to CFLAGS.  This hack can be used to avoid problems with
+# misbehaving autoconf tests in case the user supplied -Werror.
 #
-CFLAGS="$CFLAGS $CFLAGS_orig"
+AC_ARG_ENABLE(werror,
+   AC_HELP_STRING([--enable-werror],
+                  [append -Werror to CFLAGS]),
+                  [if test $enableval = yes ; then
+                      CFLAGS="$CFLAGS -Werror"
+                   fi])
+
+#
+# Configure option --enable-all-tests
+#
+AC_MSG_CHECKING([whether "make check" shall run all tests])
+AC_ARG_ENABLE(all-tests,
+              AC_HELP_STRING([--enable-all-tests],
+                             [let "make check" run all tests]),
+              run_all_tests=$enableval, run_all_tests=no)
+AC_MSG_RESULT($run_all_tests)
+if test "$run_all_tests" = "yes"; then
+    AC_DEFINE(RUN_ALL_TESTS,1,
+            [Defined if "make check" shall run all tests])
+fi
+
+#
+# We do not want support for the GNUPG_BUILDDIR environment variable
+# in a released version.  However, our regression tests suite requires
+# this and thus we build with support for it during "make distcheck".
+# This configure option implements this along with the top Makefile's
+# AM_DISTCHECK_CONFIGURE_FLAGS.
+#
+gnupg_builddir_envvar=no
+AC_ARG_ENABLE(gnupg-builddir-envvar,,
+              gnupg_builddir_envvar=$enableval)
+if test x"$gnupg_builddir_envvar" = x"yes"; then
+   AC_DEFINE(ENABLE_GNUPG_BUILDDIR_ENVVAR, 1,
+      [This is only used with "make distcheck"])
+fi
+
+
+#
+# To avoid problems with systemd cleaning up the /run/user directory,
+# this option will make GnuPG try to use /run/gnupg/user as socket dir
+# before /run/user
+#
+AC_ARG_ENABLE(run-gnupg-user-socket,
+    AC_HELP_STRING([--enable-run-gnupg-user-socket],
+                   [try /run/gnupg/user for sockets prior to /run/user]),
+    use_run_gnupg_user_socket=$enableval)
+if test x"$use_run_gnupg_user_socket" = x"yes"; then
+   AC_DEFINE(USE_RUN_GNUPG_USER_SOCKET, 1,
+            [If defined try /run/gnupg/user before /run/user])
+fi
+
 
 #
 # Decide what to build
@@ -1658,7 +1791,6 @@ AM_CONDITIONAL(BUILD_AGENT,       test "$build_agent" = "yes")
 AM_CONDITIONAL(BUILD_SCDAEMON,    test "$build_scdaemon" = "yes")
 AM_CONDITIONAL(BUILD_G13,         test "$build_g13" = "yes")
 AM_CONDITIONAL(BUILD_DIRMNGR,     test "$build_dirmngr" = "yes")
-AM_CONDITIONAL(BUILD_TOOLS,       test "$build_tools" = "yes")
 AM_CONDITIONAL(BUILD_DOC,         test "$build_doc" = "yes")
 AM_CONDITIONAL(BUILD_SYMCRYPTRUN, test "$build_symcryptrun" = "yes")
 AM_CONDITIONAL(BUILD_GPGTAR,      test "$build_gpgtar" = "yes")
@@ -1684,7 +1816,7 @@ if test "$build_scdaemon" = yes ; then
     AC_DEFINE(BUILD_WITH_SCDAEMON,1,[Defined if SCDAEMON is to be build])
 fi
 if test "$build_dirmngr" = yes ; then
-    AC_DEFINE(BUILD_WITH_DIRMNGR,1,[Defined if SCDAEMON is to be build])
+    AC_DEFINE(BUILD_WITH_DIRMNGR,1,[Defined if DIRMNGR is to be build])
 fi
 if test "$build_g13" = yes ; then
     AC_DEFINE(BUILD_WITH_G13,1,[Defined if G13 is to be build])
@@ -1744,7 +1876,7 @@ AC_DEFINE_UNQUOTED(DIRMNGR_DEFAULT_KEYSERVER,
 AC_DEFINE_UNQUOTED(GPGEXT_GPG, "gpg", [The standard binary file suffix])
 
 if test "$have_w32_system" = yes; then
-  AC_DEFINE_UNQUOTED(GNUPG_REGISTRY_DIR, "\\\\Software\\\\GNU\\\\GnuPG",
+  AC_DEFINE_UNQUOTED(GNUPG_REGISTRY_DIR, "Software\\\\GNU\\\\GnuPG",
                      [The directory part of the W32 registry keys])
 fi
 
@@ -1794,7 +1926,7 @@ if test "$have_gpg_error" = "no"; then
 ***
 *** You need libgpg-error to build this program.
 **  This library is for example available at
-***   ftp://ftp.gnupg.org/gcrypt/libgpg-error
+***   https://gnupg.org/ftp/gcrypt/libgpg-error
 *** (at least version $NEED_GPG_ERROR_VERSION is required.)
 ***]])
 fi
@@ -1804,7 +1936,7 @@ if test "$have_libgcrypt" = "no"; then
 ***
 *** You need libgcrypt to build this program.
 **  This library is for example available at
-***   ftp://ftp.gnupg.org/gcrypt/libgcrypt/
+***   https://gnupg.org/ftp/gcrypt/libgcrypt/
 *** (at least version $NEED_LIBGCRYPT_VERSION (API $NEED_LIBGCRYPT_API) is required.)
 ***]])
 fi
@@ -1814,7 +1946,7 @@ if test "$have_libassuan" = "no"; then
 ***
 *** You need libassuan to build this program.
 *** This library is for example available at
-***   ftp://ftp.gnupg.org/gcrypt/libassuan/
+***   https://gnupg.org/ftp/gcrypt/libassuan/
 *** (at least version $NEED_LIBASSUAN_VERSION (API $NEED_LIBASSUAN_API) is required).
 ***]])
 fi
@@ -1824,7 +1956,7 @@ if test "$have_ksba" = "no"; then
 ***
 *** You need libksba to build this program.
 *** This library is for example available at
-***   ftp://ftp.gnupg.org/gcrypt/libksba/
+***   https://gnupg.org/ftp/gcrypt/libksba/
 *** (at least version $NEED_KSBA_VERSION using API $NEED_KSBA_API is required).
 ***]])
 fi
@@ -1845,7 +1977,7 @@ if test "$have_npth" = "no"; then
 *** It is now required to build with support for the
 *** New Portable Threads Library (nPth). Please install this
 *** library first.  The library is for example available at
-***   ftp://ftp.gnupg.org/gcrypt/npth/
+***   https://gnupg.org/ftp/gcrypt/npth/
 *** (at least version $NEED_NPTH_VERSION (API $NEED_NPTH_API) is required).
 ***]])
 fi
@@ -1858,7 +1990,7 @@ if test "$require_iconv" = yes; then
 *** The system does not provide a working iconv function.  Please
 *** install a suitable library; for example GNU Libiconv which is
 *** available at:
-***   http://ftp.gnu.org/gnu/libiconv/
+***   https://ftp.gnu.org/gnu/libiconv/
 ***]])
   fi
 fi

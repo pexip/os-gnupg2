@@ -3,6 +3,7 @@
 #ifndef _SCHEME_PRIVATE_H
 #define _SCHEME_PRIVATE_H
 
+#include <stdint.h>
 #include "scheme.h"
 /*------------------ Ugly internals -----------------------------------*/
 /*------------------ Of interest only to FFI users --------------------*/
@@ -27,10 +28,6 @@ typedef struct port {
     struct {
       FILE *file;
       int closeit;
-#if SHOW_ERROR_LINE
-      pointer curr_line;
-      pointer filename;
-#endif
     } stdio;
     struct {
       char *start;
@@ -38,23 +35,31 @@ typedef struct port {
       char *curr;
     } string;
   } rep;
+#if SHOW_ERROR_LINE
+  pointer curr_line;
+  pointer filename;
+#endif
 } port;
 
 /* cell structure */
 struct cell {
-  unsigned int _flag;
+  uintptr_t _flag;
   union {
+    num _number;
     struct {
       char   *_svalue;
       int   _length;
     } _string;
-    num _number;
     port *_port;
     foreign_func _ff;
     struct {
       struct cell *_car;
       struct cell *_cdr;
     } _cons;
+    struct {
+      size_t _length;
+      pointer _elements[0];
+    } _vector;
     struct {
          char *_data;
          const foreign_object_vtable *_vtable;
@@ -103,18 +108,21 @@ int tracing;
 #ifndef CELL_SEGSIZE
 #define CELL_SEGSIZE    5000  /* # of cells in one segment */
 #endif
-#ifndef CELL_NSEGMENT
-#define CELL_NSEGMENT   10    /* # of segments for cells */
+
+/* If less than # of cells are recovered in a garbage collector run,
+ * allocate a new cell segment to avoid fruitless collection cycles in
+ * the near future.  */
+#ifndef CELL_MINRECOVER
+#define CELL_MINRECOVER    (CELL_SEGSIZE >> 2)
 #endif
-void *alloc_seg[CELL_NSEGMENT];
-pointer cell_seg[CELL_NSEGMENT];
-int     last_cell_seg;
+struct cell_segment *cell_segments;
 
 /* We use 4 registers. */
 pointer args;            /* register for arguments of function */
 pointer envir;           /* stack register for current environment */
 pointer code;            /* register for current code */
 pointer dump;            /* stack register for next evaluation */
+pointer frame_freelist;
 
 #if USE_HISTORY
 struct history history;  /* we keep track of the call history for
@@ -150,12 +158,6 @@ pointer ERROR_HOOK;      /* *error-hook* */
 pointer SHARP_HOOK;  /* *sharp-hook* */
 #if USE_COMPILE_HOOK
 pointer COMPILE_HOOK;  /* *compile-hook* */
-#endif
-
-#if USE_SMALL_INTEGERS
-/* A fixed allocation of small integers.  */
-void *integer_alloc;
-pointer integer_cells;
 #endif
 
 pointer free_cell;       /* pointer to top of free cells */
@@ -195,18 +197,17 @@ FILE *tmpfp;
 int tok;
 int print_flag;
 pointer value;
-int op;
 unsigned int flags;
 
 void *ext_data;     /* For the benefit of foreign functions */
 long gensym_cnt;
 
-struct scheme_interface *vptr;
+const struct scheme_interface *vptr;
 };
 
 /* operator code */
 enum scheme_opcodes {
-#define _OP_DEF(A,B,C,D,E,OP) OP,
+#define _OP_DEF(A,B,C,D,OP) OP,
 #include "opdefines.h"
   OP_MAXDEFINED
 };

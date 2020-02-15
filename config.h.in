@@ -5,6 +5,9 @@
 #define GNUPG_CONFIG_H_INCLUDED
 
 
+/* Agent s2k calibration time (ms) */
+#undef AGENT_S2K_CALIBRATION
+
 /* Defined if the host has big endian byte ordering */
 #undef BIG_ENDIAN_HOST
 
@@ -20,7 +23,7 @@
 /* Defined if GPG-AGENT is to be build */
 #undef BUILD_WITH_AGENT
 
-/* Defined if SCDAEMON is to be build */
+/* Defined if DIRMNGR is to be build */
 #undef BUILD_WITH_DIRMNGR
 
 /* Defined if G13 is to be build */
@@ -34,6 +37,9 @@
 
 /* Defined if SCDAEMON is to be build */
 #undef BUILD_WITH_SCDAEMON
+
+/* Use as default system trust store file */
+#undef DEFAULT_TRUST_STORE_FILE
 
 /* The default keyserver for dirmngr to use, if none is explicitly given */
 #undef DIRMNGR_DEFAULT_KEYSERVER
@@ -58,6 +64,9 @@
 
 /* Define to include smartcard support */
 #undef ENABLE_CARD_SUPPORT
+
+/* This is only used with "make distcheck" */
+#undef ENABLE_GNUPG_BUILDDIR_ENVVAR
 
 /* Define to 1 if translation of program messages to the user's native
    language is requested. */
@@ -92,6 +101,9 @@
 
 /* The directory part of the W32 registry keys */
 #undef GNUPG_REGISTRY_DIR
+
+/* swdb tag for this branch */
+#undef GNUPG_SWDB_TAG
 
 /* The displayed name of gpgconf */
 #undef GPGCONF_DISP_NAME
@@ -250,6 +262,9 @@
 /* Defined if the OS supports drive letters. */
 #undef HAVE_DRIVE_LETTERS
 
+/* Define to 1 if you have the `explicit_bzero' function. */
+#undef HAVE_EXPLICIT_BZERO
+
 /* Define to 1 if you have the `fcntl' function. */
 #undef HAVE_FCNTL
 
@@ -285,6 +300,9 @@
 
 /* Define to 1 if you have the `getpagesize' function. */
 #undef HAVE_GETPAGESIZE
+
+/* Define to 1 if you have the `getpeerucred' function. */
+#undef HAVE_GETPEERUCRED
 
 /* Define to 1 if you have the `getpwnam' function. */
 #undef HAVE_GETPWNAM
@@ -361,6 +379,9 @@
 /* defined if libutil is available */
 #undef HAVE_LIBUTIL
 
+/* Define to 1 if you have the <libutil.h> header file. */
+#undef HAVE_LIBUTIL_H
+
 /* Define to 1 if you have the <locale.h> header file. */
 #undef HAVE_LOCALE_H
 
@@ -393,6 +414,11 @@
 
 /* Define to 1 if you have the `pipe' function. */
 #undef HAVE_PIPE
+
+/* Defined if we run on systems like NetBSD, where pselect cannot be unblocked
+   by signal from a thread within the same process. We use pipe in this case,
+   instead. */
+#undef HAVE_PSELECT_NO_EINTR
 
 /* Define to 1 if you have the <pty.h> header file. */
 #undef HAVE_PTY_H
@@ -484,8 +510,20 @@
 /* Define to 1 if the system has the type `struct sigaction'. */
 #undef HAVE_STRUCT_SIGACTION
 
+/* Define to 1 if `pid' is a member of `struct sockpeercred'. */
+#undef HAVE_STRUCT_SOCKPEERCRED_PID
+
+/* Define to 1 if `cr_pid' is a member of `struct ucred'. */
+#undef HAVE_STRUCT_UCRED_CR_PID
+
+/* Define to 1 if `pid' is a member of `struct ucred'. */
+#undef HAVE_STRUCT_UCRED_PID
+
 /* The system's resolver is usable. */
 #undef HAVE_SYSTEM_RESOLVER
+
+/* Define to 1 if you have the <sys/mkdev.h> header file. */
+#undef HAVE_SYS_MKDEV_H
 
 /* Define to 1 if you have the <sys/select.h> header file. */
 #undef HAVE_SYS_SELECT_H
@@ -496,11 +534,20 @@
 /* Define to 1 if you have the <sys/stat.h> header file. */
 #undef HAVE_SYS_STAT_H
 
+/* Define to 1 if you have the <sys/sysmacros.h> header file. */
+#undef HAVE_SYS_SYSMACROS_H
+
 /* Define to 1 if you have the <sys/types.h> header file. */
 #undef HAVE_SYS_TYPES_H
 
+/* Define to 1 if you have the <sys/ucred.h> header file. */
+#undef HAVE_SYS_UCRED_H
+
 /* Define to 1 if you have the `tcgetattr' function. */
 #undef HAVE_TCGETATTR
+
+/* Define to 1 if you have the <termios.h> header file. */
+#undef HAVE_TERMIOS_H
 
 /* Define to 1 if you have the <termio.h> header file. */
 #undef HAVE_TERMIO_H
@@ -520,6 +567,9 @@
 /* Defined if a `u32' is typedef'd */
 #undef HAVE_U32_TYPEDEF
 
+/* Define to 1 if you have the <ucred.h> header file. */
+#undef HAVE_UCRED_H
+
 /* Defined if a `ulong' is typedef'd */
 #undef HAVE_ULONG_TYPEDEF
 
@@ -534,6 +584,9 @@
 
 /* Defined if a `ushort' is typedef'd */
 #undef HAVE_USHORT_TYPEDEF
+
+/* Define to 1 if you have the <util.h> header file. */
+#undef HAVE_UTIL_H
 
 /* Define to 1 if you have the <utmp.h> header file. */
 #undef HAVE_UTMP_H
@@ -589,6 +642,9 @@
 /* Defined if the host has little endian byte ordering */
 #undef LITTLE_ENDIAN_HOST
 
+/* Defined if this build is in maintainer mode */
+#undef MAINTAINER_MODE
+
 /* Defined if mkdir() does not take permission flags */
 #undef MKDIR_TAKES_ONE_ARG
 
@@ -609,6 +665,9 @@
 
 /* Define to include only trust-model always */
 #undef NO_TRUST_MODELS
+
+/* Build with debug version of nPth */
+#undef NPTH_ENABLE_DEBUG
 
 /* Name of this package */
 #undef PACKAGE
@@ -642,6 +701,9 @@
 
 /* Define as the return type of signal handlers (`int' or `void'). */
 #undef RETSIGTYPE
+
+/* Defined if "make check" shall run all tests */
+#undef RUN_ALL_TESTS
 
 /* The displayed name of scdaemon */
 #undef SCDAEMON_DISP_NAME
@@ -700,6 +762,9 @@
 /* Set this to limit filenames to the 8.3 format */
 #undef USE_ONLY_8DOT3
 
+/* If defined try /run/gnupg/user before /run/user */
+#undef USE_RUN_GNUPG_USER_SOCKET
+
 /* Because the Unix gettext has too much overhead on MingW32 systems and these
    systems lack Posix functions, we use a simplified version of gettext */
 #undef USE_SIMPLE_GETTEXT
@@ -731,6 +796,9 @@
 
 /* Version of this package */
 #undef VERSION
+
+/* Expose all libc features (__DARWIN_C_FULL). */
+#undef _DARWIN_C_SOURCE
 
 /* Enable large inode numbers on Mac OS X 10.5.  */
 #ifndef _DARWIN_USE_64_BIT_INODE
@@ -819,7 +887,8 @@
 #define SAFE_VERSION_DOT  '.'
 #define SAFE_VERSION_DASH '-'
 
-/* Some global constants. */
+/* Some global constants.
+ * Note that the homedir must not end in a slash.  */
 #ifdef HAVE_DOSISH_SYSTEM
 # ifdef HAVE_DRIVE_LETTERS
 #  define GNUPG_DEFAULT_HOMEDIR "c:/gnupg"

@@ -28,20 +28,22 @@
 #include "gpg.h"
 #include "options.h"
 #include "packet.h"
-#include "status.h"
-#include "iobuf.h"
+#include "../common/status.h"
+#include "../common/iobuf.h"
 #include "keydb.h"
-#include "util.h"
+#include "../common/util.h"
 #include "main.h"
 #include "filter.h"
 #include "trustdb.h"
-#include "i18n.h"
-#include "status.h"
+#include "../common/i18n.h"
+#include "../common/status.h"
 #include "pkglue.h"
+#include "../common/compliance.h"
 
 
 static int encrypt_simple( const char *filename, int mode, int use_seskey );
-static int write_pubkey_enc_from_list( PK_LIST pk_list, DEK *dek, iobuf_t out );
+static int write_pubkey_enc_from_list (ctrl_t ctrl,
+                                       PK_LIST pk_list, DEK *dek, iobuf_t out);
 
 /****************
  * Encrypt FILENAME with only the symmetric cipher.  Take input from
@@ -107,57 +109,20 @@ encrypt_seskey (DEK *dek, DEK **seskey, byte *enckey)
 }
 
 
-/* We try very hard to use a MDC */
+/* Shall we use the MDC?  Yes - unless rfc-2440 compatibility is
+ * requested. */
 int
 use_mdc (pk_list_t pk_list,int algo)
 {
-  /* RFC-2440 don't has MDC */
+  (void)pk_list;
+  (void)algo;
+
+  /* RFC-2440 don't has MDC - this is the only way to create a legacy
+   * non-MDC encryption packet.  */
   if (RFC2440)
     return 0;
 
-  /* --force-mdc overrides --disable-mdc */
-  if(opt.force_mdc)
-    return 1;
-
-  if(opt.disable_mdc)
-    return 0;
-
-  /* Do the keys really support MDC? */
-
-  if(select_mdc_from_pklist(pk_list))
-    return 1;
-
-  /* The keys don't support MDC, so now we do a bit of a hack - if any
-     of the AESes or TWOFISH are in the prefs, we assume that the user
-     can handle a MDC.  This is valid for PGP 7, which can handle MDCs
-     though it will not generate them.  2440bis allows this, by the
-     way. */
-
-  if(select_algo_from_prefs(pk_list,PREFTYPE_SYM,
-			    CIPHER_ALGO_AES,NULL)==CIPHER_ALGO_AES)
-    return 1;
-
-  if(select_algo_from_prefs(pk_list,PREFTYPE_SYM,
-			    CIPHER_ALGO_AES192,NULL)==CIPHER_ALGO_AES192)
-    return 1;
-
-  if(select_algo_from_prefs(pk_list,PREFTYPE_SYM,
-			    CIPHER_ALGO_AES256,NULL)==CIPHER_ALGO_AES256)
-    return 1;
-
-  if(select_algo_from_prefs(pk_list,PREFTYPE_SYM,
-			    CIPHER_ALGO_TWOFISH,NULL)==CIPHER_ALGO_TWOFISH)
-    return 1;
-
-  /* Last try.  Use MDC for the modern ciphers. */
-
-  if (openpgp_cipher_get_algo_blklen (algo) != 8)
-    return 1;
-
-  if (opt.verbose)
-    warn_missing_mdc_from_pklist (pk_list);
-
-  return 0; /* No MDC */
+  return 1; /* In all other cases we use the MDC */
 }
 
 
@@ -182,6 +147,16 @@ encrypt_simple (const char *filename, int mode, int use_seskey)
   text_filter_context_t tfx;
   progress_filter_context_t *pfx;
   int do_compress = !!default_compress_algo();
+
+  if (!gnupg_rng_is_compliant (opt.compliance))
+    {
+      rc = gpg_error (GPG_ERR_FORBIDDEN);
+      log_error (_("%s is not compliant with %s mode\n"),
+                 "RNG",
+                 gnupg_compliance_option_string (opt.compliance));
+      write_status_error ("random-compliance", rc);
+      return rc;
+    }
 
   pfx = new_progress_context ();
   memset( &cfx, 0, sizeof cfx);
@@ -319,7 +294,7 @@ encrypt_simple (const char *filename, int mode, int use_seskey)
            && !overflow && opt.verbose)
         log_info(_("WARNING: '%s' is an empty file\n"), filename );
       /* We can't encode the length of very large files because
-         OpenPGP uses only 32 bit for file sizes.  So if the the
+         OpenPGP uses only 32 bit for file sizes.  So if the
          size of a file is larger than 2^32 minus some bytes for
          packet headers, we switch to partial length encoding. */
       if ( tmpsize < (IOBUF_FILELENGTH_LIMIT - 65536) )
@@ -394,7 +369,7 @@ encrypt_simple (const char *filename, int mode, int use_seskey)
     }
   if (pt)
     pt->buf = NULL;
-  free_packet (&pkt);
+  free_packet (&pkt, NULL);
   xfree (cfx.dek);
   xfree (s2k);
   release_armor_context (afx);
@@ -461,7 +436,7 @@ write_symkey_enc (STRING2KEY *symkey_s2k, DEK *symkey_dek, DEK *dek,
  * The caller may provide a checked list of public keys in
  * PROVIDED_PKS; if not the function builds a list of keys on its own.
  *
- * Note that FILEFD is currently only used by cmd_encrypt in the the
+ * Note that FILEFD is currently only used by cmd_encrypt in the
  * not yet finished server.c.
  */
 int
@@ -484,6 +459,7 @@ encrypt_crypt (ctrl_t ctrl, int filefd, const char *filename,
   progress_filter_context_t *pfx;
   PK_LIST pk_list;
   int do_compress;
+  int compliant;
 
   if (filefd != -1 && filename)
     return gpg_error (GPG_ERR_INV_ARG);  /* Both given.  */
@@ -611,6 +587,58 @@ encrypt_crypt (ctrl_t ctrl, int filefd, const char *filename,
       cfx.dek->algo = opt.def_cipher_algo;
     }
 
+  /* Check compliance.  */
+  if (! gnupg_cipher_is_allowed (opt.compliance, 1, cfx.dek->algo,
+                                 GCRY_CIPHER_MODE_CFB))
+    {
+      log_error (_("cipher algorithm '%s' may not be used in %s mode\n"),
+		 openpgp_cipher_algo_name (cfx.dek->algo),
+		 gnupg_compliance_option_string (opt.compliance));
+      rc = gpg_error (GPG_ERR_CIPHER_ALGO);
+      goto leave;
+    }
+
+  if (!gnupg_rng_is_compliant (opt.compliance))
+    {
+      rc = gpg_error (GPG_ERR_FORBIDDEN);
+      log_error (_("%s is not compliant with %s mode\n"),
+                 "RNG",
+                 gnupg_compliance_option_string (opt.compliance));
+      write_status_error ("random-compliance", rc);
+      goto leave;
+    }
+
+  compliant = gnupg_cipher_is_compliant (CO_DE_VS, cfx.dek->algo,
+                                         GCRY_CIPHER_MODE_CFB);
+
+  {
+    pk_list_t pkr;
+
+    for (pkr = pk_list; pkr; pkr = pkr->next)
+      {
+        PKT_public_key *pk = pkr->pk;
+        unsigned int nbits = nbits_from_pk (pk);
+
+        if (!gnupg_pk_is_compliant (opt.compliance,
+                                    pk->pubkey_algo, pk->pkey, nbits, NULL))
+          log_info (_("WARNING: key %s is not suitable for encryption"
+                      " in %s mode\n"),
+                    keystr_from_pk (pk),
+                    gnupg_compliance_option_string (opt.compliance));
+
+        if (compliant
+            && !gnupg_pk_is_compliant (CO_DE_VS, pk->pubkey_algo, pk->pkey,
+                                       nbits, NULL))
+          compliant = 0;
+      }
+
+  }
+
+  if (compliant)
+    write_status_strings (STATUS_ENCRYPTION_COMPLIANCE_MODE,
+                          gnupg_status_compliance_flag (CO_DE_VS),
+                          NULL);
+
   cfx.dek->use_mdc = use_mdc (pk_list,cfx.dek->algo);
 
   /* Only do the is-file-already-compressed check if we are using a
@@ -634,7 +662,7 @@ encrypt_crypt (ctrl_t ctrl, int filefd, const char *filename,
   if (DBG_CRYPTO)
     log_printhex ("DEK is: ", cfx.dek->key, cfx.dek->keylen );
 
-  rc = write_pubkey_enc_from_list (pk_list, cfx.dek, out);
+  rc = write_pubkey_enc_from_list (ctrl, pk_list, cfx.dek, out);
   if (rc)
     goto leave;
 
@@ -659,7 +687,7 @@ encrypt_crypt (ctrl_t ctrl, int filefd, const char *filename,
            && !overflow && opt.verbose)
         log_info(_("WARNING: '%s' is an empty file\n"), filename );
       /* We can't encode the length of very large files because
-         OpenPGP uses only 32 bit for file sizes.  So if the the size
+         OpenPGP uses only 32 bit for file sizes.  So if the size
          of a file is larger than 2^32 minus some bytes for packet
          headers, we switch to partial length encoding. */
       if (tmpsize < (IOBUF_FILELENGTH_LIMIT - 65536) )
@@ -755,7 +783,7 @@ encrypt_crypt (ctrl_t ctrl, int filefd, const char *filename,
     }
   if (pt)
     pt->buf = NULL;
-  free_packet (&pkt);
+  free_packet (&pkt, NULL);
   xfree (cfx.dek);
   xfree (symkey_dek);
   xfree (symkey_s2k);
@@ -828,7 +856,8 @@ encrypt_filter (void *opaque, int control,
           if (DBG_CRYPTO)
             log_printhex ("DEK is: ", efx->cfx.dek->key, efx->cfx.dek->keylen);
 
-          rc = write_pubkey_enc_from_list (efx->pk_list, efx->cfx.dek, a);
+          rc = write_pubkey_enc_from_list (efx->ctrl,
+                                           efx->pk_list, efx->cfx.dek, a);
           if (rc)
             return rc;
 
@@ -864,7 +893,8 @@ encrypt_filter (void *opaque, int control,
  * Write a pubkey-enc packet for the public key PK to OUT.
  */
 int
-write_pubkey_enc (PKT_public_key *pk, int throw_keyid, DEK *dek, iobuf_t out)
+write_pubkey_enc (ctrl_t ctrl,
+                  PKT_public_key *pk, int throw_keyid, DEK *dek, iobuf_t out)
 {
   PACKET pkt;
   PKT_pubkey_enc *enc;
@@ -899,7 +929,7 @@ write_pubkey_enc (PKT_public_key *pk, int throw_keyid, DEK *dek, iobuf_t out)
     {
       if ( opt.verbose )
         {
-          char *ustr = get_user_id_string_native (enc->keyid);
+          char *ustr = get_user_id_string_native (ctrl, enc->keyid);
           log_info (_("%s/%s encrypted for: \"%s\"\n"),
                     openpgp_pk_algo_name (enc->pubkey_algo),
                     openpgp_cipher_algo_name (dek->algo),
@@ -924,12 +954,13 @@ write_pubkey_enc (PKT_public_key *pk, int throw_keyid, DEK *dek, iobuf_t out)
  * Write pubkey-enc packets from the list of PKs to OUT.
  */
 static int
-write_pubkey_enc_from_list (PK_LIST pk_list, DEK *dek, iobuf_t out)
+write_pubkey_enc_from_list (ctrl_t ctrl, PK_LIST pk_list, DEK *dek, iobuf_t out)
 {
   if (opt.throw_keyids && (PGP6 || PGP7 || PGP8))
     {
-      log_info(_("you may not use %s while in %s mode\n"),
-               "--throw-keyids",compliance_option_string());
+      log_info(_("option '%s' may not be used in %s mode\n"),
+               "--throw-keyids",
+               gnupg_compliance_option_string (opt.compliance));
       compliance_failure();
     }
 
@@ -937,7 +968,7 @@ write_pubkey_enc_from_list (PK_LIST pk_list, DEK *dek, iobuf_t out)
     {
       PKT_public_key *pk = pk_list->pk;
       int throw_keyid = (opt.throw_keyids || (pk_list->flags&1));
-      int rc = write_pubkey_enc (pk, throw_keyid, dek, out);
+      int rc = write_pubkey_enc (ctrl, pk, throw_keyid, dek, out);
       if (rc)
         return rc;
     }

@@ -1,3 +1,657 @@
+Noteworthy changes in version 2.2.12 (2018-12-14)
+-------------------------------------------------
+
+  * tools: New commands --install-key and --remove-key for
+    gpg-wks-client.  This allows to prepare a Web Key Directory on a
+    local file system for later upload to a web server.
+
+  * gpg: New --list-option "show-only-fpr-mbox".  This makes the use
+    of the new gpg-wks-client --install-key command easier on Windows.
+
+  * gpg: Improve processing speed when --skip-verify is used.
+
+  * gpg: Fix a bug where a LF was accidentally written to the console.
+
+  * gpg: --card-status now shwos whether a card has the new KDF
+    feature enabled.
+
+  * agent: New runtime option --s2k-calibration=MSEC.  New configure
+    option --with-agent-s2k-calibration=MSEC.  [#3399]
+
+  * dirmngr: Try another keyserver from the pool on receiving a 502,
+    503, or 504 error.  [#4175]
+
+  * dirmngr: Avoid possible CSRF attacks via http redirects.  A HTTP
+    query will not anymore follow a 3xx redirect unless the Location
+    header gives the same host.  If the host is different only the
+    host and port is taken from the Location header and the original
+    path and query parts are kept.
+
+  * dirmngr: New command FLUSHCRL to flush all CRLS from disk and
+    memory.  [#3967]
+
+  * New simplified Chinese translation (zh_CN).
+
+  Release-info: https://dev.gnupg.org/T4289
+  See-also: gnupg-announce/2018q4/000433.html
+
+
+Noteworthy changes in version 2.2.11 (2018-11-06)
+-------------------------------------------------
+
+  * gpgsm: Fix CRL loading when intermediate certicates are not yet
+    trusted.
+
+  * gpgsm: Fix an error message about the digest algo.  [#4219]
+
+  * gpg: Fix a wrong warning due to new sign usage check introduced
+    with 2.2.9.  [#4014]
+
+  * gpg: Print the "data source" even for an unsuccessful keyserver
+    query.
+
+  * gpg: Do not store the TOFU trust model in the trustdb.  This
+    allows to enable or disable a TOFO model without triggering a
+    trustdb rebuild.  [#4134]
+
+  * scd: Fix cases of "Bad PIN" after using "forcesig".  [#4177]
+
+  * agent: Fix possible hang in the ssh handler.  [#4221]
+
+  * dirmngr: Tack the unmodified mail address to a WKD request.  See
+    commit a2bd4a64e5b057f291a60a9499f881dd47745e2f for details.
+
+  * dirmngr: Tweak diagnostic about missing LDAP server file.
+
+  * dirmngr: In verbose mode print the OCSP responder id.
+
+  * dirmngr: Fix parsing of the LDAP port.  [#4230]
+
+  * wks: Add option --directory/-C to the server.  Always build the
+    server on Unix systems.
+
+  * wks: Add option --with-colons to the client.  Support sites which
+    use the policy file instead of the submission-address file.
+
+  * Fix EBADF when gpg et al. are called by broken CGI scripts.
+
+  * Fix some minor memory leaks and bugs.
+
+  Release-info: https://dev.gnupg.org/T4233
+  See-also: gnupg-announce/2018q4/000432.html
+
+
+Noteworthy changes in version 2.2.10 (2018-08-30)
+-------------------------------------------------
+
+  * gpg: Refresh expired keys originating from the WKD.  [#2917]
+
+  * gpg: Use a 256 KiB limit for a WKD imported key.
+
+  * gpg: New option --known-notation.  [#4060]
+
+  * scd: Add support for the Trustica Cryptoucan reader.
+
+  * agent: Speed up starting during on-demand launching.  [#3490]
+
+  * dirmngr: Validate SRV records in WKD queries.
+
+  Release-info: https://dev.gnupg.org/T4112
+  See-also: gnupg-announce/2018q3/000428.html
+
+
+Noteworthy changes in version 2.2.9 (2018-07-12)
+------------------------------------------------
+
+  * dirmngr: Fix recursive resolver mode and other bugs in the libdns
+    code.  [#3374,#3803,#3610]
+
+  * dirmngr: When using libgpg-error 1.32 or later a GnuPG build with
+    NTBTLS support (e.g. the standard Windows installer) does not
+    anymore block for dozens of seconds before returning data.
+
+  * gpg: Fix bug in --show-keys which actually imported revocation
+    certificates.  [#4017]
+
+  * gpg: Ignore too long user-ID and comment packets.  [#4022]
+
+  * gpg: Fix crash due to bad German translation.  Improved printf
+    format compile time check.
+
+  * gpg: Handle missing ISSUER sub packet gracefully in the presence of
+    the new ISSUER_FPR.  [#4046]
+
+  * gpg: Allow decryption using several passphrases in most cases.
+    [#3795,#4050]
+
+  * gpg: Command --show-keys now enables the list options
+    show-unusable-uids, show-unusable-subkeys, show-notations and
+    show-policy-urls by default.
+
+  * gpg: Command --show-keys now prints revocation certificates. [#4018]
+
+  * gpg: Add revocation reason to the "rev" and "rvs" records of the
+    option --with-colons.  [#1173]
+
+  * gpg: Export option export-clean does now remove certain expired
+    subkeys; export-minimal removes all expired subkeys.  [#3622]
+
+  * gpg: New "usage" property for the drop-subkey filters.  [#4019]
+
+  Release-info: https://dev.gnupg.org/T4036
+  See-also: gnupg-announce/2018q3/000427.html
+
+
+Noteworthy changes in version 2.2.8 (2018-06-08)
+------------------------------------------------
+
+  * gpg: Decryption of messages not using the MDC mode will now lead
+    to a hard failure even if a legacy cipher algorithm was used.  The
+    option --ignore-mdc-error can be used to turn this failure into a
+    warning.  Take care: Never use that option unconditionally or
+    without a prior warning.
+
+  * gpg: The MDC encryption mode is now always used regardless of the
+    cipher algorithm or any preferences.  For testing --rfc2440 can be
+    used to create a message without an MDC.
+
+  * gpg: Sanitize the diagnostic output of the original file name in
+    verbose mode.  [#4012,CVE-2018-12020]
+
+  * gpg: Detect suspicious multiple plaintext packets in a more
+    reliable way.  [#4000]
+
+  * gpg: Fix the duplicate key signature detection code.  [#3994]
+
+  * gpg: The options --no-mdc-warn, --force-mdc, --no-force-mdc,
+    --disable-mdc and --no-disable-mdc have no more effect.
+
+  * gpg: New command --show-keys.
+
+  * agent: Add DBUS_SESSION_BUS_ADDRESS and a few other envvars to the
+    list of startup environment variables.  [#3947]
+
+  See-also: gnupg-announce/2018q2/000425.html
+
+
+Noteworthy changes in version 2.2.7 (2018-05-02)
+------------------------------------------------
+
+  * gpg: New option --no-symkey-cache to disable the passphrase cache
+    for symmetrical en- and decryption.
+
+  * gpg: The ERRSIG status now prints the fingerprint if that is part
+    of the signature.
+
+  * gpg: Relax emitting of FAILURE status lines
+
+  * gpg: Add a status flag to "sig" lines printed with --list-sigs.
+
+  * gpg: Fix "Too many open files" when using --multifile.  [#3951]
+
+  * ssh: Return an error for unknown ssh-agent flags.  [#3880]
+
+  * dirmngr: Fix a regression since 2.1.16 which caused corrupted CRL
+    caches under Windows.  [#2448,#3923]
+
+  * dirmngr: Fix a CNAME problem with pools and TLS.  Also use a fixed
+    mapping of keys.gnupg.net to sks-keyservers.net.  [#3755]
+
+  * dirmngr: Try resurrecting dead hosts earlier (from 3 to 1.5 hours).
+
+  * dirmngr: Fallback to CRL if no default OCSP responder is configured.
+
+  * dirmngr: Implement CRL fetching via https.  Here a redirection to
+    http is explictly allowed.
+
+  * dirmngr: Make LDAP searching and CRL fetching work under Windows.
+    This stopped working with 2.1.  [#3937]
+
+  * agent,dirmngr: New sub-command "getenv" for "getinfo" to ease
+    debugging.
+
+  See-also: gnupg-announce/2018q2/000424.html
+
+
+Noteworthy changes in version 2.2.6 (2018-04-09)
+------------------------------------------------
+
+  * gpg,gpgsm: New option --request-origin to pretend requests coming
+    from a browser or a remote site.
+
+  * gpg: Fix race condition on trustdb.gpg updates due to too early
+    released lock.  [#3839]
+
+  * gpg: Emit FAILURE status lines in almost all cases.  [#3872]
+
+  * gpg: Implement --dry-run for --passwd to make checking a key's
+    passphrase straightforward.
+
+  * gpg: Make sure to only accept a certification capable key for key
+    signatures.  [#3844]
+
+  * gpg: Better user interaction in --card-edit for the factory-reset
+    sub-command.
+
+  * gpg: Improve changing key attributes in --card-edit by adding an
+    explicit "key-attr" sub-command.  [#3781]
+
+  * gpg: Print the keygrips in the --card-status.
+
+  * scd: Support KDF DO setup.  [#3823]
+
+  * scd: Fix some issues with PC/SC on Windows.  [#3825]
+
+  * scd: Fix suspend/resume handling in the CCID driver.
+
+  * agent: Evict cached passphrases also via a timer.  [#3829]
+
+  * agent: Use separate passphrase caches depending on the request
+    origin.  [#3858]
+
+  * ssh: Support signature flags.  [#3880]
+
+  * dirmngr: Handle failures related to missing IPv6 support
+    gracefully.  [#3331]
+
+  * Fix corner cases related to specified home directory with
+    drive letter on Windows.  [#3720]
+
+  * Allow the use of UNC directory names as homedir.  [#3818]
+
+  See-also: gnupg-announce/2018q2/000421.html
+
+
+Noteworthy changes in version 2.2.5 (2018-02-22)
+------------------------------------------------
+
+  * gpg: Allow the use of the "cv25519" and "ed25519" short names in
+    addition to the canonical curve names in --batch --gen-key.
+
+  * gpg: Make sure to print all secret keys with option --list-only
+    and --decrypt.  [#3718]
+
+  * gpg: Fix the use of future-default with --quick-add-key for
+    signing keys.  [#3747]
+
+  * gpg: Select a secret key by checking availability under gpg-agent.
+    [#1967]
+
+  * gpg: Fix reversed prompt texts for --only-sign-text-ids.  [#3787]
+
+  * gpg,gpgsm: Fix detection of bogus keybox blobs on 32 bit systems.
+    [#3770]
+
+  * gpgsm: Fix regression since 2.1 in --export-secret-key-raw which
+    got $d mod (q-1)$ wrong.  Note that most tools automatically fixup
+    that parameter anyway.
+
+  * ssh: Fix a regression in getting the client'd PID on *BSD and
+    macOS.
+
+  * scd: Support the KDF Data Object of the OpenPGP card 3.3.  [#3152]
+
+  * scd: Fix a regression in the internal CCID driver for certain card
+    readers.  [#3508]
+
+  * scd: Fix a problem on NetBSD killing scdaemon on gpg-agent
+    shutdown.  [#3778]
+
+  * dirmngr: Improve returned error description on failure of DNS
+    resolving.  [#3756]
+
+  * wks: Implement command --install-key for gpg-wks-server.
+
+  * Add option STATIC=1 to the Speedo build system to allow a build
+    with statically linked versions of the core GnuPG libraries.  Also
+    use --enable-wks-tools by default by Speedo builds for Unix.
+
+  See-also: gnupg-announce/2018q1/000420.html
+
+
+Noteworthy changes in version 2.2.4 (2017-12-20)
+------------------------------------------------
+
+  * gpg: Change default preferences to prefer SHA512.
+
+  * gpg: Print a warning when more than 150 MiB are encrypted using a
+    cipher with 64 bit block size.
+
+  * gpg: Print a warning if the MDC feature has not been used for a
+    message.
+
+  * gpg: Fix regular expression of domain addresses in trust
+    signatures. [#2923]
+
+  * agent: New option --auto-expand-secmem to help with high numbers
+    of concurrent connections.  Requires libgcrypt 1.8.2 for having
+    an effect.  [#3530]
+
+  * dirmngr: Cache responses of WKD queries.
+
+  * gpgconf: Add option --status-fd.
+
+  * wks: Add commands --check and --remove-key to gpg-wks-server.
+
+  * Increase the backlog parameter of the daemons to 64 and add
+    option --listen-backlog.
+
+  * New configure option --enable-run-gnupg-user-socket to first try a
+    socket directory which is not removed by systemd at session end.
+
+  See-also: gnupg-announce/2017q4/000419.html
+
+
+Noteworthy changes in version 2.2.3 (2017-11-20)
+------------------------------------------------
+
+  * gpgsm: Fix initial keybox creation on Windows. [#3507]
+
+  * dirmngr: Fix crash in case of a CRL loading error. [#3510]
+
+  * Fix the name of the Windows registry key. [Git#4f5afaf1fd]
+
+  * gpgtar: Fix wrong behaviour of --set-filename. [#3500]
+
+  * gpg: Silence AKL retrieval messages. [#3504]
+
+  * agent: Use clock or clock_gettime for calibration. [#3056]
+
+  * agent: Improve robustness of the shutdown pending
+    state. [Git#7ffedfab89]
+
+  See-also: gnupg-announce/2017q4/000417.html
+
+
+Noteworthy changes in version 2.2.2 (2017-11-07)
+------------------------------------------------
+
+  * gpg: Avoid duplicate key imports by concurrently running gpg
+    processes. [#3446]
+
+  * gpg: Fix creating on-disk subkey with on-card primary key. [#3280]
+
+  * gpg: Fix validity retrieval for multiple keyrings. [Debian#878812]
+
+  * gpg: Fix --dry-run and import option show-only for secret keys.
+
+  * gpg: Print "sec" or "sbb" for secret keys with import option
+    import-show. [#3431]
+
+  * gpg: Make import less verbose. [#3397]
+
+  * gpg: Add alias "Key-Grip" for parameter "Keygrip" and new
+    parameter "Subkey-Grip" to unattended key generation.  [#3478]
+
+  * gpg: Improve "factory-reset" command for OpenPGP cards.  [#3286]
+
+  * gpg: Ease switching Gnuk tokens into ECC mode by using the magic
+    keysize value 25519.
+
+  * gpgsm: Fix --with-colon listing in crt records for fields > 12.
+
+  * gpgsm: Do not expect X.509 keyids to be unique.  [#1644]
+
+  * agent: Fix stucked Pinentry when using --max-passphrase-days. [#3190]
+
+  * agent: New option --s2k-count.  [#3276 (workaround)]
+
+  * dirmngr: Do not follow https-to-http redirects. [#3436]
+
+  * dirmngr: Reduce default LDAP timeout from 100 to 15 seconds. [#3487]
+
+  * gpgconf: Ignore non-installed components for commands
+    --apply-profile and --apply-defaults. [#3313]
+
+  * Add configure option --enable-werror.  [#2423]
+
+  See-also: gnupg-announce/2017q4/000416.html
+
+
+Noteworthy changes in version 2.2.1 (2017-09-19)
+------------------------------------------------
+
+  * gpg: Fix formatting of the user id in batch mode key generation
+    if only "name-email" is given.
+
+  * gpgv: Fix annoying "not suitable for" warnings.
+
+  * wks: Convey only the newest user id to the provider.  This is the
+    case if different names are used with the same addr-spec.
+
+  * wks: Create a complying user id for provider policy mailbox-only.
+
+  * wks: Add workaround for posteo.de.
+
+  * scd: Fix the use of large ECC keys with an OpenPGP card.
+
+  * dirmngr: Use system provided root certificates if no specific HKP
+    certificates are configured.  If build with GNUTLS, this was
+    already the case.
+
+  See-also: gnupg-announce/2017q3/000415.html
+
+
+Noteworthy changes in version 2.2.0 (2017-08-28)
+------------------------------------------------
+
+  This is the new long term stable branch.  This branch will only see
+  bug fixes and no new features.
+
+  * gpg: Reverted change in 2.1.23 so that --no-auto-key-retrieve is
+    again the default.
+
+  * Fixed a few minor bugs.
+
+  See-also: gnupg-announce/2017q3/000413.html
+
+
+Noteworthy changes in version 2.1.23 (2017-08-09)
+-------------------------------------------------
+
+  * gpg: "gpg" is now installed as "gpg" and not anymore as "gpg2".
+    If needed, the new configure option --enable-gpg-is-gpg2 can be
+    used to revert this.
+
+  * gpg: Options --auto-key-retrieve and --auto-key-locate "local,wkd"
+    are now used by default.  Note: this enables keyserver and Web Key
+    Directory operators to notice when a signature from a locally
+    non-available key is being verified for the first time or when
+    you intend to encrypt to a mail address without having the key
+    locally.  This new behaviour will eventually make key discovery
+    much easier and mostly automatic.  Disable this by adding
+      no-auto-key-retrieve
+      auto-key-locate local
+    to your gpg.conf.
+
+  * agent: Option --no-grab is now the default.  The new option --grab
+    allows to revert this.
+
+  * gpg: New import option "show-only".
+
+  * gpg: New option --disable-dirmngr to entirely disable network
+    access for gpg.
+
+  * gpg,gpgsm: Tweaked DE-VS compliance behaviour.
+
+  * New configure flag --enable-all-tests to run more extensive tests
+    during "make check".
+
+  * gpgsm: The keygrip is now always printed in colon mode as
+    documented in the man page.
+
+  * Fixed connection timeout problem under Windows.
+
+  See-also: gnupg-announce/2017q3/000412.html
+
+
+Noteworthy changes in version 2.1.22 (2017-07-28)
+-------------------------------------------------
+
+  * gpg: Extend command --quick-set-expire to allow for setting the
+    expiration time of subkeys.
+
+  * gpg: By default try to repair keys during import.  New sub-option
+    no-repair-keys for --import-options.
+
+  * gpg,gpgsm: Improved checking and reporting of DE-VS compliance.
+
+  * gpg: New options --key-origin and --with-key-origin.  Store the
+    time of the last key update from keyservers, WKD, or DANE.
+
+  * agent: New option --ssh-fingerprint-digest.
+
+  * dimngr: Lower timeouts on keyserver connection attempts and made
+    it configurable.
+
+  * dirmngr: Tor will now automatically be detected and used.  The
+    option --no-use-tor disables Tor detection.
+
+  * dirmngr: Now detects a changed /etc/resolv.conf.
+
+  * agent,dirmngr: Initiate shutdown on removal of the GnuPG home
+    directory.
+
+  * gpg: Avoid caching passphrase for failed symmetric encryption.
+
+  * agent: Support for unprotected ssh keys.
+
+  * dirmngr: Fixed name resolving on systems using only v6
+    nameservers.
+
+  * dirmngr: Allow the use of TLS over http proxies.
+
+  * w32: Change directory of the daemons after startup.
+
+  * wks: New man pages for client and server.
+
+  * Many other bug fixes.
+
+  See-also: gnupg-announce/2017q3/000411.html
+
+
+Noteworthy changes in version 2.1.21 (2017-05-15)
+-------------------------------------------------
+
+  * gpg,gpgsm: Fix corruption of old style keyring.gpg files.  This
+    bug was introduced with version 2.1.20.  Note that the default
+    pubring.kbx format was not affected.
+
+  * gpg,dirmngr: Removed the skeleton config file support.  The
+    system's standard methods for providing default configuration
+    files should be used instead.
+
+  * w32: The Windows installer now allows installation of GnuPG
+    without Administrator permissions.
+
+  * gpg: Fixed import filter property match bug.
+
+  * scd: Removed Linux support for Cardman 4040 PCMCIA reader.
+
+  * scd: Fixed some corner case bugs in resume/suspend handling.
+
+  * Many minor bug fixes and code cleanup.
+
+  See-also: gnupg-announce/2017q2/000405.html
+
+
+Noteworthy changes in version 2.1.20 (2017-04-03)
+-------------------------------------------------
+
+  * gpg: New properties 'expired', 'revoked', and 'disabled' for the
+    import and export filters.
+
+  * gpg: New command --quick-set-primary-uid.
+
+  * gpg: New compliance field for the --with-colon key listing.
+
+  * gpg: Changed the key parser to generalize the processing of local
+    meta data packets.
+
+  * gpg: Fixed assertion failure in the TOFU trust model.
+
+  * gpg: Fixed exporting of zero length user ID packets.
+
+  * scd: Improved support for multiple readers.
+
+  * scd: Fixed timeout handling for key generation.
+
+  * agent: New option --enable-extended-key-format.
+
+  * dirmngr: Do not add a keyserver to a new dirmngr.conf.  Dirmngr
+    uses a default keyserver.
+
+  * dimngr: Do not treat TLS warning alerts as severe error when
+    building with GNUTLS.
+
+  * dirmngr: Actually take /etc/hosts in account.
+
+  * wks: Fixed client problems on Windows.  Published keys are now set
+    to world-readable.
+
+  * tests: Fixed creation of temporary directories.
+
+  * A socket directory for a non standard GNUGHOME is now created on
+    the fly under /run/user.  Thus "gpgconf --create-socketdir" is now
+    optional.  The use of "gpgconf --remove-socketdir" to clean up
+    obsolete socket directories is however recommended to avoid
+    cluttering /run/user with useless directories.
+
+  * Fixed build problems on some platforms.
+
+  See-also: gnupg-announce/2017q2/000404.html
+
+
+Noteworthy changes in version 2.1.19 (2017-03-01)
+-------------------------------------------------
+
+  * gpg: Print a warning if Tor mode is requested but the Tor daemon
+    is not running.
+
+  * gpg: New status code DECRYPTION_KEY to print the actual private
+    key used for decryption.
+
+  * gpgv: New options --log-file and --debug.
+
+  * gpg-agent: Revamp the prompts to ask for card PINs.
+
+  * scd: Support for multiple card readers.
+
+  * scd: Removed option --debug-disable-ticker.  Ticker is used
+    only when it is required to watch removal of device/card.
+
+  * scd: Improved detection of card inserting and removal.
+
+  * dirmngr: New option --disable-ipv4.
+
+  * dirmngr: New option --no-use-tor to explicitly disable the use of
+    Tor.
+
+  * dirmngr: The option --allow-version-check is now required even if
+    the option --use-tor is also used.
+
+  * dirmngr: Handle a missing nsswitch.conf gracefully.
+
+  * dirmngr: Avoid PTR lookups for keyserver pools.  The are only done
+    for the debug command "keyserver --hosttable".
+
+  * dirmngr: Rework the internal certificate cache to support classes
+    of certificates.  Load system provided certificates on startup.
+    Add options --tls, --no-crl, and --systrust to the "VALIDATE"
+    command.
+
+  * dirmngr: Add support for the ntbtls library.
+
+  * wks: Create mails with a "WKS-Phase" header.  Fix detection of
+    Draft-2 mode.
+
+  * The Windows installer is now build with limited TLS support.
+
+  * Many other bug fixes and new regression tests.
+
+  See-also: gnupg-announce/2017q1/000402.html
+
+
 Noteworthy changes in version 2.1.18 (2017-01-23)
 -------------------------------------------------
 
@@ -60,6 +714,8 @@ Noteworthy changes in version 2.1.18 (2017-01-23)
 
   * Fixed spurious failures on BSD system in the spawn functions.
     This affected for example gpg-wks-client and gpgconf.
+
+  See-also: gnupg-announce/2017q1/000401.html
 
 
 Noteworthy changes in version 2.1.17 (2016-12-20)
@@ -3390,8 +4046,8 @@ Version 0.1.0 (1998-01-05)
 Version 0.0.0 (1997-12-20)
 
 
- Copyright (C) 1998-2016 Free Software Foundation, Inc.
- Copyright (C) 1997-2016 Werner Koch
+ Copyright (C) 1998-2017 Free Software Foundation, Inc.
+ Copyright (C) 1997-2017 Werner Koch
 
  This file is free software; as a special exception the author gives
  unlimited permission to copy and/or distribute it, with or without

@@ -232,7 +232,10 @@ ks_action_get (ctrl_t ctrl, uri_item_t keyservers,
      Need to think about a better strategy.  */
   for (uri = keyservers; !err && uri; uri = uri->next)
     {
-      int is_http = uri->parsed_uri->is_http;
+      int is_hkp_s = (strcmp (uri->parsed_uri->scheme, "hkp") == 0
+                      || strcmp (uri->parsed_uri->scheme, "hkps") == 0);
+      int is_http_s = (strcmp (uri->parsed_uri->scheme, "http") == 0
+                       || strcmp (uri->parsed_uri->scheme, "https") == 0);
       int is_ldap = 0;
 
 #if USE_LDAP
@@ -241,7 +244,7 @@ ks_action_get (ctrl_t ctrl, uri_item_t keyservers,
 		 || strcmp (uri->parsed_uri->scheme, "ldapi") == 0);
 #endif
 
-      if (is_http || is_ldap)
+      if (is_hkp_s || is_http_s || is_ldap)
         {
           any_server = 1;
           for (sl = patterns; !err && sl; sl = sl->next)
@@ -251,9 +254,14 @@ ks_action_get (ctrl_t ctrl, uri_item_t keyservers,
 		err = ks_ldap_get (ctrl, uri->parsed_uri, sl->d, &infp);
 	      else
 #endif
-		{
-	          err = ks_hkp_get (ctrl, uri->parsed_uri, sl->d, &infp);
-	        }
+              if (is_hkp_s)
+                err = ks_hkp_get (ctrl, uri->parsed_uri, sl->d, &infp);
+              else if (is_http_s)
+                err = ks_http_fetch (ctrl, uri->parsed_uri->original,
+                                     KS_HTTP_FETCH_NOCACHE,
+                                     &infp);
+              else
+                BUG ();
 
               if (err)
                 {
@@ -290,7 +298,8 @@ ks_action_get (ctrl_t ctrl, uri_item_t keyservers,
 
 
 /* Retrieve keys from URL and write the result to the provided output
-   stream OUTFP.  */
+ * stream OUTFP.  If OUTFP is NULL the data is written to the bit
+ * bucket. */
 gpg_error_t
 ks_action_fetch (ctrl_t ctrl, const char *url, estream_t outfp)
 {
@@ -307,7 +316,7 @@ ks_action_fetch (ctrl_t ctrl, const char *url, estream_t outfp)
 
   if (parsed_uri->is_http)
     {
-      err = ks_http_fetch (ctrl, url, &infp);
+      err = ks_http_fetch (ctrl, url, KS_HTTP_FETCH_NOCACHE, &infp);
       if (!err)
         {
           err = copy_stream (infp, outfp);

@@ -28,15 +28,12 @@ include $(top_srcdir)/am/cmacros.am
 
 AM_CFLAGS =
 
-TMP ?= /tmp
-
 TESTS_ENVIRONMENT = GPG_AGENT_INFO= LC_ALL=C \
 	EXEEXT=$(EXEEXT) \
 	PATH=../gpgscm:$(PATH) \
-	TMP=$(TMP) \
-	srcdir=$(abs_srcdir) \
+	abs_top_srcdir=$(abs_top_srcdir) \
 	objdir=$(abs_top_builddir) \
-	GPGSCM_PATH=$(abs_top_srcdir)/tests/gpgscm:$(abs_top_srcdir)/tests/migrations
+	GPGSCM_PATH=$(abs_top_srcdir)/tests/gpgscm
 
 XTESTS = from-classic.scm \
 	extended-pkf.scm \
@@ -57,11 +54,12 @@ check: xcheck
 .PHONY: xcheck
 xcheck:
 	$(TESTS_ENVIRONMENT) $(abs_top_builddir)/tests/gpgscm/gpgscm \
-	  run-tests.scm $(TESTFLAGS) $(XTESTS)
+	  $(abs_srcdir)/run-tests.scm $(TESTFLAGS) $(TESTS)
 
-EXTRA_DIST = common.scm run-tests.scm setup.scm $(XTESTS) $(TEST_FILES)
+EXTRA_DIST = common.scm run-tests.scm setup.scm all-tests.scm \
+	$(XTESTS) $(TEST_FILES)
 
-CLEANFILES = *.log
+CLEANFILES = *.log report.xml
 
 # We need to depend on a couple of programs so that the tests don't
 # start before all programs are built.

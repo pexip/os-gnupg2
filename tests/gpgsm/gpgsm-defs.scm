@@ -17,7 +17,7 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "defs.scm"))
+(load (in-srcdir "tests" "openpgp" "defs.scm"))
 
 ;; This is the list of certificates that we install in the test
 ;; environment.
@@ -61,18 +61,17 @@
 					 (equal? key::fpr (:fpr l))))
 			(gpgsm-with-colons `(--list-secret-keys ,key::fpr))))))
 
-(define (create-file name . lines)
-  (letfd ((fd (open name (logior O_WRONLY O_CREAT O_BINARY) #o600)))
-    (let ((port (fdopen fd "wb")))
-      (for-each (lambda (line) (display line port) (newline port))
-		lines))))
-
 (define (create-gpgsmhome)
   (create-file "gpgsm.conf"
 	       "disable-crl-checks"
 	       "faked-system-time 1008241200")
   (create-file "gpg-agent.conf"
-	       (string-append "pinentry-program " (tool 'pinentry)))
+	       (string-append "pinentry-program " (tool 'pinentry))
+	       (if (assoc "scdaemon" gpg-components)
+		   (string-append "scdaemon-program " (tool 'scdaemon))
+		   "# No scdaemon available")
+	       )
+  (start-agent)
   (create-file
    "trustlist.txt"
    "32100C27173EF6E9C4E9A25D3D69F86D37A4F939"
@@ -80,16 +79,15 @@
    "3CF405464F66ED4A7DF45BBDD1E4282E33BDB76E S")
 
   (log "Storing private keys")
-  (mkdir "private-keys-v1.d" "-rwx")
   (for-each
    (lambda (name)
-     (file-copy (in-srcdir name)
+     (file-copy (in-srcdir "tests" "gpgsm" name)
 		(path-join "private-keys-v1.d"
 			   (string-append name ".key"))))
    '("32100C27173EF6E9C4E9A25D3D69F86D37A4F939"))
 
   (log "Importing public demo and test keys")
-  (call-check `(,@gpgsm --import ,(in-srcdir "cert_g10code_test1.der")))
+  (call-check `(,@gpgsm --import ,(in-srcdir "tests" "gpgsm" "cert_g10code_test1.der")))
 
   (create-sample-files)
   (stop-agent))
@@ -101,3 +99,9 @@
       (call-check `(,(tool 'gpgtar) --extract --directory=. ,(cadr *args*)))
       (create-gpgsm-gpghome))
   (start-agent))
+
+(define (setup-gpgsm-environment-no-atexit)
+  (if (member "--unpack-tarball" *args*)
+      (call-check `(,(tool 'gpgtar) --extract --directory=. ,(cadr *args*)))
+      (create-gpgsm-gpghome))
+  (start-agent #t))

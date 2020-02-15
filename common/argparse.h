@@ -3,8 +3,8 @@
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify it
- * under the terms of either
+ * GnuPG is free software; you can redistribute and/or modify this
+ * part of GnuPG under the terms of either
  *
  *   - the GNU Lesser General Public License as published by the Free
  *     Software Foundation; either version 3 of the License, or (at
@@ -70,6 +70,12 @@ typedef struct
   unsigned int flags;
   const char  *description; /* Optional option description. */
 } ARGPARSE_OPTS;
+
+/* Short options.  */
+#define ARGPARSE_SHORTOPT_HELP 32768
+#define ARGPARSE_SHORTOPT_VERSION 32769
+#define ARGPARSE_SHORTOPT_WARRANTY 32770
+#define ARGPARSE_SHORTOPT_DUMP_OPTIONS 32771
 
 
 /* Global flags (ARGPARSE_ARGS).  */
@@ -169,7 +175,13 @@ typedef struct
 #define ARGPARSE_group(s,d) \
      { (s), NULL, 0, (d) }
 
-#define ARGPARSE_end()  { 0, NULL, 0, NULL }
+/* Placeholder options for help, version, warranty and dump-options.  See arg_parse(). */
+#define ARGPARSE_end() \
+     { 0, NULL, 0, NULL }, \
+     { 0, NULL, 0, NULL }, \
+     { 0, NULL, 0, NULL }, \
+     { 0, NULL, 0, NULL }, \
+     { 0, NULL, 0, NULL }
 
 
 /* Other constants.  */

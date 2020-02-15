@@ -32,7 +32,8 @@
 #include <ksba.h>
 
 #include "keydb.h"
-#include "i18n.h"
+#include "../common/i18n.h"
+#include "../common/compliance.h"
 
 
 struct dek_s {
@@ -299,7 +300,7 @@ int
 gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
 {
   int rc = 0;
-  Base64Context b64writer = NULL;
+  gnupg_ksba_io_t b64writer = NULL;
   gpg_error_t err;
   ksba_writer_t writer;
   ksba_reader_t reader = NULL;
@@ -312,6 +313,7 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
   estream_t data_fp = NULL;
   certlist_t cl;
   int count;
+  int compliant;
 
   memset (&encparm, 0, sizeof encparm);
 
@@ -364,7 +366,10 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
   encparm.fp = data_fp;
 
   ctrl->pem_name = "ENCRYPTED MESSAGE";
-  rc = gpgsm_create_writer (&b64writer, ctrl, out_fp, &writer);
+  rc = gnupg_ksba_create_writer
+    (&b64writer, ((ctrl->create_pem? GNUPG_KSBA_IO_PEM : 0)
+                  | (ctrl->create_base64? GNUPG_KSBA_IO_BASE64 : 0)),
+     ctrl->pem_name, out_fp, &writer);
   if (rc)
     {
       log_error ("can't create writer: %s\n", gpg_strerror (rc));
@@ -399,6 +404,29 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
       log_debug ("ksba_cms_set_content_type failed: %s\n",
                  gpg_strerror (err));
       rc = err;
+      goto leave;
+    }
+
+  /* Check compliance.  */
+  if (!gnupg_cipher_is_allowed
+      (opt.compliance, 1, gcry_cipher_map_name (opt.def_cipher_algoid),
+       gcry_cipher_mode_from_oid (opt.def_cipher_algoid)))
+    {
+      log_error (_("cipher algorithm '%s' may not be used in %s mode\n"),
+		 opt.def_cipher_algoid,
+		 gnupg_compliance_option_string (opt.compliance));
+      rc = gpg_error (GPG_ERR_CIPHER_ALGO);
+      goto leave;
+    }
+
+  if (!gnupg_rng_is_compliant (opt.compliance))
+    {
+      rc = gpg_error (GPG_ERR_FORBIDDEN);
+      log_error (_("%s is not compliant with %s mode\n"),
+                 "RNG",
+                 gnupg_compliance_option_string (opt.compliance));
+      gpgsm_status_with_error (ctrl, STATUS_ERROR,
+                               "random-compliance", rc);
       goto leave;
     }
 
@@ -439,11 +467,36 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
 
   audit_log_s (ctrl->audit, AUDIT_SESSION_KEY, dek->algoid);
 
+  compliant = gnupg_cipher_is_compliant (CO_DE_VS, dek->algo,
+                                         GCRY_CIPHER_MODE_CBC);
+
   /* Gather certificates of recipients, encrypt the session key for
      each and store them in the CMS object */
   for (recpno = 0, cl = recplist; cl; recpno++, cl = cl->next)
     {
       unsigned char *encval;
+      unsigned int nbits;
+      int pk_algo;
+
+      /* Check compliance.  */
+      pk_algo = gpgsm_get_key_algo_info (cl->cert, &nbits);
+      if (!gnupg_pk_is_compliant (opt.compliance, pk_algo, NULL, nbits, NULL))
+        {
+          char  kidstr[10+1];
+
+          snprintf (kidstr, sizeof kidstr, "0x%08lX",
+                    gpgsm_get_short_fingerprint (cl->cert, NULL));
+          log_info (_("WARNING: key %s is not suitable for encryption"
+                      " in %s mode\n"),
+                    kidstr,
+                    gnupg_compliance_option_string (opt.compliance));
+        }
+
+      /* Fixme: When adding ECC we need to provide the curvename and
+       * the key to gnupg_pk_is_compliant.  */
+      if (compliant
+          && !gnupg_pk_is_compliant (CO_DE_VS, pk_algo, NULL, nbits, NULL))
+        compliant = 0;
 
       rc = encrypt_dek (dek, cl->cert, &encval);
       if (rc)
@@ -477,6 +530,10 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
         }
     }
 
+  if (compliant)
+    gpgsm_status (ctrl, STATUS_ENCRYPTION_COMPLIANCE_MODE,
+                  gnupg_status_compliance_flag (CO_DE_VS));
+
   /* Main control loop for encryption. */
   recpno = 0;
   do
@@ -499,7 +556,7 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
     }
 
 
-  rc = gpgsm_finish_writer (b64writer);
+  rc = gnupg_ksba_finish_writer (b64writer);
   if (rc)
     {
       log_error ("write failed: %s\n", gpg_strerror (rc));
@@ -510,7 +567,7 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
 
  leave:
   ksba_cms_release (cms);
-  gpgsm_destroy_writer (b64writer);
+  gnupg_ksba_destroy_writer (b64writer);
   ksba_reader_release (reader);
   keydb_release (kh);
   xfree (dek);

@@ -33,15 +33,12 @@ noinst_PROGRAMS = fake-pinentry
 
 fake_pinentry_SOURCES = fake-pinentry.c
 
-TMP ?= /tmp
-
 TESTS_ENVIRONMENT = LC_ALL=C \
 	EXEEXT=$(EXEEXT) \
 	PATH=../gpgscm:$(PATH) \
-	TMP=$(TMP) \
-	srcdir=$(abs_srcdir) \
+	abs_top_srcdir=$(abs_top_srcdir) \
 	objdir=$(abs_top_builddir) \
-	GPGSCM_PATH=$(abs_top_srcdir)/tests/gpgscm:$(abs_top_srcdir)/tests/openpgp
+	GPGSCM_PATH=$(abs_top_srcdir)/tests/gpgscm
 
 XTESTS = \
 	version.scm \
@@ -51,6 +48,7 @@ XTESTS = \
 	decrypt-multifile.scm \
 	decrypt-dsa.scm \
 	decrypt-session-key.scm \
+	decrypt-unwrap-verify.scm \
 	sigs.scm \
 	sigs-dsa.scm \
 	encrypt.scm \
@@ -76,6 +74,7 @@ XTESTS = \
 	multisig.scm \
 	verify.scm \
 	verify-multifile.scm \
+	gpgv.scm \
 	gpgv-forged-keyring.scm \
 	armor.scm \
 	import.scm \
@@ -83,6 +82,9 @@ XTESTS = \
 	ecc.scm \
 	4gb-packet.scm \
 	tofu.scm \
+	trust-pgp-1.scm \
+	trust-pgp-2.scm \
+	trust-pgp-3.scm \
 	gpgtar.scm \
 	use-exact-key.scm \
 	default-key.scm \
@@ -92,13 +94,16 @@ XTESTS = \
 	quick-key-manipulation.scm \
 	key-selection.scm \
 	delete-keys.scm \
+	gpgconf.scm \
 	issue2015.scm \
 	issue2346.scm \
 	issue2417.scm \
-	issue2419.scm
+	issue2419.scm \
+	issue2929.scm \
+	issue2941.scm
 
-# Fixme: gpgconf.scm does not yet work with make distcheck.
-#	gpgconf.scm
+# Temporary removed tests:
+#	trust-pgp-4.scm
 
 
 # XXX: Currently, one cannot override automake's 'check' target.  As a
@@ -112,13 +117,12 @@ check: xcheck
 .PHONY: xcheck
 xcheck:
 	$(TESTS_ENVIRONMENT) $(abs_top_builddir)/tests/gpgscm/gpgscm \
-	  run-tests.scm $(TESTFLAGS) $(XTESTS)
+	  $(abs_srcdir)/run-tests.scm $(TESTFLAGS) $(TESTS)
 
 TEST_FILES = pubring.asc secring.asc plain-1o.asc plain-2o.asc plain-3o.asc \
 	     plain-1.asc plain-2.asc plain-3.asc plain-1-pgp.asc \
 	     plain-largeo.asc plain-large.asc \
 	     pubring.pkr.asc secring.skr.asc secdemo.asc pubdemo.asc \
-             gpg.conf.tmpl gpg-agent.conf.tmpl \
 	     bug537-test.data.asc bug894-test.asc \
 	     bug1223-good.asc bug1223-bogus.asc 4gb-packet.asc \
 	     tofu/conflicting/1C005AF3.gpg \
@@ -161,7 +165,18 @@ TEST_FILES = pubring.asc secring.asc plain-1o.asc plain-2o.asc plain-3o.asc \
 	     key-selection/1.asc \
 	     key-selection/2.asc \
 	     key-selection/3.asc \
-	     key-selection/4.asc
+	     key-selection/4.asc \
+	     trust-pgp/scenario1.asc \
+	     trust-pgp/scenario2.asc \
+	     trust-pgp/scenario3.asc \
+	     trust-pgp/scenario4.asc \
+	     trust-pgp/alice.sec.asc \
+	     trust-pgp/bobby.sec.asc \
+	     trust-pgp/carol.sec.asc \
+	     trust-pgp/david.sec.asc \
+	     trust-pgp/frank.sec.asc \
+	     trust-pgp/grace.sec.asc \
+	     trust-pgp/heidi.sec.asc
 
 data_files = data-500 data-9000 data-32000 data-80000 plain-large
 
@@ -222,15 +237,39 @@ sample_keys = samplekeys/README \
 	      samplekeys/authenticate-only.pub.asc \
 	      samplekeys/authenticate-only.sec.asc
 
-sample_msgs = samplemsgs/issue2419.asc \
-	      samplemsgs/clearsig-1-key-1.asc \
+sample_msgs = samplemsgs/clearsig-1-key-1.asc \
+	      samplemsgs/clearsig-2-keys-1.asc \
+	      samplemsgs/clearsig-2-keys-2.asc \
+	      samplemsgs/enc-1-key-1.asc \
+	      samplemsgs/enc-1-key-2.asc \
+	      samplemsgs/enc-2-keys-1.asc \
+	      samplemsgs/enc-2-keys-2.asc \
+	      samplemsgs/enc-2-keys-hh-1.asc \
+	      samplemsgs/enc-2-keys-hr-1.asc \
+	      samplemsgs/enc-2-keys-rh-1.asc \
+	      samplemsgs/encsig-2-2-keys-3.asc \
+	      samplemsgs/encsig-2-2-keys-4.asc \
+	      samplemsgs/encsig-2-keys-1.asc \
+	      samplemsgs/encsig-2-keys-2.asc \
+	      samplemsgs/encsig-2-keys-3.asc \
+	      samplemsgs/encsig-2-keys-4.asc \
+	      samplemsgs/encz0-1-key-1.asc \
+	      samplemsgs/encz0-1-key-2.asc \
+	      samplemsgs/issue2419.asc \
+	      samplemsgs/revoke-2D727CC768697734.asc \
+	      samplemsgs/sig-1-key-1.asc \
+	      samplemsgs/sig-1-key-2.asc \
+	      samplemsgs/sig-2-keys-1.asc \
+	      samplemsgs/sig-2-keys-2.asc \
 	      samplemsgs/signed-1-key-1.asc \
-	      samplemsgs/revoke-2D727CC768697734.asc
+	      samplemsgs/signed-1-key-2.asc \
+	      samplemsgs/signed-2-keys-1.asc \
+	      samplemsgs/signed-2-keys-2.asc
 
-EXTRA_DIST = defs.scm $(XTESTS) $(TEST_FILES) \
+EXTRA_DIST = defs.scm trust-pgp/common.scm $(XTESTS) $(TEST_FILES) \
 	     mkdemodirs signdemokey $(priv_keys) $(sample_keys)   \
-	     $(sample_msgs) ChangeLog-2011 run-tests.scm \
-	     setup.scm shell.scm
+	     $(sample_msgs) ChangeLog-2011 run-tests.scm trust-pgp-4.scm \
+	     setup.scm shell.scm all-tests.scm signed-messages.scm
 
 CLEANFILES = prepared.stamp x y yy z out err  $(data_files) \
 	     plain-1 plain-2 plain-3 trustdb.gpg *.lock .\#lk* \
@@ -238,7 +277,7 @@ CLEANFILES = prepared.stamp x y yy z out err  $(data_files) \
 	     pubring.gpg pubring.gpg~ pubring.kbx pubring.kbx~ \
 	     secring.gpg pubring.pkr secring.skr \
 	     gnupg-test.stop random_seed gpg-agent.log tofu.db \
-	     passphrases sshcontrol S.gpg-agent.ssh
+	     passphrases sshcontrol S.gpg-agent.ssh report.xml
 
 clean-local:
 	-rm -rf private-keys-v1.d openpgp-revocs.d tofu.d gpgtar.d

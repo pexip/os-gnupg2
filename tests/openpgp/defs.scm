@@ -29,7 +29,7 @@
 (define usrpass3 "")
 
 (define dsa-usrname1 "pgp5")
-;; we use the sub key because we do not yet have the logic to to derive
+;; we use the sub key because we do not yet have the logic to derive
 ;; the first encryption key from a keyblock (I guess) (Well of course
 ;; we have this by now and the notation below will lookup the primary
 ;; first and then search for the encryption subkey.)
@@ -140,34 +140,53 @@
 (define valgrind
   '("/usr/bin/valgrind" --leak-check=full --error-exitcode=154))
 
+(unless installed?
+	(setenv "GNUPG_BUILDDIR" (getenv "objdir") #t))
+
 (define (gpg-conf . args)
   (gpg-conf' "" args))
 (define (gpg-conf' input args)
-  (let ((s (call-popen `(,(tool-hardcoded 'gpgconf) ,@args) input)))
+  (let ((s (call-popen `(,(tool-hardcoded 'gpgconf)
+			 ,@(if installed? '()
+			       (list '--build-prefix (getenv "objdir")))
+			 ,@args) input)))
     (map (lambda (line) (map percent-decode (string-split line #\:)))
 	 (string-split-newlines s))))
 (define :gc:c:name car)
 (define :gc:c:description cadr)
 (define :gc:c:pgmname caddr)
+(define (:gc:o:name x)             (list-ref x 0))
+(define (:gc:o:flags x)            (string->number (list-ref x 1)))
+(define (:gc:o:level x)            (string->number (list-ref x 2)))
+(define (:gc:o:description x)      (list-ref x 3))
+(define (:gc:o:type x)             (string->number (list-ref x 4)))
+(define (:gc:o:alternate-type x)   (string->number (list-ref x 5)))
+(define (:gc:o:argument-name x)    (list-ref x 6))
+(define (:gc:o:default-value x)    (list-ref x 7))
+(define (:gc:o:default-argument x) (list-ref x 8))
+(define (:gc:o:value x)            (if (< (length x) 10) "" (list-ref x 9)))
 
 (define (gpg-config component key)
   (package
    (define (value)
-     (assoc key (gpg-conf '--list-options component)))
+     (let* ((conf (assoc key (gpg-conf '--list-options component)))
+	    (type (:gc:o:type conf))
+	    (value (:gc:o:value conf)))
+       (case type
+	 ((0 2 3) (string->number value))
+	 ((1 32) (substring value 1 (string-length value))))))
    (define (update value)
-     (gpg-conf' (string-append key ":0:" (percent-encode value))
-		`(--change-options ,component)))
+     (let ((value' (cond
+		    ((string? value) (string-append "\"" value))
+		    ((number? value) (number->string value))
+		    (else (throw "Unsupported value" value)))))
+       (gpg-conf' (string-append key ":0:" (percent-encode value'))
+		  `(--change-options ,component))))
    (define (clear)
      (gpg-conf' (string-append key ":16:")
 		`(--change-options ,component)))))
 
-
-(unless installed?
-	(setenv "GNUPG_BUILDDIR" (getenv "objdir") #t))
-(define gpg-components (apply gpg-conf
-			`(,@(if installed? '()
-				(list '--build-prefix (getenv "objdir")))
-			  --list-components)))
+(define gpg-components (apply gpg-conf '(--list-components)))
 
 (define (tool which)
   (case which
@@ -182,7 +201,8 @@
 
 (define have-opt-always-trust
   (catch #f
-	 (call-check `(,(tool 'gpg) --gpgconf-test --always-trust))
+	 (with-ephemeral-home-directory (lambda ()) (lambda ())
+	   (call-check `(,(tool 'gpg) --gpgconf-test --always-trust)))
 	 #t))
 
 (define GPG `(,(tool 'gpg) --no-permission-warning
@@ -239,6 +259,8 @@
   (not (not (member x (force all-hash-algos)))))
 (define (have-cipher-algo? x)
   (not (not (member x (force all-cipher-algos)))))
+(define (have-compression-algo? x)
+  (not (not (member x (force all-compression-algos)))))
 
 (define (gpg-pipe args0 args1 errfd)
   (lambda (source sink)
@@ -259,19 +281,6 @@
 ;; GnuPG helper.
 ;;
 
-;; Evaluate a sequence of expressions with an ephemeral home
-;; directory.
-(define-macro (with-ephemeral-home-directory . expressions)
-  (let ((original-home-directory (gensym))
-	(ephemeral-home-directory (gensym)))
-    `(let ((,original-home-directory (getenv "GNUPGHOME"))
-	   (,ephemeral-home-directory (mkdtemp)))
-       (finally (unlink-recursively ,ephemeral-home-directory)
-	 (dynamic-wind
-	     (lambda () (setenv "GNUPGHOME" ,ephemeral-home-directory #t))
-	     (lambda () ,@expressions)
-	     (lambda () (setenv "GNUPGHOME" ,original-home-directory #t)))))))
-
 ;; Call GPG to obtain the hash sums.  Either specify an input file in
 ;; ARGS, or an string in INPUT.  Returns a list of (<algo>
 ;; "<hashsum>") lists.
@@ -290,6 +299,12 @@
    (pipe:spawn `(,@GPG --dearmor))
    (pipe:write-to sink-name (logior O_WRONLY O_CREAT O_BINARY) #o600)))
 
+(define (gpg-dump-packets source-name sink-name)
+  (pipe:do
+   (pipe:open source-name (logior O_RDONLY O_BINARY))
+   (pipe:spawn `(,@GPG --list-packets))
+   (pipe:write-to sink-name (logior O_WRONLY O_CREAT O_BINARY) #o600)))
+
 ;;
 ;; Support for test environment creation and teardown.
 ;;
@@ -300,6 +315,13 @@
    (lambda (port)
      (display (make-random-string size) port))))
 
+(define (create-file name . lines)
+  (catch #f (unlink name))
+  (letfd ((fd (open name (logior O_WRONLY O_CREAT O_BINARY) #o600)))
+    (let ((port (fdopen fd "wb")))
+      (for-each (lambda (line) (display line port) (newline port))
+		lines))))
+
 (define (create-gpghome)
   (log "Creating test environment...")
 
@@ -307,27 +329,46 @@
   (make-test-data "random_seed" 600)
 
   (log "Creating configuration files")
-  (for-each
-   (lambda (name)
-     (file-copy (in-srcdir (string-append name ".tmpl")) name)
-     (let ((p (open-input-output-file name)))
-       (cond
-	((string=? "gpg.conf" name)
-	 (if have-opt-always-trust
-	     (display "no-auto-check-trustdb\n" p))
-	 (display (string-append "agent-program "
-				 (tool 'gpg-agent)
-				 "|--debug-quick-random\n") p)
-	 (display "allow-weak-digest-algos\n" p))
-	((string=? "gpg-agent.conf" name)
-	 (display (string-append "pinentry-program " PINENTRY "\n") p)))))
-   '("gpg.conf" "gpg-agent.conf")))
+
+  (if (flag "--use-keyring" *args*)
+      (create-file "pubring.gpg"))
+
+  (create-file "gpg.conf"
+	       "no-greeting"
+	       "no-secmem-warning"
+	       "no-permission-warning"
+	       "batch"
+               "no-auto-key-retrieve"
+               "no-auto-key-locate"
+	       "allow-weak-digest-algos"
+               "ignore-mdc-error"
+	       (if have-opt-always-trust
+		   "no-auto-check-trustdb" "#no-auto-check-trustdb")
+	       (string-append "agent-program "
+			      (tool 'gpg-agent)
+			      "|--debug-quick-random\n")
+	       )
+  (create-file "gpg-agent.conf"
+	       "allow-preset-passphrase"
+	       "no-grab"
+	       "enable-ssh-support"
+	       (if (flag "--extended-key-format" *args*)
+		   "enable-extended-key-format" "#enable-extended-key-format")
+	       (string-append "pinentry-program " (tool 'pinentry))
+	       (if (assoc "scdaemon" gpg-components)
+		   (string-append "scdaemon-program " (tool 'scdaemon))
+		   "# No scdaemon available")
+	       ))
 
 ;; Initialize the test environment, install appropriate configuration
 ;; and start the agent, without any keys.
 (define (setup-environment)
   (create-gpghome)
   (start-agent))
+
+(define (setup-environment-no-atexit)
+  (create-gpghome)
+  (start-agent #t))
 
 (define (create-sample-files)
   (log "Creating sample data files")
@@ -340,17 +381,16 @@
   (log "Unpacking samples")
   (for-each
    (lambda (name)
-     (dearmor (in-srcdir ".." "openpgp" (string-append name "o.asc")) name))
+     (dearmor (in-srcdir "tests" "openpgp" (string-append name "o.asc")) name))
    plain-files))
 
 (define (create-legacy-gpghome)
   (create-sample-files)
-  (mkdir "private-keys-v1.d" "-rwx")
 
   (log "Storing private keys")
   (for-each
    (lambda (name)
-     (dearmor (in-srcdir (string-append "/privkeys/" name ".asc"))
+     (dearmor (in-srcdir "tests" "openpgp" "privkeys" (string-append name ".asc"))
 	      (string-append "private-keys-v1.d/" name ".key")))
    '("50B2D4FA4122C212611048BC5FC31BD44393626E"
      "7E201E28B6FEB2927B321F443205F4724EBE637E"
@@ -374,11 +414,11 @@
   (log "Importing public demo and test keys")
   (for-each
    (lambda (file)
-     (call-check `(,@GPG --yes --import ,(in-srcdir file))))
+     (call-check `(,@GPG --yes --import ,(in-srcdir "tests" "openpgp" file))))
    (list "pubdemo.asc" "pubring.asc" key-file1))
 
   (pipe:do
-   (pipe:open (in-srcdir "pubring.pkr.asc") (logior O_RDONLY O_BINARY))
+   (pipe:open (in-srcdir "tests" "openpgp" "pubring.pkr.asc") (logior O_RDONLY O_BINARY))
    (pipe:spawn `(,@GPG --dearmor))
    (pipe:spawn `(,@GPG --yes --import))))
 
@@ -413,20 +453,49 @@
   (preset-passphrases))
 
 ;; Create the socket dir and start the agent.
-(define (start-agent)
+(define (start-agent . args)
   (log "Starting gpg-agent...")
-  (atexit stop-agent)
+  (let ((gnupghome (getenv "GNUPGHOME")))
+    (if (null? args)
+	(atexit (lambda ()
+		  (with-home-directory gnupghome (stop-agent))))))
   (catch (log "Warning: Creating socket directory failed:" (car *error*))
-	 (call-popen `(,(tool 'gpgconf) --create-socketdir) ""))
+	 (gpg-conf '--create-socketdir))
   (call-check `(,(tool 'gpg-connect-agent) --verbose
 		,(string-append "--agent-program=" (tool 'gpg-agent)
 				"|--debug-quick-random")
 		/bye)))
 
-;; Stop the agent and remove the socket dir.
+;; Stop the agent and other daemons and remove the socket dir.
 (define (stop-agent)
   (log "Stopping gpg-agent...")
+  (gpg-conf '--kill 'all)
   (catch (log "Warning: Removing socket directory failed.")
-	 (call-popen `(,(tool 'gpgconf) --remove-socketdir) ""))
-  (call-check `(,(tool 'gpg-connect-agent) --verbose --no-autostart
-		killagent /bye)))
+	 (gpg-conf '--remove-socketdir)))
+
+;; Get the trust level for KEYID.  Any remaining arguments are simply
+;; passed to GPG.
+;;
+;; This function only supports keys with a single user id.
+(define (gettrust keyid . args)
+  (let ((trust
+	  (list-ref (assoc "pub" (gpg-with-colons
+				   `(,@args
+				      --list-keys ,keyid))) 1)))
+    (unless (and (= 1 (string-length trust))
+		 (member (string-ref trust 0) (string->list "oidreqnmfuws-")))
+	    (fail "Bad trust value:" trust))
+    trust))
+
+;; Check that KEYID's trust level matches EXPECTED-TRUST.  Any
+;; remaining arguments are simply passed to GPG.
+;;
+;; This function only supports keys with a single user id.
+(define (checktrust keyid expected-trust . args)
+  (let ((trust (apply gettrust `(,keyid ,@args))))
+    (unless (string=? trust expected-trust)
+	    (fail keyid ": Expected trust to be" expected-trust
+		   "but got" trust))))
+
+
+;; end

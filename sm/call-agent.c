@@ -33,11 +33,11 @@
 #include "gpgsm.h"
 #include <gcrypt.h>
 #include <assuan.h>
-#include "i18n.h"
-#include "asshelp.h"
+#include "../common/i18n.h"
+#include "../common/asshelp.h"
 #include "keydb.h" /* fixme: Move this to import.c */
-#include "membuf.h"
-#include "shareddefs.h"
+#include "../common/membuf.h"
+#include "../common/shareddefs.h"
 #include "passphrase.h"
 
 
@@ -108,6 +108,13 @@ warn_version_mismatch (ctrl_t ctrl, assuan_context_t ctx,
       else
         {
           log_info (_("WARNING: %s\n"), warn);
+          if (!opt.quiet)
+            {
+              log_info (_("Note: Outdated servers may lack important"
+                          " security fixes.\n"));
+              log_info (_("Note: Use the command \"%s\" to restart them.\n"),
+                        "gpgconf --kill all");
+            }
           gpgsm_status2 (ctrl, STATUS_WARNING, "server_version_mismatch 0",
                          warn, NULL);
           xfree (warn);
@@ -171,6 +178,39 @@ start_agent (ctrl_t ctrl)
                            str_pinentry_mode (opt.pinentry_mode),
                            gpg_strerror (rc));
             }
+
+          /* Pass on the request origin.  */
+          if (opt.request_origin)
+            {
+              char *tmp = xasprintf ("OPTION pretend-request-origin=%s",
+                                     str_request_origin (opt.request_origin));
+              rc = assuan_transact (agent_ctx, tmp,
+                               NULL, NULL, NULL, NULL, NULL, NULL);
+              xfree (tmp);
+              if (rc)
+                log_error ("setting request origin '%s' failed: %s\n",
+                           str_request_origin (opt.request_origin),
+                           gpg_strerror (rc));
+            }
+
+          /* In DE_VS mode under Windows we require that the JENT RNG
+           * is active.  */
+#ifdef HAVE_W32_SYSTEM
+          if (!rc && opt.compliance == CO_DE_VS)
+            {
+              if (assuan_transact (agent_ctx, "GETINFO jent_active",
+                                   NULL, NULL, NULL, NULL, NULL, NULL))
+                {
+                  rc = gpg_error (GPG_ERR_FORBIDDEN);
+                  log_error (_("%s is not compliant with %s mode\n"),
+                             GPG_AGENT_NAME,
+                             gnupg_compliance_option_string (opt.compliance));
+                  gpgsm_status_with_error (ctrl, STATUS_ERROR,
+                                           "random-compliance", rc);
+                }
+            }
+#endif /*HAVE_W32_SYSTEM*/
+
         }
     }
 

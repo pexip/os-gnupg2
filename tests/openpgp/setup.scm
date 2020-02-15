@@ -17,14 +17,33 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "defs.scm"))
+(load (in-srcdir "tests" "openpgp" "defs.scm"))
 
-(unless (member "--create-tarball" *args*)
-	(fail "Usage: setup.scm --create-tarball <file>"))
+(define cache (flag "--create-tarball" *args*))
+(unless (and cache (= 1 (length cache)))
+	(fail "Usage: setup.scm --create-tarball <file> [--use-keyring]"))
 
-(with-ephemeral-home-directory
- (chdir (getenv "GNUPGHOME"))
- (create-gpghome)
- (create-legacy-gpghome)
- (stop-agent)
- (call-check `(,(tool 'gpgtar) --create --output ,(cadr *args*) ".")))
+(when (> (*verbose*) 0)
+      (define (pad symbol length)
+	(let loop ((cs (string->list (symbol->string symbol)))
+		   (result (make-string length #\space))
+		   (i 0))
+	  (if (null? cs)
+	      result
+	      (begin
+		(string-set! result i (car cs))
+		(loop (cdr cs) result (+ 1 i))))))
+      (log " I am going to use these tools:\n"
+	   "==============================")
+      (for-each
+       (lambda (t)
+	 (log (pad t 25) (tool t)))
+       '(gpgconf gpg gpg-agent scdaemon gpgsm dirmngr gpg-connect-agent
+		 gpg-preset-passphrase gpgtar pinentry)))
+
+(setenv "GNUPGHOME" (getcwd) #t)
+(create-gpghome)
+(start-agent)
+(create-legacy-gpghome)
+(stop-agent)
+(call-check `(,(tool 'gpgtar) --create --output ,(car cache) "."))

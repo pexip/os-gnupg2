@@ -547,11 +547,11 @@
 	(display n)
 	(display ": ")
 	(let ((tag (get-tag f)))
-	  (unless (null? tag)
-		  (display (basename (car tag)))
-		  (display ":")
-		  (display (+ 1 (cdr tag)))
-		  (display ": ")))
+	  (when (and (pair? tag) (string? (car tag)) (number? (cdr tag)))
+		(display (basename (car tag)))
+		(display ":")
+		(display (+ 1 (cdr tag)))
+		(display ": ")))
 	(write f))
 	(newline)
 	(loop (+ n 1) skip (cdr frames))))))
@@ -605,16 +605,21 @@
 ;; This is used by the vm to throw exceptions.
 (define (throw' message args history)
   (cond
-   ((more-handlers?)
-    ((pop-handler) message args history))
    ((and args (list? args) (= 2 (length args))
 	 (equal? *interpreter-exit* (car args)))
     (*run-atexit-handlers*)
     (quit (cadr args)))
+   ((more-handlers?)
+    ((pop-handler) message args history))
    (else
     (display message)
-    (if args (begin
-	      (display ": ")
+    (when (and args (not (null? args)))
+	  (display ": ")
+	  (if (and (pair? args) (string? (car args)))
+	      (begin (display (car args))
+		     (unless (null? (cdr args))
+			     (newline)
+			     (write (cdr args))))
 	      (write args)))
     (newline)
     (vm-history-print history)
@@ -695,6 +700,11 @@
   `(apply (lambda ()
 	    ,@(cdr form)
 	    (current-environment))))
+
+(define-macro (export name . expressions)
+  `(define ,name
+     (begin
+       ,@expressions)))
 
 ;;;;; I/O
 

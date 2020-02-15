@@ -27,8 +27,10 @@
    RFC-4253 - Transport Layer Protocol
    RFC-5656 - ECC support
 
-   The protocol for the agent is defined in OpenSSH's PROTOCL.agent
-   file.
+   The protocol for the agent is defined in:
+
+   https://tools.ietf.org/html/draft-miller-ssh-agent
+
   */
 
 #include <config.h>
@@ -40,12 +42,22 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <assert.h>
+#ifndef HAVE_W32_SYSTEM
+#include <sys/socket.h>
+#include <sys/un.h>
+#endif /*!HAVE_W32_SYSTEM*/
+#ifdef HAVE_SYS_UCRED_H
+#include <sys/ucred.h>
+#endif
+#ifdef HAVE_UCRED_H
+#include <ucred.h>
+#endif
 
 #include "agent.h"
 
-#include "i18n.h"
-#include "util.h"
-#include "ssh-utils.h"
+#include "../common/i18n.h"
+#include "../common/util.h"
+#include "../common/ssh-utils.h"
 
 
 
@@ -73,6 +85,8 @@
 /* Other constants.  */
 #define SSH_DSA_SIGNATURE_PADDING 20
 #define SSH_DSA_SIGNATURE_ELEMS    2
+#define SSH_AGENT_RSA_SHA2_256            0x02
+#define SSH_AGENT_RSA_SHA2_512            0x04
 #define SPEC_FLAG_USE_PKCS1V2 (1 << 0)
 #define SPEC_FLAG_IS_ECDSA    (1 << 1)
 #define SPEC_FLAG_IS_EdDSA    (1 << 2)  /*(lowercase 'd' on purpose.)*/
@@ -255,7 +269,7 @@ static gpg_error_t ssh_key_extract_comment (gcry_sexp_t key, char **comment);
 /* Associating request types with the corresponding request
    handlers.  */
 
-static ssh_request_spec_t request_specs[] =
+static const ssh_request_spec_t request_specs[] =
   {
 #define REQUEST_SPEC_DEFINE(id, name, secret_input) \
   { SSH_REQUEST_##id, ssh_handler_##name, #name, secret_input }
@@ -273,7 +287,7 @@ static ssh_request_spec_t request_specs[] =
 
 
 /* Table holding key type specifications.  */
-static ssh_key_type_spec_t ssh_key_types[] =
+static const ssh_key_type_spec_t ssh_key_types[] =
   {
     {
       "ssh-ed25519", "Ed25519", GCRY_PK_EDDSA, "qd",  "q", "rs", "qd",
@@ -667,13 +681,7 @@ stream_read_blob (estream_t stream, unsigned int secure, gcry_mpi_t *r_mpi)
 static gpg_error_t
 stream_read_cstring (estream_t stream, char **string)
 {
-  gpg_error_t err;
-  unsigned char *buffer;
-
-  err = stream_read_string (stream, 0, &buffer, NULL);
-  if (!err)
-    *string = (char *)buffer;
-  return err;
+  return stream_read_string (stream, 0, (unsigned char **)string, NULL);
 }
 
 
@@ -1039,12 +1047,14 @@ search_control_file (ssh_control_file_t cf, const char *hexgrip,
    We can assume that the user wants to allow ssh using this key. */
 static gpg_error_t
 add_control_entry (ctrl_t ctrl, ssh_key_type_spec_t *spec,
-                   const char *hexgrip, const char *fmtfpr,
+                   const char *hexgrip, gcry_sexp_t key,
                    int ttl, int confirm)
 {
   gpg_error_t err;
   ssh_control_file_t cf;
   int disabled;
+  char *fpr_md5 = NULL;
+  char *fpr_sha256 = NULL;
 
   (void)ctrl;
 
@@ -1058,19 +1068,31 @@ add_control_entry (ctrl_t ctrl, ssh_key_type_spec_t *spec,
       struct tm *tp;
       time_t atime = time (NULL);
 
+      err = ssh_get_fingerprint_string (key, GCRY_MD_MD5, &fpr_md5);
+      if (err)
+        goto out;
+
+      err = ssh_get_fingerprint_string (key, GCRY_MD_SHA256, &fpr_sha256);
+      if (err)
+        goto out;
+
       /* Not yet in the file - add it. Because the file has been
          opened in append mode, we simply need to write to it.  */
       tp = localtime (&atime);
       fprintf (cf->fp,
                ("# %s key added on: %04d-%02d-%02d %02d:%02d:%02d\n"
-                "# MD5 Fingerprint:  %s\n"
+                "# Fingerprints:  %s\n"
+                "#                %s\n"
                 "%s %d%s\n"),
                spec->name,
                1900+tp->tm_year, tp->tm_mon+1, tp->tm_mday,
                tp->tm_hour, tp->tm_min, tp->tm_sec,
-               fmtfpr, hexgrip, ttl, confirm? " confirm":"");
+               fpr_md5, fpr_sha256, hexgrip, ttl, confirm? " confirm":"");
 
     }
+ out:
+  xfree (fpr_md5);
+  xfree (fpr_sha256);
   close_control_file (cf);
   return 0;
 }
@@ -2111,7 +2133,7 @@ ssh_receive_key (estream_t stream, gcry_sexp_t *key_new, int secret,
        *   string	private_key
        *
        * Note that the private key is the concatenation of the private
-       * key with the public key.  Thus theres are 64 bytes; however
+       * key with the public key.  Thus there's are 64 bytes; however
        * we only want the real 32 byte private key - Libgcrypt expects
        * this.
        */
@@ -2382,6 +2404,34 @@ ssh_key_grip (gcry_sexp_t key, unsigned char *buffer)
 }
 
 
+static gpg_error_t
+card_key_list (ctrl_t ctrl, char **r_serialno, strlist_t *result)
+{
+  gpg_error_t err;
+
+  *r_serialno = NULL;
+  *result = NULL;
+
+  err = agent_card_serialno (ctrl, r_serialno, NULL);
+  if (err)
+    {
+      if (gpg_err_code (err) != GPG_ERR_ENODEV && opt.verbose)
+        log_info (_("error getting serial number of card: %s\n"),
+                  gpg_strerror (err));
+
+      /* Nothing available.  */
+      return 0;
+    }
+
+  err = agent_card_cardlist (ctrl, result);
+  if (err)
+    {
+      xfree (*r_serialno);
+      *r_serialno = NULL;
+    }
+  return err;
+}
+
 /* Check whether a smartcard is available and whether it has a usable
    key.  Store a copy of that key at R_PK and return 0.  If no key is
    available store NULL at R_PK and return an error code.  If CARDSN
@@ -2539,7 +2589,6 @@ ssh_handler_request_identities (ctrl_t ctrl,
   gpg_error_t err;
   int ret;
   ssh_control_file_t cf = NULL;
-  char *cardsn;
   gpg_error_t ret_err;
 
   (void)request;
@@ -2548,7 +2597,6 @@ ssh_handler_request_identities (ctrl_t ctrl,
 
   key_public = NULL;
   key_counter = 0;
-  err = 0;
 
   key_blobs = es_fopenmem (0, "r+b");
   if (! key_blobs)
@@ -2561,19 +2609,57 @@ ssh_handler_request_identities (ctrl_t ctrl,
      reader - this should be allowed even without being listed in
      sshcontrol. */
 
-  if (!opt.disable_scdaemon
-      && !card_key_available (ctrl, &key_public, &cardsn))
+  if (!opt.disable_scdaemon)
     {
-      err = ssh_send_key_public (key_blobs, key_public, cardsn);
-      gcry_sexp_release (key_public);
-      key_public = NULL;
-      xfree (cardsn);
-      if (err)
-        goto out;
+      char *serialno;
+      strlist_t card_list, sl;
 
-      key_counter++;
+      err = card_key_list (ctrl, &serialno, &card_list);
+      if (err)
+        {
+          if (opt.verbose)
+            log_info (_("error getting list of cards: %s\n"),
+                      gpg_strerror (err));
+          goto scd_out;
+        }
+
+      for (sl = card_list; sl; sl = sl->next)
+        {
+          char *serialno0;
+          char *cardsn;
+
+          err = agent_card_serialno (ctrl, &serialno0, sl->d);
+          if (err)
+            {
+              if (opt.verbose)
+                log_info (_("error getting serial number of card: %s\n"),
+                          gpg_strerror (err));
+              continue;
+            }
+
+          xfree (serialno0);
+          if (card_key_available (ctrl, &key_public, &cardsn))
+            continue;
+
+          err = ssh_send_key_public (key_blobs, key_public, cardsn);
+          gcry_sexp_release (key_public);
+          key_public = NULL;
+          xfree (cardsn);
+          if (err)
+            {
+              xfree (serialno);
+              free_strlist (card_list);
+              goto out;
+            }
+
+          key_counter++;
+        }
+
+      xfree (serialno);
+      free_strlist (card_list);
     }
 
+ scd_out:
   /* Then look at all the registered and non-disabled keys. */
   err = open_control_file (&cf, 0);
   if (err)
@@ -2655,7 +2741,7 @@ data_hash (unsigned char *data, size_t data_n,
 }
 
 
-/* This function signs the data described by CTRL. If HASH is is not
+/* This function signs the data described by CTRL. If HASH is not
    NULL, (HASH,HASHLEN) overrides the hash stored in CTRL.  This is to
    allow the use of signature algorithms that implement the hashing
    internally (e.g. Ed25519).  On success the created signature is
@@ -2695,7 +2781,7 @@ data_sign (ctrl_t ctrl, ssh_key_type_spec_t *spec,
       err = agent_raw_key_from_file (ctrl, ctrl->keygrip, &key);
       if (err)
         goto out;
-      err = ssh_get_fingerprint_string (key, &fpr);
+      err = ssh_get_fingerprint_string (key, opt.ssh_fingerprint_digest, &fpr);
       if (!err)
         {
           gcry_sexp_t tmpsxp = gcry_sexp_find_token (key, "comment", 0);
@@ -2778,7 +2864,6 @@ ssh_handler_sign_request (ctrl_t ctrl, estream_t request, estream_t response)
   unsigned char *sig = NULL;
   size_t sig_n;
   u32 data_size;
-  u32 flags;
   gpg_error_t err;
   gpg_error_t ret_err;
   int hash_algo;
@@ -2798,10 +2883,39 @@ ssh_handler_sign_request (ctrl_t ctrl, estream_t request, estream_t response)
   if (err)
     goto out;
 
-  /* FIXME?  */
-  err = stream_read_uint32 (request, &flags);
-  if (err)
-    goto out;
+  /* Flag processing.  */
+  {
+    u32 flags;
+
+    err = stream_read_uint32 (request, &flags);
+    if (err)
+      goto out;
+
+    if (spec.algo == GCRY_PK_RSA)
+      {
+        if ((flags & SSH_AGENT_RSA_SHA2_512))
+          {
+            flags &= ~SSH_AGENT_RSA_SHA2_512;
+            spec.ssh_identifier = "rsa-sha2-512";
+            spec.hash_algo = GCRY_MD_SHA512;
+          }
+        if ((flags & SSH_AGENT_RSA_SHA2_256))
+          {
+            /* Note: We prefer SHA256 over SHA512.  */
+            flags &= ~SSH_AGENT_RSA_SHA2_256;
+            spec.ssh_identifier = "rsa-sha2-256";
+            spec.hash_algo = GCRY_MD_SHA256;
+          }
+      }
+
+    /* Some flag is present that we do not know about.  Note that
+     * processed or known flags have been cleared at this point.  */
+    if (flags)
+      {
+        err = gpg_error (GPG_ERR_UNKNOWN_OPTION);
+        goto out;
+      }
+  }
 
   hash_algo = spec.hash_algo;
   if (!hash_algo)
@@ -2901,6 +3015,7 @@ ssh_key_extract_comment (gcry_sexp_t key, char **r_comment)
 
 /* This function converts the key contained in the S-Expression KEY
    into a buffer, which is protected by the passphrase PASSPHRASE.
+   If PASSPHRASE is the empty passphrase, the key is not protected.
    Returns usual error code.  */
 static gpg_error_t
 ssh_key_to_protected_buffer (gcry_sexp_t key, const char *passphrase,
@@ -2910,7 +3025,6 @@ ssh_key_to_protected_buffer (gcry_sexp_t key, const char *passphrase,
   unsigned int buffer_new_n;
   gpg_error_t err;
 
-  err = 0;
   buffer_new_n = gcry_sexp_sprint (key, GCRYSEXP_FMT_CANON, NULL, 0);
   buffer_new = xtrymalloc_secure (buffer_new_n);
   if (! buffer_new)
@@ -2922,7 +3036,17 @@ ssh_key_to_protected_buffer (gcry_sexp_t key, const char *passphrase,
   gcry_sexp_sprint (key, GCRYSEXP_FMT_CANON, buffer_new, buffer_new_n);
   /* FIXME: guarantee?  */
 
-  err = agent_protect (buffer_new, passphrase, buffer, buffer_n, 0, -1);
+  if (*passphrase)
+    err = agent_protect (buffer_new, passphrase, buffer, buffer_n, 0, -1);
+  else
+    {
+      /* The key derivation function does not support zero length
+       * strings.  Store key unprotected if the user wishes so.  */
+      *buffer = buffer_new;
+      *buffer_n = buffer_new_n;
+      buffer_new = NULL;
+      err = 0;
+    }
 
  out:
 
@@ -2974,7 +3098,7 @@ ssh_identity_register (ctrl_t ctrl, ssh_key_type_spec_t *spec,
 
   bin2hex (key_grip_raw, 20, key_grip);
 
-  err = ssh_get_fingerprint_string (key, &key_fpr);
+  err = ssh_get_fingerprint_string (key, opt.ssh_fingerprint_digest, &key_fpr);
   if (err)
     goto out;
 
@@ -3048,13 +3172,13 @@ ssh_identity_register (ctrl_t ctrl, ssh_key_type_spec_t *spec,
     goto out;
 
   /* Cache this passphrase. */
-  err = agent_put_cache (key_grip, CACHE_MODE_SSH, pi->pin, ttl);
+  err = agent_put_cache (ctrl, key_grip, CACHE_MODE_SSH, pi->pin, ttl);
   if (err)
     goto out;
 
  key_exists:
   /* And add an entry to the sshcontrol file.  */
-  err = add_control_entry (ctrl, spec, key_grip, key_fpr, ttl, confirm);
+  err = add_control_entry (ctrl, spec, key_grip, key, ttl, confirm);
 
 
  out:
@@ -3120,9 +3244,10 @@ ssh_handler_add_identity (ctrl_t ctrl, estream_t request, estream_t response)
   while (1)
     {
       err = stream_read_byte (request, &b);
-      if (gpg_err_code (err) == GPG_ERR_EOF)
-	{
-	  err = 0;
+      if (err)
+        {
+          if (gpg_err_code (err) == GPG_ERR_EOF)
+            err = 0;
 	  break;
 	}
 
@@ -3312,10 +3437,10 @@ ssh_handler_unlock (ctrl_t ctrl, estream_t request, estream_t response)
 /* Return the request specification for the request identified by TYPE
    or NULL in case the requested request specification could not be
    found.  */
-static ssh_request_spec_t *
+static const ssh_request_spec_t *
 request_spec_lookup (int type)
 {
-  ssh_request_spec_t *spec;
+  const ssh_request_spec_t *spec;
   unsigned int i;
 
   for (i = 0; i < DIM (request_specs); i++)
@@ -3339,7 +3464,7 @@ request_spec_lookup (int type)
 static int
 ssh_request_process (ctrl_t ctrl, estream_t stream_sock)
 {
-  ssh_request_spec_t *spec;
+  const ssh_request_spec_t *spec;
   estream_t response = NULL;
   estream_t request = NULL;
   unsigned char request_type;
@@ -3491,6 +3616,64 @@ ssh_request_process (ctrl_t ctrl, estream_t stream_sock)
 }
 
 
+/* Return the peer's pid.  */
+static unsigned long
+get_client_pid (int fd)
+{
+  pid_t client_pid = (pid_t)0;
+
+#ifdef SO_PEERCRED
+  {
+#ifdef HAVE_STRUCT_SOCKPEERCRED_PID
+    struct sockpeercred cr;
+#else
+    struct ucred cr;
+#endif
+    socklen_t cl = sizeof cr;
+
+    if (!getsockopt (fd, SOL_SOCKET, SO_PEERCRED, &cr, &cl))
+      {
+#if defined (HAVE_STRUCT_SOCKPEERCRED_PID) || defined (HAVE_STRUCT_UCRED_PID)
+        client_pid = cr.pid;
+#elif defined (HAVE_STRUCT_UCRED_CR_PID)
+        client_pid = cr.cr_pid;
+#else
+#error "Unknown SO_PEERCRED struct"
+#endif
+      }
+  }
+#elif defined (LOCAL_PEERPID)
+  {
+    socklen_t len = sizeof (pid_t);
+
+    getsockopt (fd, SOL_LOCAL, LOCAL_PEERPID, &client_pid, &len);
+  }
+#elif defined (LOCAL_PEEREID)
+  {
+    struct unpcbid unp;
+    socklen_t unpl = sizeof unp;
+
+    if (getsockopt (fd, 0, LOCAL_PEEREID, &unp, &unpl) != -1)
+      client_pid = unp.unp_pid;
+  }
+#elif defined (HAVE_GETPEERUCRED)
+  {
+    ucred_t *ucred = NULL;
+
+    if (getpeerucred (fd, &ucred) != -1)
+      {
+        client_pid= ucred_getpid (ucred);
+        ucred_free (ucred);
+      }
+  }
+#else
+  (void)fd;
+#endif
+
+  return (unsigned long)client_pid;
+}
+
+
 /* Start serving client on SOCK_CLIENT.  */
 void
 start_command_handler_ssh (ctrl_t ctrl, gnupg_fd_t sock_client)
@@ -3502,6 +3685,8 @@ start_command_handler_ssh (ctrl_t ctrl, gnupg_fd_t sock_client)
   err = agent_copy_startup_env (ctrl);
   if (err)
     goto out;
+
+  ctrl->client_pid = get_client_pid (FD2INT(sock_client));
 
   /* Create stream from socket.  */
   stream_sock = es_fdopen (FD2INT(sock_client), "r+");
@@ -3526,7 +3711,7 @@ start_command_handler_ssh (ctrl_t ctrl, gnupg_fd_t sock_client)
   /* Main processing loop. */
   while ( !ssh_request_process (ctrl, stream_sock) )
     {
-      /* Check wether we have reached EOF before trying to read
+      /* Check whether we have reached EOF before trying to read
 	 another request.  */
       int c;
 
@@ -3548,7 +3733,7 @@ start_command_handler_ssh (ctrl_t ctrl, gnupg_fd_t sock_client)
 
 #ifdef HAVE_W32_SYSTEM
 /* Serve one ssh-agent request.  This is used for the Putty support.
-   REQUEST is the the mmapped memory which may be accessed up to a
+   REQUEST is the mmapped memory which may be accessed up to a
    length of MAXREQLEN.  Returns 0 on success which also indicates
    that a valid SSH response message is now in REQUEST.  */
 int
@@ -3558,7 +3743,7 @@ serve_mmapped_ssh_request (ctrl_t ctrl,
   gpg_error_t err;
   int send_err = 0;
   int valid_response = 0;
-  ssh_request_spec_t *spec;
+  const ssh_request_spec_t *spec;
   u32 msglen;
   estream_t request_stream, response_stream;
 
@@ -3643,7 +3828,7 @@ serve_mmapped_ssh_request (ctrl_t ctrl,
     size_t response_size;
 
     /* NB: In contrast to the request-stream, the response stream
-       includes the the message type byte.  */
+       includes the message type byte.  */
     if (es_fclose_snatch (response_stream, &response_data, &response_size))
       {
         log_error ("snatching ssh response failed: %s",

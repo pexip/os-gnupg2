@@ -23,7 +23,7 @@ bin_PROGRAMS = gpgsm
 
 AM_CFLAGS = $(LIBGCRYPT_CFLAGS) $(KSBA_CFLAGS) $(LIBASSUAN_CFLAGS)
 
-AM_CPPFLAGS = -I$(top_srcdir)/common -DKEYBOX_WITH_X509=1
+AM_CPPFLAGS = -DKEYBOX_WITH_X509=1
 include $(top_srcdir)/am/cmacros.am
 
 if HAVE_W32_SYSTEM
@@ -38,7 +38,6 @@ gpgsm_SOURCES = \
 	call-agent.c \
 	call-dirmngr.c \
 	fingerprint.c \
-	base64.c \
 	certlist.c \
 	certdump.c \
 	certcheck.c \

@@ -29,8 +29,10 @@
 
 #include "gpgsm.h"
 #include <assuan.h>
-#include "sysutils.h"
-#include "server-help.h"
+#include "../common/sysutils.h"
+#include "../common/server-help.h"
+#include "../common/asshelp.h"
+#include "../common/shareddefs.h"
 
 #define set_error(e,t) assuan_set_error (ctx, gpg_error (e), (t))
 
@@ -288,6 +290,17 @@ option_handler (assuan_context_t ctx, const char *key, const char *value)
           ctrl->offline = i;
         }
     }
+  else if (!strcmp (key, "request-origin"))
+    {
+      if (!opt.request_origin)
+        {
+          int i = parse_request_origin (value);
+          if (i == -1)
+            err = gpg_error (GPG_ERR_INV_VALUE);
+          else
+            opt.request_origin = i;
+        }
+    }
   else
     err = gpg_error (GPG_ERR_UNKNOWN_OPTION);
 
@@ -409,7 +422,7 @@ cmd_signer (assuan_context_t ctx, char *line)
     {
       gpgsm_status2 (ctrl, STATUS_INV_SGNR,
                      get_inv_recpsgnr_code (rc), line, NULL);
-      /* For compatibiliy reasons we also issue the old code after the
+      /* For compatibility reasons we also issue the old code after the
          new one.  */
       gpgsm_status2 (ctrl, STATUS_INV_RECP,
                      get_inv_recpsgnr_code (rc), line, NULL);
@@ -1179,7 +1192,7 @@ cmd_passwd (assuan_context_t ctx, char *line)
 
   line = skip_options (line);
 
-  err = gpgsm_find_cert (ctrl, line, NULL, &cert);
+  err = gpgsm_find_cert (ctrl, line, NULL, &cert, 0);
   if (err)
     ;
   else if (!(grip = gpgsm_get_keygrip_hexstring (cert)))
@@ -1426,24 +1439,8 @@ gpgsm_status2 (ctrl_t ctrl, int no, ...)
     }
   else
     {
-      assuan_context_t ctx = ctrl->server_local->assuan_ctx;
-      char buf[950], *p;
-      size_t n;
-
-      p = buf;
-      n = 0;
-      while ( (text = va_arg (arg_ptr, const char *)) )
-        {
-          if (n)
-            {
-              *p++ = ' ';
-              n++;
-            }
-          for ( ; *text && n < DIM (buf)-2; n++)
-            *p++ = *text++;
-        }
-      *p = 0;
-      err = assuan_write_status (ctx, get_status_string (no), buf);
+      err = vprint_assuan_status_strings (ctrl->server_local->assuan_ctx,
+                                          get_status_string (no), arg_ptr);
     }
 
   va_end (arg_ptr);

@@ -45,6 +45,9 @@
 # endif
 # include <netdb.h>
 #endif
+#ifdef HAVE_STAT
+# include <sys/stat.h>
+#endif
 #include <string.h>
 #include <unistd.h>
 
@@ -68,8 +71,8 @@
 #endif
 
 #include "./dirmngr-err.h"
-#include "util.h"
-#include "host2net.h"
+#include "../common/util.h"
+#include "../common/host2net.h"
 #include "dns-stuff.h"
 
 #ifdef USE_NPTH
@@ -95,9 +98,8 @@
 #ifndef T_SRV
 #define T_SRV 33
 #endif
-#ifndef T_CERT
-# define T_CERT 37
-#endif
+#undef T_CERT
+#define T_CERT 37
 
 /* The standard SOCKS and TOR ports.  */
 #define SOCKS_PORT 1080
@@ -112,12 +114,22 @@
 #define DEFAULT_TIMEOUT 30
 
 
+#define RESOLV_CONF_NAME "/etc/resolv.conf"
+
 /* Two flags to enable verbose and debug mode.  */
 static int opt_verbose;
 static int opt_debug;
 
 /* The timeout in seconds for libdns requests.  */
 static int opt_timeout;
+
+/* The flag to disable IPv4 access - right now this only skips
+ * returned A records.  */
+static int opt_disable_ipv4;
+
+/* The flag to disable IPv6 access - right now this only skips
+ * returned AAAA records.  */
+static int opt_disable_ipv6;
 
 /* If set force the use of the standard resolver.  */
 static int standard_resolver;
@@ -218,12 +230,38 @@ enable_dns_tormode (int new_circuit)
 }
 
 
+/* Disable tor mode.  */
+void
+disable_dns_tormode (void)
+{
+  tor_mode = 0;
+}
+
+
 /* Set verbosity and debug mode for this module. */
 void
 set_dns_verbose (int verbose, int debug)
 {
   opt_verbose = verbose;
   opt_debug = debug;
+}
+
+
+/* Set the Disable-IPv4 flag so that the name resolver does not return
+ * A addresses.  */
+void
+set_dns_disable_ipv4 (int yes)
+{
+  opt_disable_ipv4 = !!yes;
+}
+
+
+/* Set the Disable-IPv6 flag so that the name resolver does not return
+ * AAAA addresses.  */
+void
+set_dns_disable_ipv6 (int yes)
+{
+  opt_disable_ipv6 = !!yes;
 }
 
 
@@ -358,6 +396,39 @@ libdns_error_to_gpg_error (int serr)
 #endif /*USE_LIBDNS*/
 
 
+/* Return true if resolve.conf changed since it was last loaded.  */
+#ifdef USE_LIBDNS
+static int
+resolv_conf_changed_p (void)
+{
+#if defined(HAVE_W32_SYSTEM) || !defined(HAVE_STAT)
+  return 0;
+#else
+  static time_t last_mtime;
+  const char *fname = RESOLV_CONF_NAME;
+  struct stat statbuf;
+  int changed = 0;
+
+  if (stat (fname, &statbuf))
+    {
+      log_error ("stat'ing '%s' failed: %s\n",
+                 fname, gpg_strerror (gpg_error_from_syserror ()));
+      last_mtime = 1; /* Force a "changed" result the next time stat
+                       * works.  */
+    }
+  else if (!last_mtime)
+    last_mtime = statbuf.st_mtime;
+  else if (last_mtime != statbuf.st_mtime)
+    {
+      changed = 1;
+      last_mtime = statbuf.st_mtime;
+    }
+
+  return changed;
+#endif
+}
+#endif /*USE_LIBDNS*/
+
 #ifdef USE_LIBDNS
 /* Initialize libdns.  Returns 0 on success; prints a diagnostic and
  * returns an error code on failure.  */
@@ -463,7 +534,8 @@ libdns_init (void)
 #else /* Unix */
       const char *fname;
 
-      fname = "/etc/resolv.conf";
+      fname = RESOLV_CONF_NAME;
+      resolv_conf_changed_p (); /* Reset timestamp.  */
       err = libdns_error_to_gpg_error
         (dns_resconf_loadpath (ld.resolv_conf, fname));
       if (err)
@@ -477,18 +549,33 @@ libdns_init (void)
         (dns_nssconf_loadpath (ld.resolv_conf, fname));
       if (err)
         {
-          log_error ("failed to load '%s': %s\n", fname, gpg_strerror (err));
-          /* not fatal, nsswitch.conf is not used on all systems; assume
-           * classic behavior instead.  Our dns library states "bf" which tries
-           * DNS then Files, which is not classic; FreeBSD
-           * /usr/src/lib/libc/net/gethostnamadr.c defines default_src[] which
-           * is Files then DNS, which is. */
+          /* This is not a fatal error: nsswitch.conf is not used on
+           * all systems; assume classic behavior instead.  */
+          if (gpg_err_code (err) != GPG_ERR_ENOENT)
+            log_error ("failed to load '%s': %s\n", fname, gpg_strerror (err));
           if (opt_debug)
             log_debug ("dns: fallback resolution order, files then DNS\n");
           ld.resolv_conf->lookup[0] = 'f';
           ld.resolv_conf->lookup[1] = 'b';
           ld.resolv_conf->lookup[2] = '\0';
           err = GPG_ERR_NO_ERROR;
+        }
+      else if (!strchr (ld.resolv_conf->lookup, 'b'))
+        {
+          /* No DNS resolution type found in the list.  This might be
+           * due to systemd based systems which allow for custom
+           * keywords which are not known to us and thus we do not
+           * know whether DNS is wanted or not.  Because DNS is
+           * important for our infrastructure, we forcefully append
+           * DNS to the end of the list.  */
+          if (strlen (ld.resolv_conf->lookup)+2 < sizeof ld.resolv_conf->lookup)
+            {
+              if (opt_debug)
+                log_debug ("dns: appending DNS to resolution order\n");
+              strcat (ld.resolv_conf->lookup, "b");
+            }
+          else
+            log_error ("failed to append DNS to resolution order\n");
         }
 
 #endif /* Unix */
@@ -497,10 +584,35 @@ libdns_init (void)
   ld.hosts = dns_hosts_open (&derr);
   if (!ld.hosts)
     {
-      log_error ("failed to load hosts file: %s\n", gpg_strerror (err));
       err = libdns_error_to_gpg_error (derr);
+      log_error ("failed to initialize hosts file: %s\n", gpg_strerror (err));
       goto leave;
     }
+
+  {
+#if HAVE_W32_SYSTEM
+    char *hosts_path = xtryasprintf ("%s\\System32\\drivers\\etc\\hosts",
+                                     getenv ("SystemRoot"));
+    if (! hosts_path)
+      {
+        err = gpg_error_from_syserror ();
+        goto leave;
+      }
+
+    derr = dns_hosts_loadpath (ld.hosts, hosts_path);
+    xfree (hosts_path);
+#else
+    derr = dns_hosts_loadpath (ld.hosts, "/etc/hosts");
+#endif
+    if (derr)
+      {
+        err = libdns_error_to_gpg_error (derr);
+        log_error ("failed to load hosts file: %s\n", gpg_strerror (err));
+        err = 0; /* Do not bail out - having no /etc/hosts is legal.  */
+      }
+  }
+
+  ld.resolv_conf->options.recurse = recursive_resolver_p ();
 
   /* dns_hints_local for stub mode, dns_hints_root for recursive.  */
   ld.hints = (recursive_resolver
@@ -508,8 +620,8 @@ libdns_init (void)
               : dns_hints_local (ld.resolv_conf, &derr));
   if (!ld.hints)
     {
-      log_error ("failed to load DNS hints: %s\n", gpg_strerror (err));
       err = libdns_error_to_gpg_error (derr);
+      log_error ("failed to load DNS hints: %s\n", gpg_strerror (err));
       goto leave;
     }
 
@@ -581,6 +693,14 @@ libdns_res_open (struct dns_resolver **r_res)
   int derr;
 
   *r_res = NULL;
+
+  /* Force a reload if resolv.conf has changed.  */
+  if (resolv_conf_changed_p ())
+    {
+      if (opt_debug)
+        log_debug ("dns: resolv.conf changed - forcing reload\n");
+      libdns_reinit_pending = 1;
+    }
 
   if (libdns_reinit_pending)
     {
@@ -683,6 +803,7 @@ resolve_name_libdns (const char *name, unsigned short port,
   struct addrinfo *ent;
   char portstr_[21];
   char *portstr = NULL;
+  char *namebuf = NULL;
   int derr;
 
   *r_dai = NULL;
@@ -695,8 +816,6 @@ resolve_name_libdns (const char *name, unsigned short port,
   hints.ai_flags = AI_ADDRCONFIG;
   if (r_canonname)
     hints.ai_flags |= AI_CANONNAME;
-  if (is_ip_address (name))
-    hints.ai_flags |= AI_NUMERICHOST;
 
   if (port)
     {
@@ -707,6 +826,25 @@ resolve_name_libdns (const char *name, unsigned short port,
   err = libdns_res_open (&res);
   if (err)
     goto leave;
+
+
+  if (is_ip_address (name))
+    {
+      hints.ai_flags |= AI_NUMERICHOST;
+      /* libdns does not grok brackets - remove them.  */
+      if (*name == '[' && name[strlen(name)-1] == ']')
+        {
+          namebuf = xtrymalloc (strlen (name));
+          if (!namebuf)
+            {
+              err = gpg_error_from_syserror ();
+              goto leave;
+            }
+          strcpy (namebuf, name+1);
+          namebuf[strlen (namebuf)-1] = 0;
+          name = namebuf;
+        }
+    }
 
   ai = dns_ai_open (name, portstr, 0, &hints, res, &derr);
   if (!ai)
@@ -755,7 +893,7 @@ resolve_name_libdns (const char *name, unsigned short port,
             (*r_canonname)[strlen (*r_canonname)-1] = 0;
         }
 
-      dai = xtrymalloc (sizeof *dai + ent->ai_addrlen -1);
+      dai = xtrymalloc (sizeof *dai);
       if (dai == NULL)
         {
           err = gpg_error_from_syserror ();
@@ -789,6 +927,7 @@ resolve_name_libdns (const char *name, unsigned short port,
   else
     *r_dai = daihead;
 
+  xfree (namebuf);
   return err;
 }
 #endif /*USE_LIBDNS*/
@@ -826,7 +965,7 @@ resolve_name_standard (const char *name, unsigned short port,
   else
     *portstr = 0;
 
-  /* We can't use the the AI_IDN flag because that does the conversion
+  /* We can't use the AI_IDN flag because that does the conversion
      using the current locale.  However, GnuPG always used UTF-8.  To
      support IDN we would need to make use of the libidn API.  */
   ret = getaddrinfo (name, *portstr? portstr : NULL, &hints, &aibuf);
@@ -873,8 +1012,12 @@ resolve_name_standard (const char *name, unsigned short port,
     {
       if (ai->ai_family != AF_INET6 && ai->ai_family != AF_INET)
         continue;
+      if (opt_disable_ipv4 && ai->ai_family == AF_INET)
+        continue;
+      if (opt_disable_ipv6 && ai->ai_family == AF_INET6)
+        continue;
 
-      dai = xtrymalloc (sizeof *dai + ai->ai_addrlen - 1);
+      dai = xtrymalloc (sizeof *dai);
       dai->family = ai->ai_family;
       dai->socktype = ai->ai_socktype;
       dai->protocol = ai->ai_protocol;
@@ -942,7 +1085,7 @@ resolve_dns_name (const char *name, unsigned short port,
 #ifdef USE_LIBDNS
 /* Resolve an address using libdns.  */
 static gpg_error_t
-resolve_addr_libdns (const struct sockaddr *addr, int addrlen,
+resolve_addr_libdns (const struct sockaddr_storage *addr, int addrlen,
                      unsigned int flags, char **r_name)
 {
   gpg_error_t err;
@@ -956,13 +1099,13 @@ resolve_addr_libdns (const struct sockaddr *addr, int addrlen,
 
   /* First we turn ADDR into a DNS name (with ".arpa" suffix).  */
   err = 0;
-  if (addr->sa_family == AF_INET6)
+  if (addr->ss_family == AF_INET6)
     {
       const struct sockaddr_in6 *a6 = (const struct sockaddr_in6 *)addr;
       if (!dns_aaaa_arpa (host, sizeof host, (void*)&a6->sin6_addr))
         err = gpg_error (GPG_ERR_INV_OBJ);
     }
-  else if (addr->sa_family == AF_INET)
+  else if (addr->ss_family == AF_INET)
     {
       const struct sockaddr_in *a4 = (const struct sockaddr_in *)addr;
       if (!dns_a_arpa (host, sizeof host, (void*)&a4->sin_addr))
@@ -1050,18 +1193,19 @@ resolve_addr_libdns (const struct sockaddr *addr, int addrlen,
       buflen = sizeof ptr.host;
 
       p = buffer;
-      if (addr->sa_family == AF_INET6 && (flags & DNS_WITHBRACKET))
+      if (addr->ss_family == AF_INET6 && (flags & DNS_WITHBRACKET))
         {
           *p++ = '[';
           buflen -= 2;
         }
-      ec = getnameinfo (addr, addrlen, p, buflen, NULL, 0, NI_NUMERICHOST);
+      ec = getnameinfo ((const struct sockaddr *)addr,
+                        addrlen, p, buflen, NULL, 0, NI_NUMERICHOST);
       if (ec)
         {
           err = map_eai_to_gpg_error (ec);
           goto leave;
         }
-      if (addr->sa_family == AF_INET6 && (flags & DNS_WITHBRACKET))
+      if (addr->ss_family == AF_INET6 && (flags & DNS_WITHBRACKET))
         strcat (buffer, "]");
     }
 
@@ -1075,7 +1219,7 @@ resolve_addr_libdns (const struct sockaddr *addr, int addrlen,
 
 /* Resolve an address using the standard system function.  */
 static gpg_error_t
-resolve_addr_standard (const struct sockaddr *addr, int addrlen,
+resolve_addr_standard (const struct sockaddr_storage *addr, int addrlen,
                        unsigned int flags, char **r_name)
 {
   gpg_error_t err;
@@ -1093,20 +1237,22 @@ resolve_addr_standard (const struct sockaddr *addr, int addrlen,
   if ((flags & DNS_NUMERICHOST) || tor_mode)
     ec = EAI_NONAME;
   else
-    ec = getnameinfo (addr, addrlen, buffer, buflen, NULL, 0, NI_NAMEREQD);
+    ec = getnameinfo ((const struct sockaddr *)addr,
+                      addrlen, buffer, buflen, NULL, 0, NI_NAMEREQD);
 
   if (!ec && *buffer == '[')
     ec = EAI_FAIL;  /* A name may never start with a bracket.  */
   else if (ec == EAI_NONAME)
     {
       p = buffer;
-      if (addr->sa_family == AF_INET6 && (flags & DNS_WITHBRACKET))
+      if (addr->ss_family == AF_INET6 && (flags & DNS_WITHBRACKET))
         {
           *p++ = '[';
           buflen -= 2;
         }
-      ec = getnameinfo (addr, addrlen, p, buflen, NULL, 0, NI_NUMERICHOST);
-      if (!ec && addr->sa_family == AF_INET6 && (flags & DNS_WITHBRACKET))
+      ec = getnameinfo ((const struct sockaddr *)addr,
+                        addrlen, p, buflen, NULL, 0, NI_NUMERICHOST);
+      if (!ec && addr->ss_family == AF_INET6 && (flags & DNS_WITHBRACKET))
         strcat (buffer, "]");
     }
 
@@ -1135,7 +1281,7 @@ resolve_addr_standard (const struct sockaddr *addr, int addrlen,
 
 /* A wrapper around getnameinfo.  */
 gpg_error_t
-resolve_dns_addr (const struct sockaddr *addr, int addrlen,
+resolve_dns_addr (const struct sockaddr_storage *addr, int addrlen,
                   unsigned int flags, char **r_name)
 {
   gpg_error_t err;
@@ -1170,7 +1316,7 @@ is_ip_address (const char *name)
 
   if (*name == '[')
     return 6; /* yes: A legal DNS name may not contain this character;
-                 this mut be bracketed v6 address.  */
+                 this must be bracketed v6 address.  */
   if (*name == '.')
     return 0; /* No.  A leading dot is not a valid IP address.  */
 
@@ -1212,7 +1358,7 @@ is_ip_address (const char *name)
       if (*s == '.')
         {
           if (s[1] == '.')
-            return 0; /* No:  Douple dot. */
+            return 0; /* No:  Double dot. */
           if (atoi (s+1) > 255)
             return 0; /* No:  Ipv4 byte value too large.  */
           ndots++;
@@ -1623,7 +1769,7 @@ get_dns_cert_standard (const char *name, int want_certtype,
    found, the malloced data is returned at (R_KEY, R_KEYLEN) and
    the other return parameters are set to NULL/0.  If an IPGP CERT
    record was found the fingerprint is stored as an allocated block at
-   R_FPR and its length at R_FPRLEN; an URL is is allocated as a
+   R_FPR and its length at R_FPRLEN; an URL is allocated as a
    string and returned at R_URL.  If WANT_CERTTYPE is 0 this function
    returns the first CERT found with a supported type; it is expected
    that only one CERT record is used.  If WANT_CERTTYPE is one of the

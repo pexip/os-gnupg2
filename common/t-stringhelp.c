@@ -4,8 +4,8 @@
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify it
- * under the terms of either
+ * GnuPG is free software; you can redistribute and/or modify this
+ * part of GnuPG under the terms of either
  *
  *   - the GNU Lesser General Public License as published by the Free
  *     Software Foundation; either version 3 of the License, or (at
@@ -761,6 +761,81 @@ test_split_fields (void)
 }
 
 
+static void
+test_split_fields_colon (void)
+{
+  struct {
+    const char *s;
+    int nfields;
+    const char *fields_expected[10];
+  } tv[] = {
+    {
+      "a:bc:cde:fghi:jklmn:  foo ", 6,
+      { "a", "bc", "cde", "fghi", "jklmn", "  foo ", NULL }
+    },
+    {
+      " a:bc: def ", 2,
+      { " a", "bc", NULL }
+    },
+    {
+      " a:bc :def ", 3,
+      { " a", "bc ", "def ", NULL }
+    },
+    {
+      " a:bc: def ", 4,
+      { " a", "bc", " def ", NULL }
+    },
+    {
+      "", 0,
+      { NULL }
+    }
+  };
+
+  int tidx;
+  char *fields[10];
+  int field_count_expected, nfields, field_count, i;
+  char *s2;
+
+  for (tidx = 0; tidx < DIM(tv); tidx++)
+    {
+      nfields = tv[tidx].nfields;
+      assert (nfields <= DIM (fields));
+
+      /* Count the fields.  */
+      for (field_count_expected = 0;
+           tv[tidx].fields_expected[field_count_expected];
+           field_count_expected ++)
+        ;
+      if (field_count_expected > nfields)
+        field_count_expected = nfields;
+
+      /* We need to copy s since split_fields modifies in place.  */
+      s2 = xstrdup (tv[tidx].s);
+      field_count = split_fields_colon (s2, fields, nfields);
+
+      if (field_count != field_count_expected)
+        {
+          printf ("%s: tidx %d: expected %d, got %d\n",
+                  __func__, tidx, field_count_expected, field_count);
+          fail (tidx * 1000);
+        }
+      else
+        {
+          for (i = 0; i < field_count_expected; i ++)
+            if (strcmp (tv[tidx].fields_expected[i], fields[i]))
+              {
+                printf ("%s: tidx %d, field %d: expected '%s', got '%s'\n",
+                        __func__,
+                        tidx, i, tv[tidx].fields_expected[i], fields[i]);
+                fail (tidx * 1000 + i + 1);
+              }
+        }
+
+      xfree (s2);
+    }
+}
+
+
 static char *
 stresc (char *s)
 {
@@ -885,7 +960,12 @@ test_format_text (void)
     {
       struct test *test = &tests[i];
       char *result =
-        format_text (test->input, 0, test->target_cols, test->max_cols);
+        format_text (test->input, test->target_cols, test->max_cols);
+      if (!result)
+        {
+          fail (1);
+          exit (2);
+        }
       if (strcmp (result, test->expected) != 0)
         {
           printf ("%s: Test #%d failed.\nExpected: '%s'\nResult: '%s'\n",
@@ -991,6 +1071,7 @@ main (int argc, char **argv)
   test_strsplit ();
   test_strtokenize ();
   test_split_fields ();
+  test_split_fields_colon ();
   test_compare_version_strings ();
   test_format_text ();
 

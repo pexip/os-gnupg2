@@ -34,8 +34,9 @@
 
 #include "keydb.h"
 #include "../kbx/keybox.h" /* for KEYBOX_FLAG_* */
-#include "i18n.h"
-#include "tlv.h"
+#include "../common/i18n.h"
+#include "../common/tlv.h"
+#include "../common/compliance.h"
 
 struct list_external_parm_s
 {
@@ -79,7 +80,7 @@ struct
 
 
 /* Do not print this extension in the list of extensions.  This is set
-   for oids which are already available via ksba fucntions. */
+   for oids which are already available via ksba functions. */
 #define OID_FLAG_SKIP 1
 /* The extension is a simple UTF8String and should be printed.  */
 #define OID_FLAG_UTF8 2
@@ -288,8 +289,6 @@ print_capabilities (ksba_cert_t cert, estream_t fp)
     es_putc ('S', fp);
   if ((use & KSBA_KEYUSAGE_KEY_CERT_SIGN))
     es_putc ('C', fp);
-
-  es_putc (':', fp);
 }
 
 
@@ -346,6 +345,14 @@ email_kludge (const char *name)
 }
 
 
+/* Print the compliance flags to field 18.  ALGO is the gcrypt algo
+ * number.  NBITS is the length of the key in bits.  */
+static void
+print_compliance_flags (int algo, unsigned int nbits, estream_t fp)
+{
+  if (gnupg_pk_is_compliant (CO_DE_VS, algo, NULL, nbits, NULL))
+    es_fputs (gnupg_status_compliance_flag (CO_DE_VS), fp);
+}
 
 
 /* List one certificate in colon mode */
@@ -494,7 +501,10 @@ list_cert_colon (ctrl_t ctrl, ksba_cert_t cert, unsigned int validity,
   es_putc (':', fp);
   /* Field 12, capabilities: */
   print_capabilities (cert, fp);
+  es_putc (':', fp);
   /* Field 13, not used: */
+  es_putc (':', fp);
+  /* Field 14, not used: */
   es_putc (':', fp);
   if (have_secret || ctrl->with_secret)
     {
@@ -504,18 +514,20 @@ list_cert_colon (ctrl_t ctrl, ksba_cert_t cert, unsigned int validity,
       if (!gpgsm_agent_keyinfo (ctrl, p, &cardsn)
           && (cardsn || ctrl->with_secret))
         {
-          /* Field 14, not used: */
-          es_putc (':', fp);
           /* Field 15:  Token serial number or secret key indicator.  */
           if (cardsn)
             es_fputs (cardsn, fp);
           else if (ctrl->with_secret)
             es_putc ('+', fp);
-          es_putc (':', fp);
         }
       xfree (cardsn);
       xfree (p);
     }
+  es_putc (':', fp);  /* End of field 15. */
+  es_putc (':', fp);  /* End of field 16. */
+  es_putc (':', fp);  /* End of field 17. */
+  print_compliance_flags (algo, nbits, fp);
+  es_putc (':', fp);  /* End of field 18. */
   es_putc ('\n', fp);
 
   /* FPR record */
@@ -528,15 +540,15 @@ list_cert_colon (ctrl_t ctrl, ksba_cert_t cert, unsigned int validity,
   xfree (fpr); fpr = NULL; chain_id = NULL;
   xfree (chain_id_buffer); chain_id_buffer = NULL;
 
-  if (opt.with_key_data)
+  /* Always print the keygrip.  */
+  if ( (p = gpgsm_get_keygrip_hexstring (cert)))
     {
-      if ( (p = gpgsm_get_keygrip_hexstring (cert)))
-        {
-          es_fprintf (fp, "grp:::::::::%s:\n", p);
-          xfree (p);
-        }
-      print_key_data (cert, fp);
+      es_fprintf (fp, "grp:::::::::%s:\n", p);
+      xfree (p);
     }
+
+  if (opt.with_key_data)
+    print_key_data (cert, fp);
 
   kludge_uid = NULL;
   for (idx=0; (p = ksba_cert_get_subject (cert,idx)); idx++)
@@ -1280,7 +1292,7 @@ list_cert_std (ctrl_t ctrl, ksba_cert_t cert, estream_t fp, int have_secret,
 }
 
 
-/* Same as standard mode mode list all certifying certs too. */
+/* Same as standard mode list all certifying certs too. */
 static void
 list_cert_chain (ctrl_t ctrl, KEYDB_HANDLE hd,
                  ksba_cert_t cert, int raw_mode,

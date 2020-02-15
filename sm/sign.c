@@ -32,7 +32,7 @@
 #include <ksba.h>
 
 #include "keydb.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 
 
 /* Hash the data and return if something was hashed.  Return -1 on error.  */
@@ -316,7 +316,7 @@ gpgsm_sign (ctrl_t ctrl, certlist_t signerlist,
 {
   int i, rc;
   gpg_error_t err;
-  Base64Context b64writer = NULL;
+  gnupg_ksba_io_t b64writer = NULL;
   ksba_writer_t writer;
   ksba_cms_t cms = NULL;
   ksba_stop_reason_t stopreason;
@@ -339,8 +339,22 @@ gpgsm_sign (ctrl_t ctrl, certlist_t signerlist,
       goto leave;
     }
 
+  if (!gnupg_rng_is_compliant (opt.compliance))
+    {
+      rc = gpg_error (GPG_ERR_FORBIDDEN);
+      log_error (_("%s is not compliant with %s mode\n"),
+                 "RNG",
+                 gnupg_compliance_option_string (opt.compliance));
+      gpgsm_status_with_error (ctrl, STATUS_ERROR,
+                               "random-compliance", rc);
+      goto leave;
+    }
+
   ctrl->pem_name = "SIGNED MESSAGE";
-  rc = gpgsm_create_writer (&b64writer, ctrl, out_fp, &writer);
+  rc = gnupg_ksba_create_writer
+    (&b64writer, ((ctrl->create_pem? GNUPG_KSBA_IO_PEM : 0)
+                  | (ctrl->create_base64? GNUPG_KSBA_IO_BASE64 : 0)),
+     ctrl->pem_name, out_fp, &writer);
   if (rc)
     {
       log_error ("can't create writer: %s\n", gpg_strerror (rc));
@@ -388,7 +402,7 @@ gpgsm_sign (ctrl_t ctrl, certlist_t signerlist,
           goto leave;
         }
 
-      /* Although we don't check for ambigious specification we will
+      /* Although we don't check for ambiguous specification we will
          check that the signer's certificate is usable and valid.  */
       rc = gpgsm_cert_use_sign_p (cert);
       if (!rc)
@@ -457,6 +471,35 @@ gpgsm_sign (ctrl_t ctrl, certlist_t signerlist,
           break;
         }
       cl->hash_algo_oid = oid;
+
+      /* Check compliance.  */
+      if (! gnupg_digest_is_allowed (opt.compliance, 1, cl->hash_algo))
+        {
+          log_error (_("digest algorithm '%s' may not be used in %s mode\n"),
+                     gcry_md_algo_name (cl->hash_algo),
+                     gnupg_compliance_option_string (opt.compliance));
+          err = gpg_error (GPG_ERR_DIGEST_ALGO);
+          goto leave;
+        }
+
+      {
+        unsigned int nbits;
+        int pk_algo = gpgsm_get_key_algo_info (cl->cert, &nbits);
+
+        if (! gnupg_pk_is_allowed (opt.compliance, PK_USE_SIGNING, pk_algo,
+                                   NULL, nbits, NULL))
+          {
+            char  kidstr[10+1];
+
+            snprintf (kidstr, sizeof kidstr, "0x%08lX",
+                      gpgsm_get_short_fingerprint (cl->cert, NULL));
+            log_error (_("key %s may not be used for signing in %s mode\n"),
+                       kidstr,
+                       gnupg_compliance_option_string (opt.compliance));
+            err = gpg_error (GPG_ERR_PUBKEY_ALGO);
+            goto leave;
+          }
+      }
     }
 
   if (opt.verbose)
@@ -760,7 +803,7 @@ gpgsm_sign (ctrl_t ctrl, certlist_t signerlist,
     }
   while (stopreason != KSBA_SR_READY);
 
-  rc = gpgsm_finish_writer (b64writer);
+  rc = gnupg_ksba_finish_writer (b64writer);
   if (rc)
     {
       log_error ("write failed: %s\n", gpg_strerror (rc));
@@ -778,7 +821,7 @@ gpgsm_sign (ctrl_t ctrl, certlist_t signerlist,
   if (release_signerlist)
     gpgsm_release_certlist (signerlist);
   ksba_cms_release (cms);
-  gpgsm_destroy_writer (b64writer);
+  gnupg_ksba_destroy_writer (b64writer);
   keydb_release (kh);
   gcry_md_close (data_md);
   return rc;

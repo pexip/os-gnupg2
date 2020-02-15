@@ -85,7 +85,7 @@ int _keybox_write_header_blob (FILE *fp, int openpgp_flag);
 
 /*-- keybox-search.c --*/
 gpg_error_t keybox_get_keyblock (KEYBOX_HANDLE hd, iobuf_t *r_iobuf,
-                                 int *r_uid_no, int *r_pk_no, u32 **sigstatus);
+                                 int *r_uid_no, int *r_pk_no);
 #ifdef KEYBOX_WITH_X509
 int keybox_get_cert (KEYBOX_HANDLE hd, ksba_cert_t *ret_cert);
 #endif /*KEYBOX_WITH_X509*/
@@ -102,8 +102,7 @@ gpg_error_t keybox_seek (KEYBOX_HANDLE hd, off_t offset);
 
 /*-- keybox-update.c --*/
 gpg_error_t keybox_insert_keyblock (KEYBOX_HANDLE hd,
-                                    const void *image, size_t imagelen,
-                                    u32 *sigstatus);
+                                    const void *image, size_t imagelen);
 gpg_error_t keybox_update_keyblock (KEYBOX_HANDLE hd,
                                     const void *image, size_t imagelen);
 
@@ -128,10 +127,6 @@ int keybox_rebuild_cache (void *);
 
 
 /*-- keybox-util.c --*/
-void keybox_set_malloc_hooks ( void *(*new_alloc_func)(size_t n),
-                               void *(*new_realloc_func)(void *p, size_t n),
-                               void (*new_free_func)(void*) );
-
 gpg_error_t keybox_tmp_names (const char *filename, int for_keyring,
                               char **r_bakname, char **r_tmpname);
 

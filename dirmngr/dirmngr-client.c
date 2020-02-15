@@ -38,9 +38,9 @@
 #include "../common/strlist.h"
 #include "../common/asshelp.h"
 
-#include "i18n.h"
-#include "util.h"
-#include "init.h"
+#include "../common/i18n.h"
+#include "../common/util.h"
+#include "../common/init.h"
 
 
 /* Constants for the options.  */
@@ -80,7 +80,7 @@ static ARGPARSE_OPTS opts[] = {
   { oPEM,      "pem",       0, N_("expect certificates in PEM format")},
   { oForceDefaultResponder, "force-default-responder", 0,
     N_("force the use of the default OCSP responder")},
-  { 0, NULL, 0, NULL }
+  ARGPARSE_end ()
 };
 
 
@@ -517,7 +517,7 @@ read_pem_certificate (const char *fname, unsigned char **rbuf, size_t *rbuflen)
             }
           break;
         case s_init:
-          state = s_lfseen;
+          state = s_lfseen; /* fall through */
         case s_lfseen:
           if (c != "-----BEGIN "[pos])
             state = s_idle;

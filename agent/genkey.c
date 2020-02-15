@@ -27,9 +27,9 @@
 #include <assert.h>
 
 #include "agent.h"
-#include "i18n.h"
-#include "exechelp.h"
-#include "sysutils.h"
+#include "../common/i18n.h"
+#include "../common/exechelp.h"
+#include "../common/sysutils.h"
 
 static int
 store_key (gcry_sexp_t private, const char *passphrase, int force,
@@ -220,7 +220,7 @@ check_passphrase_constraints (ctrl_t ctrl, const char *pw,
     }
 
   /* Now check the constraints and collect the error messages unless
-     in in silent mode which returns immediately.  */
+     in silent mode which returns immediately.  */
   if (utf8_charcount (pw, -1) < minlen )
     {
       if (!failed_constraint)
@@ -357,10 +357,10 @@ agent_ask_new_passphrase (ctrl_t ctrl, const char *prompt,
   if (ctrl->pinentry_mode == PINENTRY_MODE_LOOPBACK)
     {
 	size_t size;
-	size_t len = 100;
 	unsigned char *buffer;
 
-	err = pinentry_loopback(ctrl, "NEW_PASSPHRASE", &buffer, &size, len);
+	err = pinentry_loopback (ctrl, "NEW_PASSPHRASE", &buffer, &size,
+                                 MAX_PASSPHRASE_LEN);
 	if (!err)
 	  {
 	    if (size)
@@ -468,7 +468,7 @@ agent_genkey (ctrl_t ctrl, const char *cache_nonce,
     passphrase = NULL;
   else
     {
-      passphrase_buffer = agent_get_cache (cache_nonce, CACHE_MODE_NONCE);
+      passphrase_buffer = agent_get_cache (ctrl, cache_nonce, CACHE_MODE_NONCE);
       passphrase = passphrase_buffer;
     }
 
@@ -528,7 +528,7 @@ agent_genkey (ctrl_t ctrl, const char *cache_nonce,
         }
       if (cache_nonce
           && !no_protection
-          && !agent_put_cache (cache_nonce, CACHE_MODE_NONCE,
+          && !agent_put_cache (ctrl, cache_nonce, CACHE_MODE_NONCE,
                                passphrase, ctrl->cache_ttl_opt_preset))
         agent_write_status (ctrl, "CACHE_NONCE", cache_nonce, NULL);
       if (preset && !no_protection)
@@ -538,7 +538,7 @@ agent_genkey (ctrl_t ctrl, const char *cache_nonce,
 	  if (gcry_pk_get_keygrip (s_private, grip))
 	    {
 	      bin2hex(grip, 20, hexgrip);
-	      rc = agent_put_cache (hexgrip, CACHE_MODE_ANY, passphrase,
+	      rc = agent_put_cache (ctrl, hexgrip, CACHE_MODE_ANY, passphrase,
                                     ctrl->cache_ttl_opt_preset);
 	    }
 	}

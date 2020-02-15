@@ -171,6 +171,62 @@ is_gnupg_default_homedir (const char *dir)
 }
 
 
+/* Helper to remove trailing slashes from NEWDIR.  Return a new
+ * allocated string if that has been done or NULL if there are no
+ * slashes to remove.  Also inserts a missing slash after a Windows
+ * drive letter.  */
+static char *
+copy_dir_with_fixup (const char *newdir)
+{
+  char *result = NULL;
+  char *p;
+
+  if (!*newdir)
+    return NULL;
+
+#ifdef HAVE_W32_SYSTEM
+  if (newdir[0] && newdir[1] == ':'
+      && !(newdir[2] == '/' || newdir[2] == '\\'))
+    {
+      /* Drive letter with missing leading slash.  */
+      p = result = xmalloc (strlen (newdir) + 1 + 1);
+      *p++ = newdir[0];
+      *p++ = newdir[1];
+      *p++ = '\\';
+      strcpy (p, newdir+2);
+
+      /* Remove trailing slashes.  */
+      p = result + strlen (result) - 1;
+      while (p > result+2 && (*p == '/' || *p == '\\'))
+        *p-- = 0;
+    }
+  else if (newdir[strlen (newdir)-1] == '/'
+           || newdir[strlen (newdir)-1] == '\\' )
+    {
+      result = xstrdup (newdir);
+      p = result + strlen (result) - 1;
+      while (p > result
+             && (*p == '/' || *p == '\\')
+             && (p-1 > result && p[-1] != ':')) /* We keep "c:/". */
+        *p-- = 0;
+    }
+
+#else /*!HAVE_W32_SYSTEM*/
+
+  if (newdir[strlen (newdir)-1] == '/')
+    {
+      result = xstrdup (newdir);
+      p = result + strlen (result) - 1;
+      while (p > result && *p == '/')
+        *p-- = 0;
+    }
+
+#endif /*!HAVE_W32_SYSTEM*/
+
+  return result;
+}
+
+
 /* Get the standard home directory.  In general this function should
    not be used as it does not consider a registry value (under W32) or
    the GNUPGHOME environment variable.  It is better to use
@@ -247,7 +303,7 @@ default_homedir (void)
         {
           if (!dir || !*dir)
             {
-              char *tmp;
+              char *tmp, *p;
 
               tmp = read_w32_registry_string (NULL,
                                               GNUPG_REGISTRY_DIR,
@@ -258,7 +314,13 @@ default_homedir (void)
                   tmp = NULL;
                 }
               if (tmp)
-                saved_dir = tmp;
+                {
+                  /* Strip trailing backslashes.  */
+                  p = tmp + strlen (tmp) - 1;
+                  while (p > tmp && *p == '\\')
+                    *p-- = 0;
+                  saved_dir = tmp;
+                }
             }
 
           if (!saved_dir)
@@ -267,10 +329,20 @@ default_homedir (void)
       dir = saved_dir;
     }
 #endif /*HAVE_W32_SYSTEM*/
+
   if (!dir || !*dir)
     dir = GNUPG_DEFAULT_HOMEDIR;
-  else if (!is_gnupg_default_homedir (dir))
-    non_default_homedir = 1;
+  else
+    {
+      char *p;
+
+      p = copy_dir_with_fixup (dir);
+      if (p)
+        dir = p;
+
+      if (!is_gnupg_default_homedir (dir))
+        non_default_homedir = 1;
+    }
 
   return dir;
 }
@@ -403,12 +475,22 @@ w32_commondir (void)
 void
 gnupg_set_homedir (const char *newdir)
 {
+  char *tmp = NULL;
+
   if (!newdir || !*newdir)
     newdir = default_homedir ();
-  else if (!is_gnupg_default_homedir (newdir))
-    non_default_homedir = 1;
+  else
+    {
+      tmp = copy_dir_with_fixup (newdir);
+      if (tmp)
+        newdir = tmp;
+
+      if (!is_gnupg_default_homedir (newdir))
+        non_default_homedir = 1;
+    }
   xfree (the_gnupg_homedir);
   the_gnupg_homedir = make_absfilename (newdir, NULL);;
+  xfree (tmp);
 }
 
 
@@ -430,6 +512,34 @@ int
 gnupg_default_homedir_p (void)
 {
   return !non_default_homedir;
+}
+
+
+/* Return the directory name used by daemons for their current working
+ * directory.  */
+const char *
+gnupg_daemon_rootdir (void)
+{
+#ifdef HAVE_W32_SYSTEM
+  static char *name;
+
+  if (!name)
+    {
+      char path[MAX_PATH];
+      size_t n;
+
+      n = GetSystemDirectoryA (path, sizeof path);
+      if (!n || n >= sizeof path)
+        name = xstrdup ("/"); /* Error - use the curret top dir instead.  */
+      else
+        name = xstrdup (path);
+    }
+
+  return name;
+
+#else /*!HAVE_W32_SYSTEM*/
+  return "/";
+#endif /*!HAVE_W32_SYSTEM*/
 }
 
 
@@ -462,10 +572,20 @@ _gnupg_socketdir_internal (int skip_checks, unsigned *r_info)
 
 #else /* Unix and stat(2) available. */
 
-  static const char * const bases[] = { "/run", "/var/run", NULL};
+  static const char * const bases[] = {
+#ifdef USE_RUN_GNUPG_USER_SOCKET
+    "/run/gnupg",
+#endif
+    "/run",
+#ifdef USE_RUN_GNUPG_USER_SOCKET
+    "/var/run/gnupg",
+#endif
+    "/var/run",
+    NULL
+  };
   int i;
   struct stat sb;
-  char prefix[13 + 1 + 20 + 6 + 1];
+  char prefix[19 + 1 + 20 + 6 + 1];
   const char *s;
   char *name = NULL;
 
@@ -480,7 +600,7 @@ _gnupg_socketdir_internal (int skip_checks, unsigned *r_info)
    * as a background process with no (desktop) user logged in.  Thus
    * we better don't do that.  */
 
-  /* Check whether we have a /run/user dir.  */
+  /* Check whether we have a /run/[gnupg/]user dir.  */
   for (i=0; bases[i]; i++)
     {
       snprintf (prefix, sizeof prefix, "%s/user/%u",
@@ -542,7 +662,7 @@ _gnupg_socketdir_internal (int skip_checks, unsigned *r_info)
 
   /* If a non default homedir is used, we check whether an
    * corresponding sub directory below the socket dir is available
-   * and use that.  We has the non default homedir to keep the new
+   * and use that.  We hash the non default homedir to keep the new
    * subdir short enough.  */
   if (non_default_homedir)
     {
@@ -566,16 +686,29 @@ _gnupg_socketdir_internal (int skip_checks, unsigned *r_info)
           goto leave;
         }
 
-      /* Stat that directory and check constraints.  Note that we
-       * do not auto create such a directory because we would not
-       * have a way to remove it.  Thus the directory needs to be
-       * pre-created.  The command
-       *    gpgconf --create-socketdir
-       * can be used tocreate that directory.  */
+      /* Stat that directory and check constraints.
+       * The command
+       *    gpgconf --remove-socketdir
+       * can be used to remove that directory.  */
       if (stat (name, &sb))
         {
           if (errno != ENOENT)
             *r_info |= 1; /* stat failed. */
+          else if (!skip_checks)
+            {
+              /* Try to create the directory and check again.  */
+              if (gnupg_mkdir (name, "-rwx"))
+                *r_info |= 16; /* mkdir failed.  */
+              else if (stat (prefix, &sb))
+                {
+                  if (errno != ENOENT)
+                    *r_info |= 1; /* stat failed. */
+                  else
+                    *r_info |= 64; /* Subdir does not exist.  */
+                }
+              else
+                goto leave; /* Success!  */
+            }
           else
             *r_info |= 64; /* Subdir does not exist.  */
           if (!skip_checks)
@@ -914,7 +1047,7 @@ gnupg_set_builddir (const char *newdir)
 static void
 gnupg_set_builddir_from_env (void)
 {
-#ifdef IS_DEVELOPMENT_VERSION
+#if defined(IS_DEVELOPMENT_VERSION) || defined(ENABLE_GNUPG_BUILDDIR_ENVVAR)
   if (gnupg_build_directory)
     return;
 

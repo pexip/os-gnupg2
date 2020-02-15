@@ -71,9 +71,21 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+
 #ifdef HAVE_PTY_H
 #include <pty.h>
+#else
+#ifdef HAVE_TERMIOS_H
+#include <termios.h>
 #endif
+#ifdef HAVE_UTIL_H
+#include <util.h>
+#endif
+#ifdef HAVE_LIBUTIL_H
+#include <libutil.h>
+#endif
+#endif
+
 #ifdef HAVE_UTMP_H
 #include <utmp.h>
 #endif
@@ -86,7 +98,7 @@
 #endif
 #include <gpg-error.h>
 
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "../common/util.h"
 #include "../common/init.h"
 #include "../common/sysutils.h"
@@ -173,7 +185,7 @@ static ARGPARSE_OPTS opts[] =
     { oHomedir, "homedir", 2, "@" },
     { oNoOptions, "no-options", 0, "@" },/* shortcut for --options /dev/null */
 
-    {0}
+    ARGPARSE_end ()
   };
 
 
@@ -191,7 +203,7 @@ struct
 } opt;
 
 
-/* Print usage information and and provide strings for help.  */
+/* Print usage information and provide strings for help.  */
 static const char *
 my_strusage (int level)
 {
@@ -420,7 +432,7 @@ confucius_copy_file (char *infile, char *outfile, int plain)
 /* Get a passphrase in secure storage (if possible).  If AGAIN is
    true, then this is a repeated attempt.  If CANCELED is not a null
    pointer, it will be set to true or false, depending on if the user
-   canceled the operation or not.  On error (including cancelation), a
+   canceled the operation or not.  On error (including cancellation), a
    null pointer is returned.  The passphrase must be deallocated with
    confucius_drop_pass.  CACHEID is the ID to be used for passphrase
    caching and can be NULL to disable caching.  */
@@ -997,7 +1009,7 @@ main (int argc, char **argv)
   setup_libgcrypt_logging ();
   gcry_control (GCRYCTL_INIT_SECMEM, 16384, 0);
 
-  /* Tell simple-pwquery about the the standard socket name.  */
+  /* Tell simple-pwquery about the standard socket name.  */
   {
     char *tmp = make_filename (gnupg_socketdir (), GPG_AGENT_SOCK_NAME, NULL);
     simple_pw_set_socket (tmp);

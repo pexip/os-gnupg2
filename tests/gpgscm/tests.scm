@@ -17,18 +17,6 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-;; Trace displays and returns the given value.  A debugging aid.
-(define (trace x)
-  (display x)
-  (newline)
-  x)
-
-;; Stringification.
-(define (stringify expression)
-  (let ((p (open-output-string)))
-    (write expression p)
-    (get-output-string p)))
-
 ;; Reporting.
 (define (echo . msg)
   (for-each (lambda (x) (display x) (display " ")) msg)
@@ -116,10 +104,11 @@
       (es-fclose (:stdout h))
       (es-fclose (:stderr h))
       (if (> (*verbose*) 2)
-	  (begin
-	    (echo (stringify what) "returned:" result)
-	    (echo (stringify what) "wrote to stdout:" out)
-	    (echo (stringify what) "wrote to stderr:" err)))
+	  (info "Child" (:pid h) "returned:"
+		`((command ,(stringify what))
+		  (status ,result)
+		  (stdout ,out)
+		  (stderr ,err))))
       (list result out err))))
 
 ;; Accessor function for the results of 'call-with-io'.  ':stdout' and
@@ -201,7 +190,17 @@
   (if (absolute-path? path) path (path-join (getcwd) path)))
 
 (define (in-srcdir . names)
-  (canonical-path (apply path-join (cons (getenv "srcdir") names))))
+  (canonical-path (apply path-join (cons (getenv "abs_top_srcdir") names))))
+
+;; Split a list of paths.
+(define (pathsep-split s)
+  (string-split s *pathsep*))
+
+;; Join a list of paths.
+(define (pathsep-join paths)
+  (foldr (lambda (a b) (string-append a (string *pathsep*) b))
+	 (car paths)
+	 (cdr paths)))
 
 ;; Try to find NAME in PATHS.  Returns the full path name on success,
 ;; or raises an error.
@@ -220,7 +219,7 @@
 ;;   (load (with-path "library.scm"))
 (define (with-path name)
   (catch name
-	 (path-expand name (string-split (getenv "GPGSCM_PATH") *pathsep*))))
+	 (path-expand name (pathsep-split (getenv "GPGSCM_PATH")))))
 
 (define (basename path)
   (let ((i (string-index path #\/)))
@@ -234,6 +233,11 @@
        (substring path 0 (- (string-length path) (string-length suffix)))
        path)))
 
+(define (dirname path)
+  (let ((i (string-rindex path #\/)))
+    (if i (substring path 0 i) ".")))
+(assert (string=? "foo/bar" (dirname "foo/bar/baz")))
+
 ;; Helper for (pipe).
 (define :read-end car)
 (define :write-end cadr)
@@ -243,7 +247,7 @@
 ;; (letfd <bindings> <body>)
 ;;
 ;; Bind all variables given in <bindings> and initialize each of them
-;; to the given initial value, and close them after evaluting <body>.
+;; to the given initial value, and close them after evaluating <body>.
 (define-macro (letfd bindings . body)
   (let bind ((bindings' bindings))
     (if (null? bindings')
@@ -268,14 +272,24 @@
 ;; Make a temporary directory.  If arguments are given, they are
 ;; joined using path-join, and must end in a component ending in
 ;; "XXXXXX".  If no arguments are given, a suitable location and
-;; generic name is used.
+;; generic name is used.  Returns an absolute path.
 (define (mkdtemp . components)
-  (_mkdtemp (if (null? components)
-		(path-join (getenv "TMP")
-			   (string-append "gpgscm-" (get-isotime) "-"
-					  (basename-suffix *scriptname* ".scm")
-					  "-XXXXXX"))
-		(apply path-join components))))
+  (canonical-path (_mkdtemp (if (null? components)
+				(path-join
+				 (get-temp-path)
+				 (string-append "gpgscm-" (get-isotime) "-"
+						(basename-suffix *scriptname* ".scm")
+						"-XXXXXX"))
+				(apply path-join components)))))
+
+;; Make a temporary directory and remove it at interpreter shutdown.
+;; Note that there are macros that limit the lifetime of temporary
+;; directories and files to a lexical scope.  Use those if possible.
+;; Otherwise this works like mkdtemp.
+(define (mkdtemp-autoremove . components)
+  (let ((dir (apply mkdtemp components)))
+    (atexit (lambda () (unlink-recursively dir)))
+    dir))
 
 (define-macro (with-temporary-working-directory . expressions)
   (let ((tmp-sym (gensym)))
@@ -302,7 +316,7 @@
 ;;
 ;; Bind all variables given in <bindings>, initialize each of them to
 ;; a string representing an unique path in the filesystem, and delete
-;; them after evaluting <body>.
+;; them after evaluating <body>.
 (define-macro (lettmp bindings . body)
   (let bind ((bindings' bindings))
     (if (null? bindings')
@@ -494,54 +508,132 @@
 ;; The main test framework.
 ;;
 
+(define semaphore
+  (package
+   (define (new n)
+     (package
+      (define (acquire!?)
+	(if (> n 0)
+	    (begin
+	      (set! n (- n 1))
+	      #t)
+	    #f))
+      (define (release!)
+	(set! n (+ n 1)))))))
+
 ;; A pool of tests.
 (define test-pool
   (package
-   (define (new procs)
+   (define (new n)
      (package
+      ;; A semaphore to restrict the number of spawned processes.
+      (define sem (semaphore::new n))
+
+      ;; A list of enqueued, but not yet run tests.
+      (define enqueued '())
+
+      ;; A list of running or finished processes.
+      (define procs '())
+
       (define (add test)
-	(new (cons test procs)))
+	(if (test::started?)
+	    (set! procs (cons test procs))
+	    (if (sem::acquire!?)
+		(add (test::run-async))
+		(set! enqueued (cons test enqueued))))
+	(current-environment))
+
+      ;; Pop the last of the enqueued tests off the fifo queue.
+      (define (pop-test!)
+	(let ((i (length enqueued)))
+	  (assert (> i 0))
+	  (cond
+	   ((= i 1)
+	    (let ((test (car enqueued)))
+	      (set! enqueued '())
+	      test))
+	   (else
+	    (let* ((tail (list-tail enqueued (- i 2)))
+		   (test (cadr tail)))
+	      (set-cdr! tail '())
+	      (assert (= (length enqueued) (- i 1)))
+	      test)))))
+
+      (define (pid->test pid)
+	(let ((t (filter (lambda (x) (= pid x::pid)) procs)))
+	  (if (null? t) #f (car t))))
       (define (wait)
+	(if (null? enqueued)
+	    ;; If no tests are enqueued, we can just block until all
+	    ;; of them finished.
+	    (wait' #t)
+	    ;; Otherwise, we must not block, but give some tests the
+	    ;; chance to finish so that we can start new ones.
+	    (begin
+	      (wait' #f)
+	      (usleep (/ 1000000 10))
+	      (wait))))
+      (define (wait' hang)
 	(let ((unfinished (filter (lambda (t) (not t::retcode)) procs)))
 	  (if (null? unfinished)
-	      (package)
-	      (let* ((names (map (lambda (t) t::name) unfinished))
-		     (pids (map (lambda (t) t::pid) unfinished))
-		     (results
-		      (map (lambda (pid retcode) (list pid retcode))
-			   pids
-			   (wait-processes (map stringify names) pids #t))))
-		(new
-		 (map (lambda (t)
-			(if t::retcode
-			    t
-			    (t::set-retcode (cadr (assoc t::pid results)))))
-		      procs))))))
-      (define (passed)
-	(filter (lambda (p) (= 0 p::retcode)) procs))
-      (define (skipped)
-	(filter (lambda (p) (= 77 p::retcode)) procs))
-      (define (hard-errored)
-	(filter (lambda (p) (= 99 p::retcode)) procs))
-      (define (failed)
-	(filter (lambda (p)
-		  (not (or (= 0 p::retcode) (= 77 p::retcode)
-			   (= 99 p::retcode))))
-		procs))
+	      (current-environment)
+	      (let ((names (map (lambda (t) t::name) unfinished))
+		    (pids (map (lambda (t) t::pid) unfinished))
+		    (any #f))
+		(for-each
+		 (lambda (test retcode)
+		   (unless (< retcode 0)
+			   (test::set-end-time!)
+			   (test:::set! 'retcode retcode)
+			   (test::report)
+			   (sem::release!)
+			   (set! any #t)))
+		 (map pid->test pids)
+		 (wait-processes (map stringify names) pids hang))
+
+		;; If some processes finished, try to start new ones.
+		(let loop ()
+		  (cond
+		   ((not any) #f)
+		   ((pair? enqueued)
+		    (if (sem::acquire!?)
+			(let ((test (pop-test!)))
+			  (add (test::run-async))
+			  (loop)))))))))
+	(current-environment))
+      (define (filter-tests status)
+	(filter (lambda (p) (eq? status (p::status))) procs))
       (define (report)
 	(define (print-tests tests message)
 	  (unless (null? tests)
 		  (apply echo (cons message
 				    (map (lambda (t) t::name) tests)))))
 
-	(let ((failed' (failed)) (skipped' (skipped)))
+	(let ((failed (filter-tests 'FAIL))
+	      (xfailed (filter-tests 'XFAIL))
+	      (xpassed (filter-tests 'XPASS))
+	      (skipped (filter-tests 'SKIP)))
+          (echo "===================")
 	  (echo (length procs) "tests run,"
-		(length (passed)) "succeeded,"
-		(length failed') "failed,"
-		(length skipped') "skipped.")
-	  (print-tests failed' "Failed tests:")
-	  (print-tests skipped' "Skipped tests:")
-	  (length failed')))))))
+		(length (filter-tests 'PASS)) "succeeded,"
+		(length failed) "failed,"
+		(length xfailed) "failed expectedly,"
+		(length xpassed) "succeeded unexpectedly,"
+		(length skipped) "skipped.")
+	  (print-tests failed "Failed tests:")
+	  (print-tests xfailed "Expectedly failed tests:")
+	  (print-tests xpassed "Unexpectedly passed tests:")
+	  (print-tests skipped "Skipped tests:")
+          (echo "===================")
+	  (+ (length failed) (length xpassed))))
+
+      (define (xml)
+	(xx::document
+	 (xx::tag 'testsuites
+		  `((xmlns:xsi "http://www.w3.org/2001/XMLSchema-instance")
+		    ("xsi:noNamespaceSchemaLocation"
+		     "https://windyroad.com.au/dl/Open%20Source/JUnit.xsd"))
+		  (map (lambda (t) (t::xml)) procs))))))))
 
 (define (verbosity n)
   (if (= 0 n) '() (cons '--verbose (verbosity (- n 1)))))
@@ -551,108 +643,221 @@
 
 ;; A single test.
 (define test
+ (begin
+
+  ;; Private definitions.
+
+  (define (isotime->junit t)
+    "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    "20170418T145809"
+    (string-append (substring t 0 4)
+		   "-"
+		   (substring t 4 6)
+		   "-"
+		   (substring t 6 11)
+		   ":"
+		   (substring t 11 13)
+		   ":"
+		   (substring t 13 15)))
+
+  ;; If a tests name ends with a bang (!), it is expected to fail.
+  (define (expect-failure? name)
+    (string-suffix? name "!"))
+  ;; Strips the bang (if any).
+  (define (test-name name)
+    (if (expect-failure? name)
+	(substring name 0 (- (string-length name) 1))
+	name))
+
   (package
-   (define (scm name path . args)
+   (define (scm setup name path . args)
      ;; Start the process.
      (define (spawn-scm args' in out err)
        (spawn-process-fd `(,*argv0* ,@(verbosity (*verbose*))
-				    ,(locate-test path)
+				    ,(locate-test (test-name path))
+				    ,@(if setup (force setup) '())
 				    ,@args' ,@args) in out err))
-     (new name #f spawn-scm #f #f CLOSED_FD))
+     (new name #f spawn-scm #f #f CLOSED_FD (expect-failure? name)))
 
-   (define (binary name path . args)
+   (define (binary setup name path . args)
      ;; Start the process.
      (define (spawn-binary args' in out err)
-       (spawn-process-fd `(,path ,@args' ,@args) in out err))
-     (new name #f spawn-binary #f #f CLOSED_FD))
+       (spawn-process-fd `(,(test-name path)
+			   ,@(if setup (force setup) '()) ,@args' ,@args)
+			 in out err))
+     (new name #f spawn-binary #f #f CLOSED_FD (expect-failure? name)))
 
-   (define (new name directory spawn pid retcode logfd)
+   (define (new name directory spawn pid retcode logfd expect-failure)
      (package
-      (define (set-directory x)
-	(new name x spawn pid retcode logfd))
-      (define (set-retcode x)
-	(new name directory spawn pid x logfd))
-      (define (set-pid x)
-	(new name directory spawn x retcode logfd))
-      (define (set-logfd x)
-	(new name directory spawn pid retcode x))
+
+      ;; XXX: OO glue.
+      (define self (current-environment))
+      (define (:set! key value)
+	(eval `(set! ,key ,value) (current-environment))
+	(current-environment))
+
+      ;; The log is written here.
+      (define log-file-name #f)
+
+      ;; Record time stamps.
+      (define timestamp #f)
+      (define start-time 0)
+      (define end-time 0)
+
+      (define (set-start-time!)
+	(set! timestamp (isotime->junit (get-isotime)))
+	(set! start-time (get-time)))
+      (define (set-end-time!)
+	(set! end-time (get-time)))
+
+      ;; Has the test been started yet?
+      (define (started?)
+	(number? pid))
+
       (define (open-log-file)
-	(let ((filename (string-append (basename name) ".log")))
-	  (catch '() (unlink filename))
-	  (open filename (logior O_RDWR O_BINARY O_CREAT) #o600)))
+	(unless log-file-name
+		(set! log-file-name (string-append (basename name) ".log")))
+	(catch '() (unlink log-file-name))
+	(open log-file-name (logior O_RDWR O_BINARY O_CREAT) #o600))
+
       (define (run-sync . args)
+	(set-start-time!)
 	(letfd ((log (open-log-file)))
 	  (with-working-directory directory
 	    (let* ((p (inbound-pipe))
-		   (pid (spawn args 0 (:write-end p) (:write-end p))))
+		   (pid' (spawn args 0 (:write-end p) (:write-end p))))
 	      (close (:write-end p))
 	      (splice (:read-end p) STDERR_FILENO log)
 	      (close (:read-end p))
-	      (let ((t' (set-retcode (wait-process name pid #t))))
-		(t'::report)
-		t')))))
+	      (set! pid pid')
+	      (set! retcode (wait-process name pid' #t)))))
+	(report)
+	(current-environment))
       (define (run-sync-quiet . args)
+	(set-start-time!)
 	(with-working-directory directory
-	  (set-retcode
-	   (wait-process
-	    name (spawn args CLOSED_FD CLOSED_FD CLOSED_FD) #t))))
+	  (set! pid (spawn args CLOSED_FD CLOSED_FD CLOSED_FD)))
+	(set! retcode (wait-process name pid #t))
+	(set-end-time!)
+	(current-environment))
       (define (run-async . args)
+	(set-start-time!)
 	(let ((log (open-log-file)))
 	  (with-working-directory directory
-	    (new name directory spawn
-		 (spawn args CLOSED_FD log log)
-		 retcode log))))
+	    (set! pid (spawn args CLOSED_FD log log)))
+	  (set! logfd log))
+	(current-environment))
       (define (status)
-	(let ((t (assoc retcode '((0 "PASS") (77 "SKIP") (99 "ERROR")))))
-	  (if (not t) "FAIL" (cadr t))))
+	(let* ((t' (assoc retcode '((0 PASS) (77 SKIP) (99 ERROR))))
+	       (t (if (not t') 'FAIL (cadr t'))))
+	  (if expect-failure
+	      (case t ((PASS) 'XPASS) ((FAIL) 'XFAIL) (else t))
+	      t)))
+      (define (status-string)
+	(cadr (assoc (status) '((PASS "PASS")
+			       (SKIP "SKIP")
+			       (ERROR "ERROR")
+			       (FAIL "FAIL")
+			       (XPASS "XPASS")
+			       (XFAIL "XFAIL")))))
       (define (report)
 	(unless (= logfd CLOSED_FD)
 		(seek logfd 0 SEEK_SET)
 		(splice logfd STDERR_FILENO)
 		(close logfd))
-	(echo (string-append (status) ":") name))))))
+	(echo (string-append (status-string) ":") name))
+
+      (define (xml)
+	(xx::tag
+	 'testsuite
+	 `((name ,name)
+	   (time ,(- end-time start-time))
+	   (package ,(dirname name))
+	   (id 0)
+	   (timestamp ,timestamp)
+	   (hostname "unknown")
+	   (tests 1)
+	   (failures ,(if (eq? FAIL (status)) 1 0))
+	   (errors ,(if (eq? ERROR (status)) 1 0)))
+	 (list
+	  (xx::tag 'properties)
+	  (xx::tag 'testcase
+		   `((name ,(basename name))
+		     (classname ,(string-translate (dirname name) "/" "."))
+		     (time ,(- end-time start-time)))
+		   `(,@(case (status)
+			 ((PASS XFAIL) '())
+			 ((SKIP) (list (xx::tag 'skipped)))
+			 ((ERROR) (list
+				   (xx::tag 'error '((message "Unknown error.")))))
+			 (else
+			  (list (xx::tag 'failure '((message "Unknown error."))))))))
+	  (xx::tag 'system-out '()
+		   (list (xx::textnode (read-all (open-input-file log-file-name)))))
+	  (xx::tag 'system-err '() (list (xx::textnode "")))))))))))
 
 ;; Run the setup target to create an environment, then run all given
 ;; tests in parallel.
-(define (run-tests-parallel setup tests)
-  (lettmp (gpghome-tar)
-    (setup::run-sync '--create-tarball gpghome-tar)
-    (let loop ((pool (test-pool::new '())) (tests' tests))
-      (if (null? tests')
-	  (let ((results (pool::wait)))
-	    (for-each (lambda (t)
-			(catch (echo "Removing" t::directory "failed:" *error*)
-			       (unlink-recursively t::directory))
-			(t::report)) (reverse results::procs))
-	    (exit (results::report)))
-	  (let* ((wd (mkdtemp))
-		 (test (car tests'))
-		 (test' (test::set-directory wd)))
-	    (loop (pool::add (test'::run-async '--unpack-tarball gpghome-tar))
-		  (cdr tests')))))))
+(define (run-tests-parallel tests n)
+  (let loop ((pool (test-pool::new n)) (tests' tests))
+    (if (null? tests')
+	(let ((results (pool::wait)))
+	  ((results::xml) (open-output-file "report.xml"))
+	  (exit (results::report)))
+	(let ((wd (mkdtemp-autoremove))
+	      (test (car tests')))
+	  (test:::set! 'directory wd)
+	  (loop (pool::add test)
+		(cdr tests'))))))
 
 ;; Run the setup target to create an environment, then run all given
 ;; tests in sequence.
-(define (run-tests-sequential setup tests)
-  (lettmp (gpghome-tar)
-    (setup::run-sync '--create-tarball gpghome-tar)
-    (let loop ((pool (test-pool::new '())) (tests' tests))
-      (if (null? tests')
-	  (let ((results (pool::wait)))
-	    (for-each (lambda (t)
-			(catch (echo "Removing" t::directory "failed:" *error*)
-			       (unlink-recursively t::directory)))
-		      results::procs)
-	    (exit (results::report)))
-	  (let* ((wd (mkdtemp))
-		 (test (car tests'))
-		 (test' (test::set-directory wd)))
-	    (loop (pool::add (test'::run-sync '--unpack-tarball gpghome-tar))
-		  (cdr tests')))))))
+(define (run-tests-sequential tests)
+  (let loop ((pool (test-pool::new 1)) (tests' tests))
+    (if (null? tests')
+	(let ((results (pool::wait)))
+	  ((results::xml) (open-output-file "report.xml"))
+	  (exit (results::report)))
+	(let ((wd (mkdtemp-autoremove))
+	      (test (car tests')))
+	  (test:::set! 'directory wd)
+	  (loop (pool::add (test::run-sync))
+		(cdr tests'))))))
+
+;; Run tests either in sequence or in parallel, depending on the
+;; number of tests and the command line flags.
+(define (run-tests tests)
+  (let ((parallel (flag "--parallel" *args*))
+	(default-parallel-jobs 32))
+    (if (and parallel (> (length tests) 1))
+	(run-tests-parallel tests (if (and (pair? parallel)
+					   (string->number (car parallel)))
+				      (string->number (car parallel))
+				      default-parallel-jobs))
+	(run-tests-sequential tests))))
+
+;; Load all tests from the given path.
+(define (load-tests . path)
+  (load (apply in-srcdir `(,@path "all-tests.scm")))
+  all-tests)
+
+;; Helper to create environment caches from test functions.  SETUP
+;; must be a test implementing the producer side cache protocol.
+;; Returns a promise containing the arguments that must be passed to a
+;; test implementing the consumer side of the cache protocol.
+(define (make-environment-cache setup)
+  (delay (with-temporary-working-directory
+	  (let ((tarball (make-temporary-file "environment-cache")))
+	    (atexit (lambda () (remove-temporary-file tarball)))
+	    (setup::run-sync '--create-tarball tarball)
+	    (if (not (equal? 'PASS (setup::status)))
+		(fail "Setup failed."))
+	    `(--unpack-tarball ,tarball)))))
 
 ;; Command line flag handling.  Returns the elements following KEY in
 ;; ARGUMENTS up to the next argument, or #f if KEY is not in
-;; ARGUMENTS.
+;; ARGUMENTS.  If 'KEY=XYZ' is encountered, then the singleton list
+;; containing 'XYZ' is returned.
 (define (flag key arguments)
   (cond
    ((null? arguments)
@@ -663,6 +868,10 @@
       (if (or (null? args) (string-prefix? (car args) "--"))
 	  (reverse acc)
 	  (loop (cons (car args) acc) (cdr args)))))
+   ((string-prefix? (car arguments) (string-append key "="))
+    (list (substring (car arguments)
+		     (+ (string-length key) 1)
+		     (string-length (car arguments)))))
    ((string=? "--" (car arguments))
     #f)
    (else
@@ -670,6 +879,7 @@
 (assert (equal? (flag "--xxx" '("--yyy")) #f))
 (assert (equal? (flag "--xxx" '("--xxx")) '()))
 (assert (equal? (flag "--xxx" '("--xxx" "yyy")) '("yyy")))
+(assert (equal? (flag "--xxx" '("--xxx=foo" "yyy")) '("foo")))
 (assert (equal? (flag "--xxx" '("--xxx" "yyy" "zzz")) '("yyy" "zzz")))
 (assert (equal? (flag "--xxx" '("--xxx" "yyy" "zzz" "--")) '("yyy" "zzz")))
 (assert (equal? (flag "--xxx" '("--xxx" "yyy" "--" "zzz")) '("yyy")))

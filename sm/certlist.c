@@ -32,7 +32,7 @@
 #include <ksba.h>
 
 #include "keydb.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 
 
 static const char oid_kp_serverAuth[]     = "1.3.6.1.5.5.7.3.1";
@@ -336,7 +336,7 @@ gpgsm_add_to_certlist (ctrl_t ctrl, const char *name, int secret,
             {
               if (!first_subject)
                 {
-                  /* Save the the subject and the issuer for key usage
+                  /* Save the subject and the issuer for key usage
                      and ambiguous name tests. */
                   first_subject = ksba_cert_get_subject (cert, 0);
                   first_issuer = ksba_cert_get_issuer (cert, 0);
@@ -388,7 +388,7 @@ gpgsm_add_to_certlist (ctrl_t ctrl, const char *name, int secret,
                   if (!dup_certs)
                     gpgsm_add_cert_to_certlist (ctrl, cert, &dup_certs, 0);
 
-                  /* We have to ignore ambigious names as long as
+                  /* We have to ignore ambiguous names as long as
                      there only fault is a bad key usage.  This is
                      required to support encryption and signing
                      certificates of the same subject.
@@ -489,7 +489,8 @@ gpgsm_release_certlist (certlist_t list)
    subjectKeyIdentifier. */
 int
 gpgsm_find_cert (ctrl_t ctrl,
-                 const char *name, ksba_sexp_t keyid, ksba_cert_t *r_cert)
+                 const char *name, ksba_sexp_t keyid, ksba_cert_t *r_cert,
+                 int allow_ambiguous)
 {
   int rc;
   KEYDB_SEARCH_DESC desc;
@@ -532,11 +533,21 @@ gpgsm_find_cert (ctrl_t ctrl,
             }
 
           /* If we don't have the KEYID filter we need to check for
-             ambigious search results.  Note, that it is somehwat
+             ambiguous search results.  Note, that it is somehwat
              reasonable to assume that a specification of a KEYID
              won't lead to ambiguous names. */
           if (!rc && !keyid)
             {
+              ksba_isotime_t notbefore = "";
+              const unsigned char *image = NULL;
+              size_t length = 0;
+              if (allow_ambiguous)
+                {
+                  /* We want to return the newest certificate */
+                  if (ksba_cert_get_validity (*r_cert, 0, notbefore))
+                    *notbefore = '\0';
+                  image = ksba_cert_get_image (*r_cert, &length);
+                }
             next_ambiguous:
               rc = keydb_search (ctrl, kh, &desc, 1);
               if (rc == -1)
@@ -546,12 +557,39 @@ gpgsm_find_cert (ctrl_t ctrl,
                   if (!rc)
                     {
                       ksba_cert_t cert2 = NULL;
+                      ksba_isotime_t notbefore2 = "";
+                      const unsigned char *image2 = NULL;
+                      size_t length2 = 0;
+                      int cmp = 0;
 
                       if (!keydb_get_cert (kh, &cert2))
                         {
                           if (gpgsm_certs_identical_p (*r_cert, cert2))
                             {
                               ksba_cert_release (cert2);
+                              goto next_ambiguous;
+                            }
+                          if (allow_ambiguous)
+                            {
+                              if (ksba_cert_get_validity (cert2, 0, notbefore2))
+                                *notbefore2 = '\0';
+                              image2 = ksba_cert_get_image (cert2, &length2);
+                              cmp = strcmp (notbefore, notbefore2);
+                              /* use certificate image bits as last resort for stable ordering */
+                              if (!cmp)
+                                cmp = memcmp (image, image2, length < length2 ? length : length2);
+                              if (!cmp)
+                                cmp = length < length2 ? -1 : length > length2 ? 1 : 0;
+                              if (cmp < 0)
+                                {
+                                  ksba_cert_release (*r_cert);
+                                  *r_cert = cert2;
+                                  strcpy (notbefore, notbefore2);
+                                  image = image2;
+                                  length = length2;
+                                }
+                              else
+                                ksba_cert_release (cert2);
                               goto next_ambiguous;
                             }
                           ksba_cert_release (cert2);

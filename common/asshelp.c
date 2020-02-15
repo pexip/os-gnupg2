@@ -307,6 +307,56 @@ unlock_spawning (lock_spawn_t *lock, const char *name)
     }
 }
 
+static gpg_error_t
+wait_for_sock (int secs, const char *name, const char *sockname, int verbose, assuan_context_t ctx, int *did_success_msg)
+{
+  gpg_error_t err = 0;
+  int target_us = secs * 1000000;
+  int elapsed_us = 0;
+  /*
+   * 977us * 1024 = just a little more than 1s.
+   * so we will double this timeout 10 times in the first
+   * second, and then switch over to 1s checkins.
+   */
+  int next_sleep_us = 977;
+  int lastalert = secs+1;
+  int secsleft;
+
+  while (elapsed_us < target_us)
+    {
+      if (verbose)
+        {
+          secsleft = (target_us - elapsed_us + 999999)/1000000;
+          /* log_clock ("left=%d last=%d targ=%d elap=%d next=%d\n", */
+          /*            secsleft, lastalert, target_us, elapsed_us, */
+          /*            next_sleep_us); */
+          if (secsleft < lastalert)
+            {
+              log_info (_("waiting for the %s to come up ... (%ds)\n"),
+                        name, secsleft);
+              lastalert = secsleft;
+            }
+        }
+      gnupg_usleep (next_sleep_us);
+      elapsed_us += next_sleep_us;
+      err = assuan_socket_connect (ctx, sockname, 0, 0);
+      if (!err)
+        {
+          if (verbose)
+            {
+              log_info (_("connection to %s established\n"),
+                        name);
+              *did_success_msg = 1;
+            }
+          break;
+        }
+      next_sleep_us *= 2;
+      if (next_sleep_us > 1000000)
+        next_sleep_us = 1000000;
+    }
+  return err;
+}
+
 /* Try to connect to the agent via socket or start it if it is not
    running and AUTOSTART is set.  Handle the server's initial
    greeting.  Returns a new assuan context at R_CTX or an error
@@ -414,7 +464,7 @@ start_new_gpg_agent (assuan_context_t *r_ctx,
 
       /* If the agent has been configured for use with a standard
          socket, an environment variable is not required and thus
-         we we can savely start the agent here.  */
+         we can safely start the agent here.  */
       i = 0;
       argv[i++] = "--homedir";
       argv[i++] = abs_homedir;
@@ -433,25 +483,8 @@ start_new_gpg_agent (assuan_context_t *r_ctx,
             log_error ("failed to start agent '%s': %s\n",
                        agent_program, gpg_strerror (err));
           else
-            {
-              for (i=0; i < SECS_TO_WAIT_FOR_AGENT; i++)
-                {
-                  if (verbose)
-                    log_info (_("waiting for the agent to come up ... (%ds)\n"),
-                              SECS_TO_WAIT_FOR_AGENT - i);
-                  gnupg_sleep (1);
-                  err = assuan_socket_connect (ctx, sockname, 0, 0);
-                  if (!err)
-                    {
-                      if (verbose)
-                        {
-                          log_info (_("connection to agent established\n"));
-                          did_success_msg = 1;
-                        }
-                      break;
-                    }
-                }
-            }
+            err = wait_for_sock (SECS_TO_WAIT_FOR_AGENT, "agent",
+                                 sockname, verbose, ctx, &did_success_msg);
         }
 
       unlock_spawning (&lock, "agent");
@@ -584,29 +617,8 @@ start_new_dirmngr (assuan_context_t *r_ctx,
             log_error ("failed to start the dirmngr '%s': %s\n",
                        dirmngr_program, gpg_strerror (err));
           else
-            {
-              int i;
-
-              for (i=0; i < SECS_TO_WAIT_FOR_DIRMNGR; i++)
-                {
-                  if (verbose)
-                    log_info (_("waiting for the dirmngr "
-                                "to come up ... (%ds)\n"),
-                              SECS_TO_WAIT_FOR_DIRMNGR - i);
-                  gnupg_sleep (1);
-                  err = assuan_socket_connect (ctx, sockname, 0, 0);
-                  if (!err)
-                    {
-                      if (verbose)
-                        {
-                          log_info (_("connection to the dirmngr"
-                                      " established\n"));
-                          did_success_msg = 1;
-                        }
-                      break;
-                    }
-                }
-            }
+            err = wait_for_sock (SECS_TO_WAIT_FOR_DIRMNGR, "dirmngr",
+                                 sockname, verbose, ctx, &did_success_msg);
         }
 
       unlock_spawning (&lock, "dirmngr");

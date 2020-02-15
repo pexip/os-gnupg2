@@ -1,32 +1,35 @@
-/* wks-utils.c - Common helper fucntions for wks tools
+/* wks-utils.c - Common helper functions for wks tools
  * Copyright (C) 2016 g10 Code GmbH
+ * Copyright (C) 2016 Bundesamt für Sicherheit in der Informationstechnik
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
+ * This file is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation; either version 2.1 of
+ * the License, or (at your option) any later version.
  *
- * GnuPG is distributed in the hope that it will be useful,
+ * This file is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <https://www.gnu.org/licenses/>.
+ * GNU Lesser General Public License for more details.
  */
 
 #include <config.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
-#include "util.h"
-#include "status.h"
-#include "ccparray.h"
-#include "exectool.h"
-#include "mbox-util.h"
+#include "../common/util.h"
+#include "../common/status.h"
+#include "../common/ccparray.h"
+#include "../common/exectool.h"
+#include "../common/zb32.h"
+#include "../common/userids.h"
+#include "../common/mbox-util.h"
+#include "../common/sysutils.h"
 #include "mime-maker.h"
 #include "send-mail.h"
 #include "gpg-wks.h"
@@ -92,9 +95,166 @@ wks_write_status (int no, const char *format, ...)
 
 
 
-/* Helper for wks_list_key.  */
+
+/* Append UID to LIST and return the new item.  On success LIST is
+ * updated.  On error ERRNO is set and NULL returned. */
+static uidinfo_list_t
+append_to_uidinfo_list (uidinfo_list_t *list, const char *uid, time_t created)
+{
+  uidinfo_list_t r, sl;
+
+  sl = xtrymalloc (sizeof *sl + strlen (uid));
+  if (!sl)
+    return NULL;
+
+  strcpy (sl->uid, uid);
+  sl->created = created;
+  sl->mbox = mailbox_from_userid (uid);
+  sl->next = NULL;
+  if (!*list)
+    *list = sl;
+  else
+    {
+      for (r = *list; r->next; r = r->next )
+        ;
+      r->next = sl;
+    }
+  return sl;
+}
+
+
+/* Free the list of uid infos at LIST.  */
+void
+free_uidinfo_list (uidinfo_list_t list)
+{
+  while (list)
+    {
+      uidinfo_list_t tmp = list->next;
+      xfree (list->mbox);
+      xfree (list);
+      list = tmp;
+    }
+}
+
+
+
+struct get_key_status_parm_s
+{
+  const char *fpr;
+  int found;
+  int count;
+};
+
+
 static void
-list_key_status_cb (void *opaque, const char *keyword, char *args)
+get_key_status_cb (void *opaque, const char *keyword, char *args)
+{
+  struct get_key_status_parm_s *parm = opaque;
+
+  /*log_debug ("%s: %s\n", keyword, args);*/
+  if (!strcmp (keyword, "EXPORTED"))
+    {
+      parm->count++;
+      if (!ascii_strcasecmp (args, parm->fpr))
+        parm->found = 1;
+    }
+}
+
+/* Get a key by fingerprint from gpg's keyring and make sure that the
+ * mail address ADDRSPEC is included in the key.  If EXACT is set the
+ * returned user id must match Addrspec exactly and not just in the
+ * addr-spec (mailbox) part.  The key is returned as a new memory
+ * stream at R_KEY.  */
+gpg_error_t
+wks_get_key (estream_t *r_key, const char *fingerprint, const char *addrspec,
+             int exact)
+{
+  gpg_error_t err;
+  ccparray_t ccp;
+  const char **argv = NULL;
+  estream_t key = NULL;
+  struct get_key_status_parm_s parm;
+  char *filterexp = NULL;
+
+  memset (&parm, 0, sizeof parm);
+
+  *r_key = NULL;
+
+  key = es_fopenmem (0, "w+b");
+  if (!key)
+    {
+      err = gpg_error_from_syserror ();
+      log_error ("error allocating memory buffer: %s\n", gpg_strerror (err));
+      goto leave;
+    }
+
+  /* Prefix the key with the MIME content type.  */
+  es_fputs ("Content-Type: application/pgp-keys\n"
+            "\n", key);
+
+  filterexp = es_bsprintf ("keep-uid=%s= %s", exact? "uid":"mbox", addrspec);
+  if (!filterexp)
+    {
+      err = gpg_error_from_syserror ();
+      log_error ("error allocating memory buffer: %s\n", gpg_strerror (err));
+      goto leave;
+    }
+
+  ccparray_init (&ccp, 0);
+
+  ccparray_put (&ccp, "--no-options");
+  if (!opt.verbose)
+    ccparray_put (&ccp, "--quiet");
+  else if (opt.verbose > 1)
+    ccparray_put (&ccp, "--verbose");
+  ccparray_put (&ccp, "--batch");
+  ccparray_put (&ccp, "--status-fd=2");
+  ccparray_put (&ccp, "--always-trust");
+  ccparray_put (&ccp, "--armor");
+  ccparray_put (&ccp, "--export-options=export-minimal");
+  ccparray_put (&ccp, "--export-filter");
+  ccparray_put (&ccp, filterexp);
+  ccparray_put (&ccp, "--export");
+  ccparray_put (&ccp, "--");
+  ccparray_put (&ccp, fingerprint);
+
+  ccparray_put (&ccp, NULL);
+  argv = ccparray_get (&ccp, NULL);
+  if (!argv)
+    {
+      err = gpg_error_from_syserror ();
+      goto leave;
+    }
+  parm.fpr = fingerprint;
+  err = gnupg_exec_tool_stream (opt.gpg_program, argv, NULL,
+                                NULL, key,
+                                get_key_status_cb, &parm);
+  if (!err && parm.count > 1)
+    err = gpg_error (GPG_ERR_TOO_MANY);
+  else if (!err && !parm.found)
+    err = gpg_error (GPG_ERR_NOT_FOUND);
+  if (err)
+    {
+      log_error ("export failed: %s\n", gpg_strerror (err));
+      goto leave;
+    }
+
+  es_rewind (key);
+  *r_key = key;
+  key = NULL;
+
+ leave:
+  es_fclose (key);
+  xfree (argv);
+  xfree (filterexp);
+  return err;
+}
+
+
+
+/* Helper for wks_list_key and wks_filter_uid.  */
+static void
+key_status_cb (void *opaque, const char *keyword, char *args)
 {
   (void)opaque;
 
@@ -105,9 +265,10 @@ list_key_status_cb (void *opaque, const char *keyword, char *args)
 
 /* Run gpg on KEY and store the primary fingerprint at R_FPR and the
  * list of mailboxes at R_MBOXES.  Returns 0 on success; on error NULL
- * is stored at R_FPR and R_MBOXES and an error code is returned.  */
+ * is stored at R_FPR and R_MBOXES and an error code is returned.
+ * R_FPR may be NULL if the fingerprint is not needed.  */
 gpg_error_t
-wks_list_key (estream_t key, char **r_fpr, strlist_t *r_mboxes)
+wks_list_key (estream_t key, char **r_fpr, uidinfo_list_t *r_mboxes)
 {
   gpg_error_t err;
   ccparray_t ccp;
@@ -120,11 +281,11 @@ wks_list_key (estream_t key, char **r_fpr, strlist_t *r_mboxes)
   char **fields = NULL;
   int nfields;
   int lnr;
-  char *mbox = NULL;
   char *fpr = NULL;
-  strlist_t mboxes = NULL;
+  uidinfo_list_t mboxes = NULL;
 
-  *r_fpr = NULL;
+  if (r_fpr)
+    *r_fpr = NULL;
   *r_mboxes = NULL;
 
   /* Open a memory stream.  */
@@ -160,7 +321,7 @@ wks_list_key (estream_t key, char **r_fpr, strlist_t *r_mboxes)
     }
   err = gnupg_exec_tool_stream (opt.gpg_program, argv, key,
                                 NULL, listing,
-                                list_key_status_cb, NULL);
+                                key_status_cb, NULL);
   if (err)
     {
       log_error ("import failed: %s\n", gpg_strerror (err));
@@ -234,9 +395,8 @@ wks_list_key (estream_t key, char **r_fpr, strlist_t *r_mboxes)
       else if (!strcmp (fields[0], "uid") && nfields > 9)
         {
           /* Fixme: Unescape fields[9] */
-          xfree (mbox);
-          mbox = mailbox_from_userid (fields[9]);
-          if (mbox && !append_to_strlist_try (&mboxes, mbox))
+          if (!append_to_uidinfo_list (&mboxes, fields[9],
+                                       parse_timestamp (fields[5], NULL)))
             {
               err = gpg_error_from_syserror ();
               goto leave;
@@ -250,19 +410,111 @@ wks_list_key (estream_t key, char **r_fpr, strlist_t *r_mboxes)
       goto leave;
     }
 
-  *r_fpr = fpr;
-  fpr = NULL;
+  if (!fpr)
+    {
+      err = gpg_error (GPG_ERR_NO_PUBKEY);
+      goto leave;
+    }
+
+  if (r_fpr)
+    {
+      *r_fpr = fpr;
+      fpr = NULL;
+    }
   *r_mboxes = mboxes;
   mboxes = NULL;
 
  leave:
   xfree (fpr);
-  xfree (mboxes);
-  xfree (mbox);
+  free_uidinfo_list (mboxes);
   xfree (fields);
   es_free (line);
   xfree (argv);
   es_fclose (listing);
+  return err;
+}
+
+
+/* Run gpg as a filter on KEY and write the output to a new stream
+ * stored at R_NEWKEY.  The new key will contain only the user id UID.
+ * Returns 0 on success.  Only one key is expected in KEY.  If BINARY
+ * is set the resulting key is returned as a binary (non-armored)
+ * keyblock.  */
+gpg_error_t
+wks_filter_uid (estream_t *r_newkey, estream_t key, const char *uid,
+                int binary)
+{
+  gpg_error_t err;
+  ccparray_t ccp;
+  const char **argv = NULL;
+  estream_t newkey;
+  char *filterexp = NULL;
+
+  *r_newkey = NULL;
+
+  /* Open a memory stream.  */
+  newkey = es_fopenmem (0, "w+b");
+  if (!newkey)
+    {
+      err = gpg_error_from_syserror ();
+      log_error ("error allocating memory buffer: %s\n", gpg_strerror (err));
+      return err;
+    }
+
+  /* Prefix the key with the MIME content type.  */
+  if (!binary)
+    es_fputs ("Content-Type: application/pgp-keys\n"
+              "\n", newkey);
+
+  filterexp = es_bsprintf ("keep-uid=uid= %s", uid);
+  if (!filterexp)
+    {
+      err = gpg_error_from_syserror ();
+      log_error ("error allocating memory buffer: %s\n", gpg_strerror (err));
+      goto leave;
+    }
+
+  ccparray_init (&ccp, 0);
+
+  ccparray_put (&ccp, "--no-options");
+  if (!opt.verbose)
+    ccparray_put (&ccp, "--quiet");
+  else if (opt.verbose > 1)
+    ccparray_put (&ccp, "--verbose");
+  ccparray_put (&ccp, "--batch");
+  ccparray_put (&ccp, "--status-fd=2");
+  ccparray_put (&ccp, "--always-trust");
+  if (!binary)
+    ccparray_put (&ccp, "--armor");
+  ccparray_put (&ccp, "--import-options=import-export");
+  ccparray_put (&ccp, "--import-filter");
+  ccparray_put (&ccp, filterexp);
+  ccparray_put (&ccp, "--import");
+
+  ccparray_put (&ccp, NULL);
+  argv = ccparray_get (&ccp, NULL);
+  if (!argv)
+    {
+      err = gpg_error_from_syserror ();
+      goto leave;
+    }
+  err = gnupg_exec_tool_stream (opt.gpg_program, argv, key,
+                                NULL, newkey,
+                                key_status_cb, NULL);
+  if (err)
+    {
+      log_error ("import/export failed: %s\n", gpg_strerror (err));
+      goto leave;
+    }
+
+  es_rewind (newkey);
+  *r_newkey = newkey;
+  newkey = NULL;
+
+ leave:
+  xfree (filterexp);
+  xfree (argv);
+  es_fclose (newkey);
   return err;
 }
 
@@ -276,7 +528,11 @@ wks_send_mime (mime_maker_t mime)
 
   /* Without any option we take a short path.  */
   if (!opt.use_sendmail && !opt.output)
-    return mime_maker_make (mime, es_stdout);
+    {
+      es_set_binary (es_stdout);
+      return mime_maker_make (mime, es_stdout);
+    }
+
 
   mail = es_fopenmem (0, "w+b");
   if (!mail)
@@ -305,25 +561,29 @@ wks_send_mime (mime_maker_t mime)
 
 
 /* Parse the policy flags by reading them from STREAM and storing them
- * into FLAGS.  If IGNORE_UNKNOWN is iset unknown keywords are
+ * into FLAGS.  If IGNORE_UNKNOWN is set unknown keywords are
  * ignored.  */
 gpg_error_t
 wks_parse_policy (policy_flags_t flags, estream_t stream, int ignore_unknown)
 {
   enum tokens {
+    TOK_SUBMISSION_ADDRESS,
     TOK_MAILBOX_ONLY,
     TOK_DANE_ONLY,
     TOK_AUTH_SUBMIT,
-    TOK_MAX_PENDING
+    TOK_MAX_PENDING,
+    TOK_PROTOCOL_VERSION
   };
   static struct {
     const char *name;
     enum tokens token;
   } keywords[] = {
+    { "submission-address", TOK_SUBMISSION_ADDRESS },
     { "mailbox-only", TOK_MAILBOX_ONLY },
     { "dane-only",    TOK_DANE_ONLY    },
     { "auth-submit",  TOK_AUTH_SUBMIT  },
-    { "max-pending",  TOK_MAX_PENDING  }
+    { "max-pending",  TOK_MAX_PENDING  },
+    { "protocol-version", TOK_PROTOCOL_VERSION }
   };
   gpg_error_t err = 0;
   int lnr = 0;
@@ -385,6 +645,20 @@ wks_parse_policy (policy_flags_t flags, estream_t stream, int ignore_unknown)
 
       switch (keywords[i].token)
         {
+        case TOK_SUBMISSION_ADDRESS:
+          if (!value || !*value)
+            {
+              err = gpg_error (GPG_ERR_SYNTAX);
+              goto leave;
+            }
+          xfree (flags->submission_address);
+          flags->submission_address = xtrystrdup (value);
+          if (!flags->submission_address)
+            {
+              err = gpg_error_from_syserror ();
+              goto leave;
+            }
+          break;
         case TOK_MAILBOX_ONLY: flags->mailbox_only = 1; break;
         case TOK_DANE_ONLY:    flags->dane_only = 1;    break;
         case TOK_AUTH_SUBMIT:  flags->auth_submit = 1;  break;
@@ -398,6 +672,14 @@ wks_parse_policy (policy_flags_t flags, estream_t stream, int ignore_unknown)
            * and decide whether to allow other units.  */
           flags->max_pending = atoi (value);
           break;
+        case TOK_PROTOCOL_VERSION:
+          if (!value)
+            {
+              err = gpg_error (GPG_ERR_SYNTAX);
+              goto leave;
+            }
+          flags->protocol_version = atoi (value);
+          break;
         }
     }
 
@@ -409,5 +691,402 @@ wks_parse_policy (policy_flags_t flags, estream_t stream, int ignore_unknown)
     log_error ("error reading '%s', line %d: %s\n",
                es_fname_get (stream), lnr, gpg_strerror (err));
 
+  return err;
+}
+
+
+void
+wks_free_policy (policy_flags_t policy)
+{
+  if (policy)
+    {
+      xfree (policy->submission_address);
+      memset (policy, 0, sizeof *policy);
+    }
+}
+
+
+/* Write the content of SRC to the new file FNAME.  */
+static gpg_error_t
+write_to_file (estream_t src, const char *fname)
+{
+  gpg_error_t err;
+  estream_t dst;
+  char buffer[4096];
+  size_t nread, written;
+
+  dst = es_fopen (fname, "wb");
+  if (!dst)
+    return gpg_error_from_syserror ();
+
+  do
+    {
+      nread = es_fread (buffer, 1, sizeof buffer, src);
+      if (!nread)
+	break;
+      written = es_fwrite (buffer, 1, nread, dst);
+      if (written != nread)
+	break;
+    }
+  while (!es_feof (src) && !es_ferror (src) && !es_ferror (dst));
+  if (!es_feof (src) || es_ferror (src) || es_ferror (dst))
+    {
+      err = gpg_error_from_syserror ();
+      es_fclose (dst);
+      gnupg_remove (fname);
+      return err;
+    }
+
+  if (es_fclose (dst))
+    {
+      err = gpg_error_from_syserror ();
+      log_error ("error closing '%s': %s\n", fname, gpg_strerror (err));
+      return err;
+    }
+
+  return 0;
+}
+
+
+/* Return the filename and optionally the addrspec for USERID at
+ * R_FNAME and R_ADDRSPEC.  R_ADDRSPEC might also be set on error.  */
+gpg_error_t
+wks_fname_from_userid (const char *userid, char **r_fname, char **r_addrspec)
+{
+  gpg_error_t err;
+  char *addrspec = NULL;
+  const char *domain;
+  char *hash = NULL;
+  const char *s;
+  char shaxbuf[32]; /* Used for SHA-1 and SHA-256 */
+
+  *r_fname = NULL;
+  if (r_addrspec)
+    *r_addrspec = NULL;
+
+  addrspec = mailbox_from_userid (userid);
+  if (!addrspec)
+    {
+      if (opt.verbose)
+        log_info ("\"%s\" is not a proper mail address\n", userid);
+      err = gpg_error (GPG_ERR_INV_USER_ID);
+      goto leave;
+    }
+
+  domain = strchr (addrspec, '@');
+  log_assert (domain);
+  domain++;
+
+  /* Hash user ID and create filename.  */
+  s = strchr (addrspec, '@');
+  log_assert (s);
+  gcry_md_hash_buffer (GCRY_MD_SHA1, shaxbuf, addrspec, s - addrspec);
+  hash = zb32_encode (shaxbuf, 8*20);
+  if (!hash)
+    {
+      err = gpg_error_from_syserror ();
+      goto leave;
+    }
+
+  *r_fname = make_filename_try (opt.directory, domain, "hu", hash, NULL);
+  if (!*r_fname)
+    err = gpg_error_from_syserror ();
+  else
+    err = 0;
+
+ leave:
+  if (r_addrspec && addrspec)
+    *r_addrspec = addrspec;
+  else
+    xfree (addrspec);
+  xfree (hash);
+  return err;
+}
+
+
+/* Compute the the full file name for the key with ADDRSPEC and return
+ * it at R_FNAME.  */
+gpg_error_t
+wks_compute_hu_fname (char **r_fname, const char *addrspec)
+{
+  gpg_error_t err;
+  char *hash;
+  const char *domain;
+  char sha1buf[20];
+  char *fname;
+  struct stat sb;
+
+  *r_fname = NULL;
+
+  domain = strchr (addrspec, '@');
+  if (!domain || !domain[1] || domain == addrspec)
+    return gpg_error (GPG_ERR_INV_ARG);
+  domain++;
+
+  gcry_md_hash_buffer (GCRY_MD_SHA1, sha1buf, addrspec, domain - addrspec - 1);
+  hash = zb32_encode (sha1buf, 8*20);
+  if (!hash)
+    return gpg_error_from_syserror ();
+
+  /* Try to create missing directories below opt.directory.  */
+  fname = make_filename_try (opt.directory, domain, NULL);
+  if (fname && stat (fname, &sb)
+      && gpg_err_code_from_syserror () == GPG_ERR_ENOENT)
+    if (!gnupg_mkdir (fname, "-rwxr--r--") && opt.verbose)
+      log_info ("directory '%s' created\n", fname);
+  xfree (fname);
+  fname = make_filename_try (opt.directory, domain, "hu", NULL);
+  if (fname && stat (fname, &sb)
+      && gpg_err_code_from_syserror () == GPG_ERR_ENOENT)
+    if (!gnupg_mkdir (fname, "-rwxr--r--") && opt.verbose)
+      log_info ("directory '%s' created\n", fname);
+  xfree (fname);
+
+  /* Create the filename.  */
+  fname = make_filename_try (opt.directory, domain, "hu", hash, NULL);
+  err = fname? 0 : gpg_error_from_syserror ();
+
+  if (err)
+    xfree (fname);
+  else
+    *r_fname = fname; /* Okay.  */
+  xfree (hash);
+  return err;
+}
+
+
+
+/* Helper form wks_cmd_install_key.  */
+static gpg_error_t
+install_key_from_spec_file (const char *fname)
+{
+  gpg_error_t err;
+  estream_t fp;
+  char *line = NULL;
+  size_t linelen = 0;
+  size_t maxlen = 2048;
+  char *fields[2];
+  unsigned int lnr = 0;
+
+  if (!fname || !strcmp (fname, ""))
+    fp = es_stdin;
+  else
+    fp = es_fopen (fname, "rb");
+  if (!fp)
+    {
+      err = gpg_error_from_syserror ();
+      log_error ("error reading '%s': %s\n", fname, gpg_strerror (err));
+      goto leave;
+    }
+
+  while (es_read_line (fp, &line, &linelen, &maxlen) > 0)
+    {
+      if (!maxlen)
+        {
+          err = gpg_error (GPG_ERR_LINE_TOO_LONG);
+          log_error ("error reading '%s': %s\n", fname, gpg_strerror (err));
+          goto leave;
+        }
+      lnr++;
+      trim_spaces (line);
+      if (!*line ||  *line == '#')
+        continue;
+      if (split_fields (line, fields, DIM(fields)) < 2)
+        {
+          log_error ("error reading '%s': syntax error at line %u\n",
+                     fname, lnr);
+          continue;
+        }
+      err = wks_cmd_install_key (fields[0], fields[1]);
+      if (err)
+        goto leave;
+    }
+  if (es_ferror (fp))
+    {
+      err = gpg_error_from_syserror ();
+      log_error ("error reading '%s': %s\n", fname, gpg_strerror (err));
+      goto leave;
+    }
+
+ leave:
+  if (fp != es_stdin)
+    es_fclose (fp);
+  es_free (line);
+  return err;
+}
+
+
+/* Install a single key into the WKD by reading FNAME and extracting
+ * USERID.  If USERID is NULL FNAME is expected to be a list of fpr
+ * mbox lines and for each line the respective key will be
+ * installed.  */
+gpg_error_t
+wks_cmd_install_key (const char *fname, const char *userid)
+{
+  gpg_error_t err;
+  KEYDB_SEARCH_DESC desc;
+  estream_t fp = NULL;
+  char *addrspec = NULL;
+  char *fpr = NULL;
+  uidinfo_list_t uidlist = NULL;
+  uidinfo_list_t uid, thisuid;
+  time_t thistime;
+  char *huname = NULL;
+  int any;
+
+  if (!userid)
+    return install_key_from_spec_file (fname);
+
+  addrspec = mailbox_from_userid (userid);
+  if (!addrspec)
+    {
+      log_error ("\"%s\" is not a proper mail address\n", userid);
+      err = gpg_error (GPG_ERR_INV_USER_ID);
+      goto leave;
+    }
+
+  if (!classify_user_id (fname, &desc, 1)
+      && (desc.mode == KEYDB_SEARCH_MODE_FPR
+          || desc.mode == KEYDB_SEARCH_MODE_FPR20))
+    {
+      /* FNAME looks like a fingerprint.  Get the key from the
+       * standard keyring.  */
+      err = wks_get_key (&fp, fname, addrspec, 0);
+      if (err)
+        {
+          log_error ("error getting key '%s' (uid='%s'): %s\n",
+                     fname, addrspec, gpg_strerror (err));
+          goto leave;
+        }
+    }
+  else /* Take it from the file */
+    {
+      fp = es_fopen (fname, "rb");
+      if (!fp)
+        {
+          err = gpg_error_from_syserror ();
+          log_error ("error reading '%s': %s\n", fname, gpg_strerror (err));
+          goto leave;
+        }
+    }
+
+  /* List the key so that we can figure out the newest UID with the
+   * requested addrspec.  */
+  err = wks_list_key (fp, &fpr, &uidlist);
+  if (err)
+    {
+      log_error ("error parsing key: %s\n", gpg_strerror (err));
+      err = gpg_error (GPG_ERR_NO_PUBKEY);
+      goto leave;
+    }
+  thistime = 0;
+  thisuid = NULL;
+  any = 0;
+  for (uid = uidlist; uid; uid = uid->next)
+    {
+      if (!uid->mbox)
+        continue; /* Should not happen anyway.  */
+      if (ascii_strcasecmp (uid->mbox, addrspec))
+        continue; /* Not the requested addrspec.  */
+      any = 1;
+      if (uid->created > thistime)
+        {
+          thistime = uid->created;
+          thisuid = uid;
+        }
+    }
+  if (!thisuid)
+    thisuid = uidlist;  /* This is the case for a missing timestamp.  */
+  if (!any)
+    {
+      log_error ("public key in '%s' has no mail address '%s'\n",
+                 fname, addrspec);
+      err = gpg_error (GPG_ERR_INV_USER_ID);
+      goto leave;
+    }
+
+  if (opt.verbose)
+    log_info ("using key with user id '%s'\n", thisuid->uid);
+
+  {
+    estream_t fp2;
+
+    es_rewind (fp);
+    err = wks_filter_uid (&fp2, fp, thisuid->uid, 1);
+    if (err)
+      {
+        log_error ("error filtering key: %s\n", gpg_strerror (err));
+        err = gpg_error (GPG_ERR_NO_PUBKEY);
+        goto leave;
+      }
+    es_fclose (fp);
+    fp = fp2;
+  }
+
+  /* Hash user ID and create filename.  */
+  err = wks_compute_hu_fname (&huname, addrspec);
+  if (err)
+    goto leave;
+
+  /* Publish.  */
+  err = write_to_file (fp, huname);
+  if (err)
+    {
+      log_error ("copying key to '%s' failed: %s\n", huname,gpg_strerror (err));
+      goto leave;
+    }
+
+  /* Make sure it is world readable.  */
+  if (gnupg_chmod (huname, "-rwxr--r--"))
+    log_error ("can't set permissions of '%s': %s\n",
+               huname, gpg_strerror (gpg_err_code_from_syserror()));
+
+  if (!opt.quiet)
+    log_info ("key %s published for '%s'\n", fpr, addrspec);
+
+ leave:
+  xfree (huname);
+  free_uidinfo_list (uidlist);
+  xfree (fpr);
+  xfree (addrspec);
+  es_fclose (fp);
+  return err;
+}
+
+
+/* Remove the key with mail address in USERID.  */
+gpg_error_t
+wks_cmd_remove_key (const char *userid)
+{
+  gpg_error_t err;
+  char *addrspec = NULL;
+  char *fname = NULL;
+
+  err = wks_fname_from_userid (userid, &fname, &addrspec);
+  if (err)
+    goto leave;
+
+  if (gnupg_remove (fname))
+    {
+      err = gpg_error_from_syserror ();
+      if (gpg_err_code (err) == GPG_ERR_ENOENT)
+        {
+          if (!opt.quiet)
+            log_info ("key for '%s' is not installed\n", addrspec);
+          log_inc_errorcount ();
+          err = 0;
+        }
+      else
+        log_error ("error removing '%s': %s\n", fname, gpg_strerror (err));
+      goto leave;
+    }
+
+  if (opt.verbose)
+    log_info ("key for '%s' removed\n", addrspec);
+  err = 0;
+
+ leave:
+  xfree (fname);
+  xfree (addrspec);
   return err;
 }

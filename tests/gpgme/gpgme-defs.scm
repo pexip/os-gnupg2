@@ -17,24 +17,29 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "defs.scm"))
+(load (in-srcdir "tests" "openpgp" "defs.scm"))
 
 (define gpgme-srcdir (getenv "XTEST_GPGME_SRCDIR"))
-(when (string=? "" gpgme-srcdir)
-    (info
-     "SKIP: Environment variable 'XTEST_GPGME_SRCDIR' not set.  Please"
-     "point it to a recent GPGME source tree to run the GPGME test suite.")
-    (exit 0))
 
 (define (in-gpgme-srcdir . names)
   (canonical-path (apply path-join (cons gpgme-srcdir names))))
 
 (define gpgme-builddir (getenv "XTEST_GPGME_BUILDDIR"))
-(when (string=? "" gpgme-builddir)
+
+(define (have-gpgme?)
+  (cond
+   ((string=? "" gpgme-srcdir)
+    (info
+     "SKIP: Environment variable 'XTEST_GPGME_SRCDIR' not set.  Please"
+     "point it to a recent GPGME source tree to run the GPGME test suite.")
+    #f)
+   ((string=? "" gpgme-builddir)
     (info
      "SKIP: Environment variable 'XTEST_GPGME_BUILDDIR' not set.  Please"
      "point it to a recent GPGME build tree to run the GPGME test suite.")
-    (exit 0))
+    #f)
+   (else
+    #t)))
 
 ;; Make sure that GPGME picks up our gpgconf.  This makes GPGME use
 ;; and thus executes the tests with GnuPG components from the build
@@ -42,17 +47,30 @@
 (setenv "PATH" (string-append (path-join (getenv "GNUPG_BUILDDIR") "tools")
 			      (string *pathsep*) (getenv "PATH")) #t)
 
-(define (create-file name content)
-  (letfd ((fd (open name (logior O_WRONLY O_CREAT O_BINARY) #o600)))
-    (display content (fdopen fd "wb"))))
+;; The tests expect the pinentry to return the passphrase "abc".
+(setenv "PINENTRY_USER_DATA" "abc" #t)
 
 (define (create-gpgmehome . path)
-  (create-file "gpg.conf" "no-force-v3-sigs\n")
+  ;; Support for various environments.
+  (define mode
+    (cond
+     ((equal? path '("lang" "python" "tests"))
+      (set! path '("tests" "gpg")) ;; Mostly uses files from tests/gpg.
+      'python)
+     (else
+      'gpg)))
+
+  (create-file
+   "gpg.conf"
+   "no-force-v3-sigs"
+   (string-append "agent-program " (tool 'gpg-agent) "|--debug-quick-random\n"))
   (create-file
    "gpg-agent.conf"
-   (string-append "pinentry-program "
-		  (in-gpgme-srcdir "tests" "gpg" "pinentry") "\n"))
-  (mkdir "private-keys-v1.d" "-rwx")
+   (string-append "pinentry-program " (tool 'pinentry))
+   (string-append "scdaemon-program " (tool 'scdaemon))
+   )
+
+  (start-agent)
 
   (log "Storing private keys")
   (for-each
@@ -72,6 +90,21 @@
      (call-check `(,@GPG --yes --import ,(apply in-gpgme-srcdir
 						`(,@path ,file)))))
    (list "pubdemo.asc" "secdemo.asc"))
+
+  (when (equal? mode 'python)
+	(log "Importing extra keys for Python tests")
+	(for-each
+	 (lambda (file)
+	   (call-check `(,@GPG --yes --import
+			       ,(apply in-gpgme-srcdir
+				       `("lang" "python" "tests" ,file)))))
+	 (list "encrypt-only.asc" "sign-only.asc"))
+
+	(log "Marking key as trusted")
+	(pipe:do
+	 (pipe:echo "A0FF4590BB6122EDEF6E3C542D727CC768697734:6:\n")
+	 (pipe:spawn `(,(tool 'gpg) --import-ownertrust))))
+
   (stop-agent))
 
 ;; Initialize the test environment, install appropriate configuration
@@ -83,60 +116,15 @@
 	(start-agent))
       (apply create-gpgme-gpghome path)))
 
-(define (parse-makefile port key)
-  (define (is-continuation? tokens)
-    (string=? (last tokens) "\\"))
-  (define (valid-token? s)
-    (< 0 (string-length s)))
-  (define (drop-continuations tokens)
-    (let loop ((acc '()) (tks tokens))
-      (if (null? tks)
-	  (reverse acc)
-	  (loop (if (string=? "\\" (car tks))
-		    acc
-		    (cons (car tks) acc)) (cdr tks)))))
-  (let next ((acc '()) (found #f))
-    (let ((line (read-line port)))
-      (if (eof-object? line)
-	  acc
-	  (let ((tokens (filter valid-token?
-				(string-splitp (string-trim char-whitespace?
-							    line)
-					       char-whitespace? -1))))
-	    (cond
-	     ((or (null? tokens)
-		  (string-prefix? (car tokens) "#")
-		  (and (not found) (not (and (string=? key (car tokens))
-					     (string=? "=" (cadr tokens))))))
-	      (next acc found))
-	     ((not found)
-	      (assert (and (string=? key (car tokens))
-			   (string=? "=" (cadr tokens))))
-	      (if (is-continuation? tokens)
-		  (next (drop-continuations (cddr tokens)) #t)
-		  (drop-continuations (cddr tokens))))
-	     (else
-	      (assert found)
-	      (if (is-continuation? tokens)
-		  (next (append acc (drop-continuations tokens)) found)
-		  (append acc (drop-continuations tokens))))))))))
+(define python
+  (let loop ((pythons (list "python" "python2" "python3")))
+    (if (null? pythons)
+	#f
+	(catch (loop (cdr pythons))
+	       (unless (file-exists? (path-join gpgme-builddir "lang" "python"
+						(string-append (car pythons) "-gpg")))
+		       (throw "next please"))
+	       (path-expand (car pythons) (string-split (getenv "PATH") *pathsep*))))))
 
-(define (parse-makefile-expand filename expand key)
-  (define (variable? v)
-    (and (string-prefix? v "$(") (string-suffix? v ")")))
-
-  (let expand-all ((values (parse-makefile (open-input-file filename) key)))
-    (if (any variable? values)
-	(expand-all
-	 (let expand-one ((acc '()) (v values))
-	   (cond
-	    ((null? v)
-	     acc)
-	    ((variable? (car v))
-	     (let ((makefile (open-input-file filename))
-		   (key (substring (car v) 2 (- (string-length (car v)) 1))))
-	       (expand-one (append acc (expand filename makefile key))
-			   (cdr v))))
-	    (else
-	     (expand-one (append acc (list (car v))) (cdr v))))))
-	values)))
+(define (run-python-tests?)
+  (not (not python)))

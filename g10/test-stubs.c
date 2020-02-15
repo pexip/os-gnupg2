@@ -28,18 +28,18 @@
 
 #define INCLUDED_BY_MAIN_MODULE 1
 #include "gpg.h"
-#include "util.h"
+#include "../common/util.h"
 #include "packet.h"
-#include "iobuf.h"
+#include "../common/iobuf.h"
 #include "main.h"
 #include "options.h"
 #include "keydb.h"
 #include "trustdb.h"
 #include "filter.h"
-#include "ttyio.h"
-#include "i18n.h"
-#include "sysutils.h"
-#include "status.h"
+#include "../common/ttyio.h"
+#include "../common/i18n.h"
+#include "../common/sysutils.h"
+#include "../common/status.h"
 #include "call-agent.h"
 
 int g10_errors_seen;
@@ -66,10 +66,12 @@ check_signatures_trust (ctrl_t ctrl, PKT_signature *sig)
 }
 
 void
-read_trust_options(byte *trust_model, ulong *created, ulong *nextcheck,
-		   byte *marginals, byte *completes, byte *cert_depth,
-		   byte *min_cert_level)
+read_trust_options (ctrl_t ctrl,
+                    byte *trust_model, ulong *created, ulong *nextcheck,
+                    byte *marginals, byte *completes, byte *cert_depth,
+                    byte *min_cert_level)
 {
+  (void)ctrl;
   (void)trust_model;
   (void)created;
   (void)nextcheck;
@@ -85,8 +87,9 @@ read_trust_options(byte *trust_model, ulong *created, ulong *nextcheck,
  */
 
 int
-cache_disabled_value(PKT_public_key *pk)
+cache_disabled_value (ctrl_t ctrl, PKT_public_key *pk)
 {
+  (void)ctrl;
   (void)pk;
   return 0;
 }
@@ -138,15 +141,18 @@ uid_trust_string_fixed (ctrl_t ctrl, PKT_public_key *key, PKT_user_id *uid)
 }
 
 int
-get_ownertrust_info (PKT_public_key *pk)
+get_ownertrust_info (ctrl_t ctrl, PKT_public_key *pk, int no_create)
 {
+  (void)ctrl;
   (void)pk;
+  (void)no_create;
   return '?';
 }
 
 unsigned int
-get_ownertrust (PKT_public_key *pk)
+get_ownertrust (ctrl_t ctrl, PKT_public_key *pk)
 {
+  (void)ctrl;
   (void)pk;
   return TRUST_UNKNOWN;
 }
@@ -527,5 +533,19 @@ tofu_notice_key_changed (ctrl_t ctrl, kbnode_t kb)
   (void) ctrl;
   (void) kb;
 
+  return 0;
+}
+
+int
+get_revocation_reason (PKT_signature *sig, char **r_reason,
+                       char **r_comment, size_t *r_commentlen)
+{
+  (void)sig;
+  (void)r_commentlen;
+
+  if (r_reason)
+    *r_reason = NULL;
+  if (r_comment)
+    *r_comment = NULL;
   return 0;
 }

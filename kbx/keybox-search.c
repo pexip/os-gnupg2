@@ -27,8 +27,8 @@
 
 #include "keybox-defs.h"
 #include <gcrypt.h>
-#include "host2net.h"
-#include "mbox-util.h"
+#include "../common/host2net.h"
+#include "../common/mbox-util.h"
 
 #define xtoi_1(p)   (*(p) <= '9'? (*(p)- '0'): \
                      *(p) <= 'F'? (*(p)-'A'+10):(*(p)-'a'+10))
@@ -247,7 +247,7 @@ blob_cmp_fpr (KEYBOXBLOB blob, const unsigned char *fpr)
   if (keyinfolen < 28)
     return 0; /* invalid blob */
   pos = 20;
-  if (pos + keyinfolen*nkeys > length)
+  if (pos + (uint64_t)keyinfolen*nkeys > (uint64_t)length)
     return 0; /* out of bounds */
 
   for (idx=0; idx < nkeys; idx++)
@@ -279,7 +279,7 @@ blob_cmp_fpr_part (KEYBOXBLOB blob, const unsigned char *fpr,
   if (keyinfolen < 28)
     return 0; /* invalid blob */
   pos = 20;
-  if (pos + keyinfolen*nkeys > length)
+  if (pos + (uint64_t)keyinfolen*nkeys > (uint64_t)length)
     return 0; /* out of bounds */
 
   for (idx=0; idx < nkeys; idx++)
@@ -313,7 +313,7 @@ blob_cmp_name (KEYBOXBLOB blob, int idx,
   if (keyinfolen < 28)
     return 0; /* invalid blob */
   pos = 20 + keyinfolen*nkeys;
-  if (pos+2 > length)
+  if ((uint64_t)pos+2 > (uint64_t)length)
     return 0; /* out of bounds */
 
   /*serial*/
@@ -340,7 +340,7 @@ blob_cmp_name (KEYBOXBLOB blob, int idx,
           mypos += idx*uidinfolen;
           off = get32 (buffer+mypos);
           len = get32 (buffer+mypos+4);
-          if (off+len > length)
+          if ((uint64_t)off+(uint64_t)len > (uint64_t)length)
             return 0; /* error: better stop here out of bounds */
           if (len < 1)
             continue; /* empty name */
@@ -439,7 +439,7 @@ blob_cmp_mail (KEYBOXBLOB blob, const char *name, size_t namelen, int substr,
       mypos += idx*uidinfolen;
       off = get32 (buffer+mypos);
       len = get32 (buffer+mypos+4);
-      if (off+len > length)
+      if ((uint64_t)off+(uint64_t)len > (uint64_t)length)
         return 0; /* error: better stop here - out of bounds */
       if (x509)
         {
@@ -522,7 +522,7 @@ blob_x509_has_grip (KEYBOXBLOB blob, const unsigned char *grip)
     return 0; /* Too short. */
   cert_off = get32 (buffer+8);
   cert_len = get32 (buffer+12);
-  if (cert_off+cert_len > length)
+  if ((uint64_t)cert_off+(uint64_t)cert_len > (uint64_t)length)
     return 0; /* Too short.  */
 
   rc = ksba_reader_new (&reader);
@@ -725,6 +725,23 @@ release_sn_array (struct sn_array_s *array, size_t size)
   xfree (array);
 }
 
+
+/* Helper to open the file.  */
+static gpg_error_t
+open_file (KEYBOX_HANDLE hd)
+{
+
+  hd->fp = fopen (hd->kb->fname, "rb");
+  if (!hd->fp)
+    {
+      hd->error = gpg_error_from_syserror ();
+      return hd->error;
+    }
+
+  return 0;
+}
+
+
 
 /*
 
@@ -746,8 +763,13 @@ keybox_search_reset (KEYBOX_HANDLE hd)
 
   if (hd->fp)
     {
-      fclose (hd->fp);
-      hd->fp = NULL;
+      if (fseeko (hd->fp, 0, SEEK_SET))
+        {
+          /* Ooops.  Seek did not work.  Close so that the search will
+           * open the file again.  */
+          fclose (hd->fp);
+          hd->fp = NULL;
+        }
     }
   hd->error = 0;
   hd->eof = 0;
@@ -817,12 +839,11 @@ keybox_search (KEYBOX_HANDLE hd, KEYBOX_SEARCH_DESC *desc, size_t ndesc,
 
   if (!hd->fp)
     {
-      hd->fp = fopen (hd->kb->fname, "rb");
-      if (!hd->fp)
+      rc = open_file (hd);
+      if (rc)
         {
-          hd->error = gpg_error_from_syserror ();
           xfree (sn_array);
-          return hd->error;
+          return rc;
         }
     }
 
@@ -894,7 +915,7 @@ keybox_search (KEYBOX_HANDLE hd, KEYBOX_SEARCH_DESC *desc, size_t ndesc,
       int blobtype;
 
       _keybox_release_blob (blob); blob = NULL;
-      rc = _keybox_read_blob (&blob, hd->fp);
+      rc = _keybox_read_blob (&blob, hd->fp, NULL);
       if (gpg_err_code (rc) == GPG_ERR_TOO_LARGE
           && gpg_err_source (rc) == GPG_ERR_SOURCE_KEYBOX)
         {
@@ -1048,23 +1069,20 @@ keybox_search (KEYBOX_HANDLE hd, KEYBOX_SEARCH_DESC *desc, size_t ndesc,
 
 
 /* Return the last found keyblock.  Returns 0 on success and stores a
-   new iobuf at R_IOBUF and a signature status vector at R_SIGSTATUS
-   in that case.  R_UID_NO and R_PK_NO are used to retun the number of
-   the key or user id which was matched the search criteria; if not
-   known they are set to 0. */
+ * new iobuf at R_IOBUF.  R_UID_NO and R_PK_NO are used to retun the
+ * number of the key or user id which was matched the search criteria;
+ * if not known they are set to 0. */
 gpg_error_t
 keybox_get_keyblock (KEYBOX_HANDLE hd, iobuf_t *r_iobuf,
-                     int *r_pk_no, int *r_uid_no, u32 **r_sigstatus)
+                     int *r_pk_no, int *r_uid_no)
 {
   gpg_error_t err;
-  const unsigned char *buffer, *p;
+  const unsigned char *buffer;
   size_t length;
   size_t image_off, image_len;
   size_t siginfo_off, siginfo_len;
-  u32 *sigstatus, n, n_sigs, sigilen;
 
   *r_iobuf = NULL;
-  *r_sigstatus = NULL;
 
   if (!hd)
     return gpg_error (GPG_ERR_INV_VALUE);
@@ -1079,26 +1097,16 @@ keybox_get_keyblock (KEYBOX_HANDLE hd, iobuf_t *r_iobuf,
     return gpg_error (GPG_ERR_TOO_SHORT);
   image_off = get32 (buffer+8);
   image_len = get32 (buffer+12);
-  if (image_off+image_len > length)
+  if ((uint64_t)image_off+(uint64_t)image_len > (uint64_t)length)
     return gpg_error (GPG_ERR_TOO_SHORT);
 
   err = _keybox_get_flag_location (buffer, length, KEYBOX_FLAG_SIG_INFO,
                                    &siginfo_off, &siginfo_len);
   if (err)
     return err;
-  n_sigs  = get16 (buffer + siginfo_off);
-  sigilen = get16 (buffer + siginfo_off + 2);
-  p = buffer + siginfo_off + 4;
-  sigstatus = xtrymalloc ((1+n_sigs) * sizeof *sigstatus);
-  if (!sigstatus)
-    return gpg_error_from_syserror ();
-  sigstatus[0] = n_sigs;
-  for (n=1; n <= n_sigs; n++, p += sigilen)
-    sigstatus[n] = get32 (p);
 
   *r_pk_no  = hd->found.pk_no;
   *r_uid_no = hd->found.uid_no;
-  *r_sigstatus = sigstatus;
   *r_iobuf = iobuf_temp_with_content (buffer+image_off, image_len);
   return 0;
 }
@@ -1131,7 +1139,7 @@ keybox_get_cert (KEYBOX_HANDLE hd, ksba_cert_t *r_cert)
     return gpg_error (GPG_ERR_TOO_SHORT);
   cert_off = get32 (buffer+8);
   cert_len = get32 (buffer+12);
-  if (cert_off+cert_len > length)
+  if ((uint64_t)cert_off+(uint64_t)cert_len > (uint64_t)length)
     return gpg_error (GPG_ERR_TOO_SHORT);
 
   rc = ksba_reader_new (&reader);
@@ -1200,24 +1208,23 @@ keybox_offset (KEYBOX_HANDLE hd)
 gpg_error_t
 keybox_seek (KEYBOX_HANDLE hd, off_t offset)
 {
-  int err;
+  gpg_error_t err;
 
   if (hd->error)
     return hd->error; /* still in error state */
 
   if (! hd->fp)
     {
-      if (offset == 0)
-        /* No need to open the file.  An unopened file is effectively at
-           offset 0.  */
-        return 0;
-
-      hd->fp = fopen (hd->kb->fname, "rb");
-      if (!hd->fp)
+      if (!offset)
         {
-          hd->error = gpg_error_from_syserror ();
-          return hd->error;
+          /* No need to open the file.  An unopened file is effectively at
+             offset 0.  */
+          return 0;
         }
+
+      err = open_file (hd);
+      if (err)
+        return err;
     }
 
   err = fseeko (hd->fp, offset, SEEK_SET);

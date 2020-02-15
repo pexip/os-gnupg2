@@ -33,7 +33,7 @@
 #include <npth.h> /* (we use pth_sleep) */
 
 #include "agent.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "../common/ssh-utils.h"
 #include "../common/name-value.h"
 
@@ -52,23 +52,38 @@ struct try_unprotect_arg_s
 };
 
 
+/* Note: Ownership of FNAME and FP are moved to this function.  */
 static gpg_error_t
-write_extended_private_key (char *fname, estream_t fp,
+write_extended_private_key (char *fname, estream_t fp, int update,
                             const void *buf, size_t len)
 {
   gpg_error_t err;
   nvc_t pk = NULL;
   gcry_sexp_t key = NULL;
   int remove = 0;
-  int line;
 
-  err = nvc_parse_private_key (&pk, &line, fp);
-  if (err)
+  if (update)
     {
-      log_error ("error parsing '%s' line %d: %s\n",
-                 fname, line, gpg_strerror (err));
-      goto leave;
+      int line;
+
+      err = nvc_parse_private_key (&pk, &line, fp);
+      if (err && gpg_err_code (err) != GPG_ERR_ENOENT)
+        {
+          log_error ("error parsing '%s' line %d: %s\n",
+                     fname, line, gpg_strerror (err));
+          goto leave;
+        }
     }
+  else
+    {
+      pk = nvc_new_private_key ();
+      if (!pk)
+        {
+          err = gpg_error_from_syserror ();
+          goto leave;
+        }
+    }
+  es_clearerr (fp);
 
   err = gcry_sexp_sscan (&key, NULL, buf, len);
   if (err)
@@ -111,8 +126,7 @@ write_extended_private_key (char *fname, estream_t fp,
   bump_key_eventcounter ();
 
  leave:
-  if (fp)
-    es_fclose (fp);
+  es_fclose (fp);
   if (remove)
     gnupg_remove (fname);
   xfree (fname);
@@ -193,10 +207,18 @@ agent_write_private_key (const unsigned char *grip,
 
       if (first != '(')
         {
-          /* Key is in extended format.  */
-          return write_extended_private_key (fname, fp, buffer, length);
+          /* Key is already in the extended format.  */
+          return write_extended_private_key (fname, fp, 1, buffer, length);
+        }
+      if (first == '(' && opt.enable_extended_key_format)
+        {
+          /* Key is in the old format - but we want the extended format.  */
+          return write_extended_private_key (fname, fp, 0, buffer, length);
         }
     }
+
+  if (opt.enable_extended_key_format)
+    return write_extended_private_key (fname, fp, 0, buffer, length);
 
   if (es_fwrite (buffer, length, 1, fp) != 1)
     {
@@ -306,7 +328,7 @@ try_unprotect_cb (struct pin_entry_info_s *pi)
       xfree (desc);
     }
 
-  return 0;
+  return err;
 }
 
 
@@ -321,9 +343,9 @@ try_unprotect_cb (struct pin_entry_info_s *pi)
    The functions returns 0 on success or an error code.  On success a
    newly allocated string is stored at the address of RESULT.
  */
-static gpg_error_t
-modify_description (const char *in, const char *comment, const gcry_sexp_t key,
-                    char **result)
+gpg_error_t
+agent_modify_description (const char *in, const char *comment,
+                          const gcry_sexp_t key, char **result)
 {
   size_t comment_length;
   size_t in_len;
@@ -332,12 +354,19 @@ modify_description (const char *in, const char *comment, const gcry_sexp_t key,
   size_t i;
   int special, pass;
   char *ssh_fpr = NULL;
+  char *p;
+
+  *result = NULL;
+
+  if (!comment)
+    comment = "";
 
   comment_length = strlen (comment);
   in_len  = strlen (in);
 
   /* First pass calculates the length, second pass does the actual
      copying.  */
+  /* FIXME: This can be simplified by using es_fopenmem.  */
   out = NULL;
   out_len = 0;
   for (pass=0; pass < 2; pass++)
@@ -383,7 +412,8 @@ modify_description (const char *in, const char *comment, const gcry_sexp_t key,
 
                 case 'F': /* SSH style fingerprint.  */
                   if (!ssh_fpr && key)
-                    ssh_get_fingerprint_string (key, &ssh_fpr);
+                    ssh_get_fingerprint_string (key, opt.ssh_fingerprint_digest,
+                                                &ssh_fpr);
                   if (ssh_fpr)
                     {
                       if (out)
@@ -427,8 +457,23 @@ modify_description (const char *in, const char *comment, const gcry_sexp_t key,
     }
 
   *out = 0;
-  assert (*result + out_len == out);
+  log_assert (*result + out_len == out);
   xfree (ssh_fpr);
+
+  /* The ssh prompt may sometimes end in
+   *    "...%0A  ()"
+   * The empty parentheses doesn't look very good.  We use this hack
+   * here to remove them as well as the indentation spaces. */
+  p = *result;
+  i = strlen (p);
+  if (i > 2 && !strcmp (p + i - 2, "()"))
+    {
+      p += i - 2;
+      *p-- = 0;
+      while (p > *result && spacep (p))
+        *p-- = 0;
+    }
+
   return 0;
 }
 
@@ -443,7 +488,7 @@ modify_description (const char *in, const char *comment, const gcry_sexp_t key,
    passphrase (entered or from the cache) is stored there; if not NULL
    will be stored.  The caller needs to free the returned
    passphrase. */
-static int
+static gpg_error_t
 unprotect (ctrl_t ctrl, const char *cache_nonce, const char *desc_text,
            unsigned char **keybuf, const unsigned char *grip,
            cache_mode_t cache_mode, lookup_ttl_t lookup_ttl,
@@ -466,7 +511,7 @@ unprotect (ctrl_t ctrl, const char *cache_nonce, const char *desc_text,
     {
       char *pw;
 
-      pw = agent_get_cache (cache_nonce, CACHE_MODE_NONCE);
+      pw = agent_get_cache (ctrl, cache_nonce, CACHE_MODE_NONCE);
       if (pw)
         {
           rc = agent_unprotect (ctrl, *keybuf, pw, NULL, &result, &resultlen);
@@ -491,7 +536,7 @@ unprotect (ctrl_t ctrl, const char *cache_nonce, const char *desc_text,
       char *pw;
 
     retry:
-      pw = agent_get_cache (hexgrip, cache_mode);
+      pw = agent_get_cache (ctrl, hexgrip, cache_mode);
       if (pw)
         {
           rc = agent_unprotect (ctrl, *keybuf, pw, NULL, &result, &resultlen);
@@ -508,7 +553,6 @@ unprotect (ctrl_t ctrl, const char *cache_nonce, const char *desc_text,
               return 0;
             }
           xfree (pw);
-          rc  = 0;
         }
       else if (cache_mode == CACHE_MODE_NORMAL)
         {
@@ -530,7 +574,7 @@ unprotect (ctrl_t ctrl, const char *cache_nonce, const char *desc_text,
              We can often avoid the passphrase entry in the second
              step.  We do this only in normal mode, so not to
              interfere with unrelated cache entries.  */
-          pw = agent_get_cache (NULL, cache_mode);
+          pw = agent_get_cache (ctrl, NULL, cache_mode);
           if (pw)
             {
               rc = agent_unprotect (ctrl, *keybuf, pw, NULL,
@@ -546,7 +590,6 @@ unprotect (ctrl_t ctrl, const char *cache_nonce, const char *desc_text,
                   return 0;
                 }
               xfree (pw);
-              rc  = 0;
             }
         }
 
@@ -627,7 +670,7 @@ unprotect (ctrl_t ctrl, const char *cache_nonce, const char *desc_text,
       else
         {
           /* Passphrase is fine.  */
-          agent_put_cache (hexgrip, cache_mode, pi->pin,
+          agent_put_cache (ctrl, hexgrip, cache_mode, pi->pin,
                            lookup_ttl? lookup_ttl (hexgrip) : 0);
           agent_store_cache_hit (hexgrip);
           if (r_passphrase && *pi->pin)
@@ -647,7 +690,7 @@ unprotect (ctrl_t ctrl, const char *cache_nonce, const char *desc_text,
 static gpg_error_t
 read_key_file (const unsigned char *grip, gcry_sexp_t *result)
 {
-  int rc;
+  gpg_error_t err;
   char *fname;
   estream_t fp;
   struct stat st;
@@ -667,30 +710,30 @@ read_key_file (const unsigned char *grip, gcry_sexp_t *result)
   fp = es_fopen (fname, "rb");
   if (!fp)
     {
-      rc = gpg_error_from_syserror ();
-      if (gpg_err_code (rc) != GPG_ERR_ENOENT)
-        log_error ("can't open '%s': %s\n", fname, strerror (errno));
+      err = gpg_error_from_syserror ();
+      if (gpg_err_code (err) != GPG_ERR_ENOENT)
+        log_error ("can't open '%s': %s\n", fname, gpg_strerror (err));
       xfree (fname);
-      return rc;
+      return err;
     }
 
   if (es_fread (&first, 1, 1, fp) != 1)
     {
-      rc = gpg_error_from_syserror ();
+      err = gpg_error_from_syserror ();
       log_error ("error reading first byte from '%s': %s\n",
-                 fname, strerror (errno));
+                 fname, gpg_strerror (err));
       xfree (fname);
       es_fclose (fp);
-      return rc;
+      return err;
     }
 
-  rc = es_fseek (fp, 0, SEEK_SET);
-  if (rc)
+  if (es_fseek (fp, 0, SEEK_SET))
     {
-      log_error ("error seeking in '%s': %s\n", fname, strerror (errno));
+      err = gpg_error_from_syserror ();
+      log_error ("error seeking in '%s': %s\n", fname, gpg_strerror (err));
       xfree (fname);
       es_fclose (fp);
-      return rc;
+      return err;
     }
 
   if (first != '(')
@@ -699,69 +742,69 @@ read_key_file (const unsigned char *grip, gcry_sexp_t *result)
       nvc_t pk;
       int line;
 
-      rc = nvc_parse_private_key (&pk, &line, fp);
+      err = nvc_parse_private_key (&pk, &line, fp);
       es_fclose (fp);
 
-      if (rc)
+      if (err)
         log_error ("error parsing '%s' line %d: %s\n",
-                   fname, line, gpg_strerror (rc));
+                   fname, line, gpg_strerror (err));
       else
         {
-          rc = nvc_get_private_key (pk, result);
+          err = nvc_get_private_key (pk, result);
           nvc_release (pk);
-          if (rc)
+          if (err)
             log_error ("error getting private key from '%s': %s\n",
-                       fname, gpg_strerror (rc));
+                       fname, gpg_strerror (err));
         }
 
       xfree (fname);
-      return rc;
+      return err;
     }
 
   if (fstat (es_fileno (fp), &st))
     {
-      rc = gpg_error_from_syserror ();
-      log_error ("can't stat '%s': %s\n", fname, strerror (errno));
+      err = gpg_error_from_syserror ();
+      log_error ("can't stat '%s': %s\n", fname, gpg_strerror (err));
       xfree (fname);
       es_fclose (fp);
-      return rc;
+      return err;
     }
 
   buflen = st.st_size;
   buf = xtrymalloc (buflen+1);
   if (!buf)
     {
-      rc = gpg_error_from_syserror ();
+      err = gpg_error_from_syserror ();
       log_error ("error allocating %zu bytes for '%s': %s\n",
-                 buflen, fname, strerror (errno));
+                 buflen, fname, gpg_strerror (err));
       xfree (fname);
       es_fclose (fp);
       xfree (buf);
-      return rc;
+      return err;
 
     }
 
   if (es_fread (buf, buflen, 1, fp) != 1)
     {
-      rc = gpg_error_from_syserror ();
+      err = gpg_error_from_syserror ();
       log_error ("error reading %zu bytes from '%s': %s\n",
-                 buflen, fname, strerror (errno));
+                 buflen, fname, gpg_strerror (err));
       xfree (fname);
       es_fclose (fp);
       xfree (buf);
-      return rc;
+      return err;
     }
 
   /* Convert the file into a gcrypt S-expression object.  */
-  rc = gcry_sexp_sscan (&s_skey, &erroff, (char*)buf, buflen);
+  err = gcry_sexp_sscan (&s_skey, &erroff, (char*)buf, buflen);
   xfree (fname);
   es_fclose (fp);
   xfree (buf);
-  if (rc)
+  if (err)
     {
       log_error ("failed to build S-Exp (off=%u): %s\n",
-                 (unsigned int)erroff, gpg_strerror (rc));
-      return rc;
+                 (unsigned int)erroff, gpg_strerror (err));
+      return err;
     }
   *result = s_skey;
   return 0;
@@ -809,7 +852,7 @@ agent_key_from_file (ctrl_t ctrl, const char *cache_nonce,
                      cache_mode_t cache_mode, lookup_ttl_t lookup_ttl,
                      gcry_sexp_t *result, char **r_passphrase)
 {
-  int rc;
+  gpg_error_t err;
   unsigned char *buf;
   size_t len, buflen, erroff;
   gcry_sexp_t s_skey;
@@ -820,20 +863,20 @@ agent_key_from_file (ctrl_t ctrl, const char *cache_nonce,
   if (r_passphrase)
     *r_passphrase = NULL;
 
-  rc = read_key_file (grip, &s_skey);
-  if (rc)
+  err = read_key_file (grip, &s_skey);
+  if (err)
     {
-      if (gpg_err_code (rc) == GPG_ERR_ENOENT)
-        rc = gpg_error (GPG_ERR_NO_SECKEY);
-      return rc;
+      if (gpg_err_code (err) == GPG_ERR_ENOENT)
+        err = gpg_error (GPG_ERR_NO_SECKEY);
+      return err;
     }
 
   /* For use with the protection functions we also need the key as an
      canonical encoded S-expression in a buffer.  Create this buffer
      now.  */
-  rc = make_canon_sexp (s_skey, &buf, &len);
-  if (rc)
-    return rc;
+  err = make_canon_sexp (s_skey, &buf, &len);
+  if (err)
+    return err;
 
   switch (agent_private_key_type (buf))
     {
@@ -844,10 +887,10 @@ agent_key_from_file (ctrl_t ctrl, const char *cache_nonce,
         unsigned char *buf_new;
         size_t buf_newlen;
 
-        rc = agent_unprotect (ctrl, buf, "", NULL, &buf_new, &buf_newlen);
-        if (rc)
+        err = agent_unprotect (ctrl, buf, "", NULL, &buf_new, &buf_newlen);
+        if (err)
           log_error ("failed to convert unprotected openpgp key: %s\n",
-                     gpg_strerror (rc));
+                     gpg_strerror (err));
         else
           {
             xfree (buf);
@@ -874,17 +917,17 @@ agent_key_from_file (ctrl_t ctrl, const char *cache_nonce,
 
         desc_text_final = NULL;
 	if (desc_text)
-          rc = modify_description (desc_text, comment? comment:"", s_skey,
-                                   &desc_text_final);
+          err = agent_modify_description (desc_text, comment, s_skey,
+                                          &desc_text_final);
         gcry_free (comment);
 
-	if (!rc)
+	if (!err)
 	  {
-	    rc = unprotect (ctrl, cache_nonce, desc_text_final, &buf, grip,
+	    err = unprotect (ctrl, cache_nonce, desc_text_final, &buf, grip,
                             cache_mode, lookup_ttl, r_passphrase);
-	    if (rc)
+	    if (err)
 	      log_error ("failed to unprotect the secret key: %s\n",
-			 gpg_strerror (rc));
+			 gpg_strerror (err));
 	  }
 
 	xfree (desc_text_final);
@@ -896,34 +939,34 @@ agent_key_from_file (ctrl_t ctrl, const char *cache_nonce,
           const unsigned char *s;
           size_t n;
 
-          rc = agent_get_shadow_info (buf, &s);
-          if (!rc)
+          err = agent_get_shadow_info (buf, &s);
+          if (!err)
             {
               n = gcry_sexp_canon_len (s, 0, NULL,NULL);
-              assert (n);
+              log_assert (n);
               *shadow_info = xtrymalloc (n);
               if (!*shadow_info)
-                rc = out_of_core ();
+                err = out_of_core ();
               else
                 {
                   memcpy (*shadow_info, s, n);
-                  rc = 0;
+                  err = 0;
                 }
             }
-          if (rc)
-            log_error ("get_shadow_info failed: %s\n", gpg_strerror (rc));
+          if (err)
+            log_error ("get_shadow_info failed: %s\n", gpg_strerror (err));
         }
       else
-        rc = gpg_error (GPG_ERR_UNUSABLE_SECKEY);
+        err = gpg_error (GPG_ERR_UNUSABLE_SECKEY);
       break;
     default:
       log_error ("invalid private key format\n");
-      rc = gpg_error (GPG_ERR_BAD_SECKEY);
+      err = gpg_error (GPG_ERR_BAD_SECKEY);
       break;
     }
   gcry_sexp_release (s_skey);
   s_skey = NULL;
-  if (rc)
+  if (err)
     {
       xfree (buf);
       if (r_passphrase)
@@ -931,23 +974,23 @@ agent_key_from_file (ctrl_t ctrl, const char *cache_nonce,
           xfree (*r_passphrase);
           *r_passphrase = NULL;
         }
-      return rc;
+      return err;
     }
 
   buflen = gcry_sexp_canon_len (buf, 0, NULL, NULL);
-  rc = gcry_sexp_sscan (&s_skey, &erroff, (char*)buf, buflen);
+  err = gcry_sexp_sscan (&s_skey, &erroff, (char*)buf, buflen);
   wipememory (buf, buflen);
   xfree (buf);
-  if (rc)
+  if (err)
     {
       log_error ("failed to build S-Exp (off=%u): %s\n",
-                 (unsigned int)erroff, gpg_strerror (rc));
+                 (unsigned int)erroff, gpg_strerror (err));
       if (r_passphrase)
         {
           xfree (*r_passphrase);
           *r_passphrase = NULL;
         }
-      return rc;
+      return err;
     }
 
   *result = s_skey;
@@ -1222,7 +1265,7 @@ agent_public_key_from_file (ctrl_t ctrl,
   /* FIXME: The following thing is pretty ugly code; we should
      investigate how to make it cleaner.  Probably code to handle
      canonical S-expressions in a memory buffer is better suited for
-     such a task.  After all that is what we do in protect.c.  Neeed
+     such a task.  After all that is what we do in protect.c.  Need
      to find common patterns and write a straightformward API to use
      them.  */
   assert (sizeof (size_t) <= sizeof (void*));
@@ -1289,7 +1332,7 @@ agent_public_key_from_file (ctrl_t ctrl,
 
 
 
-/* Check whether the the secret key identified by GRIP is available.
+/* Check whether the secret key identified by GRIP is available.
    Returns 0 is the key is available.  */
 int
 agent_key_available (const unsigned char *grip)
@@ -1391,18 +1434,20 @@ agent_key_info_from_file (ctrl_t ctrl, const unsigned char *grip,
 
 
 /* Delete the key with GRIP from the disk after having asked for
-   confirmation using DESC_TEXT.  If FORCE is set the function won't
-   require a confirmation via Pinentry or warns if the key is also
-   used by ssh.
-
-   Common error codes are:
-     GPG_ERR_NO_SECKEY
-     GPG_ERR_KEY_ON_CARD
-     GPG_ERR_NOT_CONFIRMED
-*/
+ * confirmation using DESC_TEXT.  If FORCE is set the function won't
+ * require a confirmation via Pinentry or warns if the key is also
+ * used by ssh.  If ONLY_STUBS is set only stub keys (references to
+ * smartcards) will be affected.
+ *
+ * Common error codes are:
+ *   GPG_ERR_NO_SECKEY
+ *   GPG_ERR_KEY_ON_CARD
+ *   GPG_ERR_NOT_CONFIRMED
+ *   GPG_ERR_FORBIDDEN     - Not a stub key and ONLY_STUBS requested.
+ */
 gpg_error_t
 agent_delete_key (ctrl_t ctrl, const char *desc_text,
-                  const unsigned char *grip, int force)
+                  const unsigned char *grip, int force, int only_stubs)
 {
   gpg_error_t err;
   gcry_sexp_t s_skey = NULL;
@@ -1413,6 +1458,7 @@ agent_delete_key (ctrl_t ctrl, const char *desc_text,
   ssh_control_file_t cf = NULL;
   char hexgrip[40+4+1];
   char *default_desc = NULL;
+  int key_type;
 
   err = read_key_file (grip, &s_skey);
   if (gpg_err_code (err) == GPG_ERR_ENOENT)
@@ -1424,7 +1470,14 @@ agent_delete_key (ctrl_t ctrl, const char *desc_text,
   if (err)
     goto leave;
 
-  switch (agent_private_key_type (buf))
+  key_type = agent_private_key_type (buf);
+  if (only_stubs && key_type != PRIVATE_KEY_SHADOWED)
+    {
+      err  = gpg_error (GPG_ERR_FORBIDDEN);
+      goto leave;
+    }
+
+  switch (key_type)
     {
     case PRIVATE_KEY_CLEAR:
     case PRIVATE_KEY_OPENPGP_NONE:
@@ -1453,8 +1506,8 @@ agent_delete_key (ctrl_t ctrl, const char *desc_text,
           }
 
           if (desc_text)
-            err = modify_description (desc_text, comment? comment:"", s_skey,
-                                      &desc_text_final);
+            err = agent_modify_description (desc_text, comment, s_skey,
+                                            &desc_text_final);
           if (err)
             goto leave;
 

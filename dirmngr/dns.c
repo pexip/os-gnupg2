@@ -54,7 +54,14 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+typedef SOCKET socket_fd_t;
+#define STDCALL __stdcall
+#ifdef TIME_WITH_SYS_TIME
+#include <sys/time.h>		/* gettimeofday(2) */
+#endif
 #else
+typedef int socket_fd_t;
+#define STDCALL
 #include <sys/time.h>		/* gettimeofday(2) */
 #include <sys/types.h>		/* FD_SETSIZE socklen_t */
 #include <sys/select.h>		/* FD_ZERO FD_SET fd_set select(2) */
@@ -198,8 +205,10 @@
 #ifndef HAVE_STATIC_ASSERT
 #if DNS_GNUC_PREREQ(0,0,0) && !DNS_GNUC_PREREQ(4,6,0)
 #define HAVE_STATIC_ASSERT 0 /* glibc doesn't check GCC version */
+#elif defined(static_assert)
+#define HAVE_STATIC_ASSERT 1
 #else
-#define HAVE_STATIC_ASSERT (defined static_assert)
+#define HAVE_STATIC_ASSERT 0
 #endif
 #endif
 
@@ -373,7 +382,11 @@ const char *dns_strerror(int error) {
  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 #ifndef HAVE___ATOMIC_FETCH_ADD
-#define HAVE___ATOMIC_FETCH_ADD (defined __ATOMIC_RELAXED)
+#ifdef __ATOMIC_RELAXED
+#define HAVE___ATOMIC_FETCH_ADD 1
+#else
+#define HAVE___ATOMIC_FETCH_ADD 0
+#endif
 #endif
 
 #ifndef HAVE___ATOMIC_FETCH_SUB
@@ -780,7 +793,11 @@ DNS_NOTUSED static size_t dns_strnlcpy(char *dst, size_t lim, const char *src, s
 } /* dns_strnlcpy() */
 
 
-#define DNS_HAVE_SOCKADDR_UN (defined AF_UNIX && !defined _WIN32)
+#if (defined AF_UNIX && !defined _WIN32)
+#define DNS_HAVE_SOCKADDR_UN 1
+#else
+#define DNS_HAVE_SOCKADDR_UN 0
+#endif
 
 static size_t dns_af_len(int af) {
 	static const size_t table[AF_MAX]	= {
@@ -1968,6 +1985,15 @@ void dns_p_dictadd(struct dns_packet *P, unsigned short dn) {
 } /* dns_p_dictadd() */
 
 
+static inline uint16_t
+plus1_ns (uint16_t count_net)
+{
+  uint16_t count = ntohs (count_net);
+
+  count++;
+  return htons (count);
+}
+
 int dns_p_push(struct dns_packet *P, enum dns_section section, const void *dn, size_t dnlen, enum dns_type type, enum dns_class class, unsigned ttl, const void *any) {
 	size_t end = P->end;
 	int error;
@@ -2009,7 +2035,7 @@ update:
 		if (!P->memo.qd.base && (error = dns_p_study(P)))
 			goto error;
 
-		dns_header(P)->qdcount = htons(ntohs(dns_header(P)->qdcount) + 1);
+		dns_header(P)->qdcount = plus1_ns (dns_header(P)->qdcount);
 
 		P->memo.qd.end  = P->end;
 		P->memo.an.base = P->end;
@@ -2027,7 +2053,7 @@ update:
 		if (!P->memo.an.base && (error = dns_p_study(P)))
 			goto error;
 
-		dns_header(P)->ancount = htons(ntohs(dns_header(P)->ancount) + 1);
+		dns_header(P)->ancount = plus1_ns (dns_header(P)->ancount);
 
 		P->memo.an.end  = P->end;
 		P->memo.ns.base = P->end;
@@ -2043,7 +2069,7 @@ update:
 		if (!P->memo.ns.base && (error = dns_p_study(P)))
 			goto error;
 
-		dns_header(P)->nscount = htons(ntohs(dns_header(P)->nscount) + 1);
+		dns_header(P)->nscount = plus1_ns (dns_header(P)->nscount);
 
 		P->memo.ns.end  = P->end;
 		P->memo.ar.base = P->end;
@@ -2054,7 +2080,7 @@ update:
 		if (!P->memo.ar.base && (error = dns_p_study(P)))
 			goto error;
 
-		dns_header(P)->arcount = htons(ntohs(dns_header(P)->arcount) + 1);
+		dns_header(P)->arcount = plus1_ns (dns_header(P)->arcount);
 
 		P->memo.ar.end = P->end;
 
@@ -4247,7 +4273,7 @@ size_t dns_txt_print(void *_dst, size_t lim, struct dns_txt *txt) {
 
 
 /* Some of the function pointers of DNS_RRTYPES are initialized with
- * slighlly different fucntions, thus we can't use prototypes.  */
+ * slighlly different functions, thus we can't use prototypes.  */
 DNS_PRAGMA_PUSH
 #if __clang__
 #pragma clang diagnostic ignored "-Wstrict-prototypes"
@@ -4436,7 +4462,7 @@ struct dns_trace {
 	} cnames;
 };
 
-static void dns_te_initname(struct sockaddr_storage *ss, int fd, int (*f)(int, struct sockaddr *, socklen_t *)) {
+static void dns_te_initname(struct sockaddr_storage *ss, int fd, int (* STDCALL f)(socket_fd_t, struct sockaddr *, socklen_t *)) {
 	socklen_t n = sizeof *ss;
 
 	if (0 != f(fd, (struct sockaddr *)ss, &n))
@@ -4594,8 +4620,9 @@ dns_error_t dns_trace_fput(const struct dns_trace_event *te, const void *data, s
 
 	if (fwrite(&tmp, 1, headsize, fp) < headsize)
 		return errno;
-	if (fwrite(data, 1, datasize, fp) < datasize)
-		return errno;
+	if (data)
+		if (fwrite(data, 1, datasize, fp) < datasize)
+			return errno;
 	if (fflush(fp))
 		return errno;
 
@@ -5344,13 +5371,16 @@ struct dns_resolv_conf *dns_resconf_open(int *error) {
 	if (0 != gethostname(resconf->search[0], sizeof resconf->search[0]))
 		goto syerr;
 
-	dns_d_anchor(resconf->search[0], sizeof resconf->search[0], resconf->search[0], strlen(resconf->search[0]));
-	dns_d_cleave(resconf->search[0], sizeof resconf->search[0], resconf->search[0], strlen(resconf->search[0]));
-
 	/*
-	 * XXX: If gethostname() returned a string without any label
-	 *      separator, then search[0][0] should be NUL.
+	 * If gethostname() returned a string without any label
+	 * separator, then search[0][0] should be NUL.
 	 */
+	if (strchr (resconf->search[0], '.')) {
+		dns_d_anchor(resconf->search[0], sizeof resconf->search[0], resconf->search[0], strlen(resconf->search[0]));
+		dns_d_cleave(resconf->search[0], sizeof resconf->search[0], resconf->search[0], strlen(resconf->search[0]));
+	} else {
+		memset (resconf->search[0], 0, sizeof resconf->search[0]);
+	}
 
 	dns_resconf_acquire(resconf);
 
@@ -5522,6 +5552,7 @@ int dns_resconf_pton(struct sockaddr_storage *ss, const char *src) {
 	unsigned short port = 0;
 	int ch, af = AF_INET, error;
 
+	memset(ss, 0, sizeof *ss);
 	while ((ch = *src++)) {
 		switch (ch) {
 		case ' ':
@@ -6069,17 +6100,9 @@ int dns_nssconf_loadfile(struct dns_resolv_conf *resconf, FILE *fp) {
 			dns_anyconf_skip(" \t", fp);
 
 			if ('[' == dns_anyconf_peek(fp)) {
-				dns_anyconf_skip("[ \t", fp);
+				dns_anyconf_skip("[! \t", fp);
 
-				for (;;) {
-					if ('!' == dns_anyconf_peek(fp)) {
-						dns_anyconf_skip("! \t", fp);
-						/* FIXME: negating statuses; currently not implemented */
-						dns_anyconf_skip("^#;]\n", fp); /* skip to end of criteria */
-						break;
-					}
-
-					if (!dns_anyconf_scan(&cf, "%w_", fp, &error)) break;
+				while (dns_anyconf_scan(&cf, "%w_", fp, &error)) {
 					dns_anyconf_skip("= \t", fp);
 					if (!dns_anyconf_scan(&cf, "%w_", fp, &error)) {
 						dns_anyconf_pop(&cf); /* discard status */
@@ -6292,6 +6315,7 @@ int dns_resconf_setiface(struct dns_resolv_conf *resconf, const char *addr, unsi
 	int af = (strchr(addr, ':'))? AF_INET6 : AF_INET;
 	int error;
 
+	memset(&resconf->iface, 0, sizeof (struct sockaddr_storage));
 	if ((error = dns_pton(af, addr, dns_sa_addr(af, &resconf->iface, NULL))))
 		return error;
 
@@ -6603,6 +6627,7 @@ struct dns_hints *dns_hints_root(struct dns_resolv_conf *resconf, int *error_) {
 	for (i = 0; i < lengthof(root_hints); i++) {
 		af	= root_hints[i].af;
 
+		memset(&ss, 0, sizeof ss);
 		if ((error = dns_pton(af, root_hints[i].addr, dns_sa_addr(af, &ss, NULL))))
 			goto error;
 
@@ -7034,11 +7059,19 @@ static void dns_socketclose(int *fd, const struct dns_options *opts) {
 #endif
 
 #ifndef HAVE_SOCK_CLOEXEC
-#define HAVE_SOCK_CLOEXEC (defined SOCK_CLOEXEC)
+#ifdef SOCK_CLOEXEC
+#define HAVE_SOCK_CLOEXEC 1
+#else
+#define HAVE_SOCK_CLOEXEC 0
+#endif
 #endif
 
 #ifndef HAVE_SOCK_NONBLOCK
-#define HAVE_SOCK_NONBLOCK (defined SOCK_NONBLOCK)
+#ifdef SOCK_NONBLOCK
+#define HAVE_SOCK_NONBLOCK 1
+#else
+#define HAVE_SOCK_NONBLOCK 0
+#endif
 #endif
 
 #define DNS_SO_MAXTRY	7
@@ -7088,6 +7121,8 @@ static int dns_socket(struct sockaddr *local, int type, int *error_) {
 	if (type != SOCK_DGRAM)
 		return fd;
 
+#define LEAVE_SELECTION_OF_PORT_TO_KERNEL
+#if !defined(LEAVE_SELECTION_OF_PORT_TO_KERNEL)
 	/*
 	 * FreeBSD, Linux, OpenBSD, OS X, and Solaris use random ports by
 	 * default. Though the ephemeral range is quite small on OS X
@@ -7113,6 +7148,7 @@ static int dns_socket(struct sockaddr *local, int type, int *error_) {
 
 		/* NB: continue to next bind statement */
 	}
+#endif
 
 	if (0 == bind(fd, local, dns_sa_len(local)))
 		return fd;
@@ -7566,14 +7602,45 @@ int dns_so_check(struct dns_socket *so) {
 retry:
 	switch (so->state) {
 	case DNS_SO_UDP_INIT:
-		so->state++;
+		if (so->remote.ss_family != so->local.ss_family) {
+			/* Family mismatch.  Reinitialize.  */
+			if ((error = dns_so_closefd(so, &so->udp)))
+				goto error;
+			if ((error = dns_so_closefd(so, &so->tcp)))
+				goto error;
+
+			/* If the user supplied an interface
+			   statement, that is gone now.  Sorry.  */
+			memset(&so->local, 0, sizeof so->local);
+			so->local.ss_family = so->remote.ss_family;
+
+			if (-1 == (so->udp = dns_socket((struct sockaddr *)&so->local, SOCK_DGRAM, &error)))
+				goto error;
+		}
+
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_UDP_CONN:
+	udp_connect_retry:
 		error = dns_connect(so->udp, (struct sockaddr *)&so->remote, dns_sa_len(&so->remote));
 		dns_trace_sys_connect(so->trace, so->udp, SOCK_DGRAM, (struct sockaddr *)&so->remote, error);
+
+		/* Linux returns EINVAL when address was bound to
+		   localhost and it's external IP address now.  */
+		if (error == EINVAL) {
+			struct sockaddr unspec_addr;
+			memset (&unspec_addr, 0, sizeof unspec_addr);
+			unspec_addr.sa_family = AF_UNSPEC;
+			connect(so->udp, &unspec_addr, sizeof unspec_addr);
+			goto udp_connect_retry;
+		} else if (error == ECONNREFUSED)
+			/* Error for previous socket operation may
+			   be reserverd asynchronously. */
+			goto udp_connect_retry;
+
 		if (error)
 			goto error;
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_UDP_SEND:
 		n = dns_send(so->udp, (void *)so->query->data, so->query->end, 0, &error);
 		dns_trace_sys_send(so->trace, so->udp, SOCK_DGRAM, so->query->data, n, error);
@@ -7583,7 +7650,7 @@ retry:
 		so->stat.udp.sent.bytes += n;
 		so->stat.udp.sent.count++;
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_UDP_RECV:
 		n = dns_recv(so->udp, (void *)so->answer->data, so->answer->size, 0, &error);
 		dns_trace_sys_recv(so->trace, so->udp, SOCK_DGRAM, so->answer->data, n, error);
@@ -7597,13 +7664,26 @@ retry:
 		if ((error = dns_so_verify(so, so->answer)))
 			goto trash;
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_UDP_DONE:
 		if (!dns_header(so->answer)->tc || so->type == SOCK_DGRAM)
 			return 0;
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_TCP_INIT:
+		if (so->remote.ss_family != so->local.ss_family) {
+			/* Family mismatch.  Reinitialize.  */
+			if ((error = dns_so_closefd(so, &so->udp)))
+				goto error;
+			if ((error = dns_so_closefd(so, &so->tcp)))
+				goto error;
+
+			/* If the user supplied an interface
+			   statement, that is gone now.  Sorry.  */
+			memset(&so->local, 0, sizeof so->local);
+			so->local.ss_family = so->remote.ss_family;
+		}
+
 		if (dns_so_tcp_keep(so)) {
 			so->state = DNS_SO_TCP_SEND;
 
@@ -7616,24 +7696,24 @@ retry:
 		if (-1 == (so->tcp = dns_socket((struct sockaddr *)&so->local, SOCK_STREAM, &error)))
 			goto error;
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_TCP_CONN:
 		error = dns_connect(so->tcp, (struct sockaddr *)&so->remote, dns_sa_len(&so->remote));
 		dns_trace_sys_connect(so->trace, so->tcp, SOCK_STREAM, (struct sockaddr *)&so->remote, error);
 		if (error && error != DNS_EISCONN)
 			goto error;
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_TCP_SEND:
 		if ((error = dns_so_tcp_send(so)))
 			goto error;
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_TCP_RECV:
 		if ((error = dns_so_tcp_recv(so)))
 			goto error;
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_TCP_DONE:
 		/* close unless DNS_RESCONF_TCP_ONLY (see dns_res_tcp2type) */
 		if (so->type != SOCK_STREAM) {
@@ -7652,7 +7732,7 @@ retry:
 		if (-1 == (so->tcp = dns_socket((struct sockaddr *)&so->local, SOCK_STREAM, &error)))
 			goto error;
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_SOCKS_CONN: {
 		unsigned char method;
 
@@ -7680,13 +7760,13 @@ retry:
 		buffer[2] = method;
 
 		so->state++;
-	}
+	} /* FALL THROUGH */
 	case DNS_SO_SOCKS_HELLO_SEND:
 		if ((error = dns_so_tcp_send(so)))
 			goto error;
 
 		dns_so_tcp_recv_expect(so, 2);
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_SOCKS_HELLO_RECV: {
 		unsigned char method;
 
@@ -7734,7 +7814,7 @@ retry:
 		}
 
 		so->state++;
-	}
+	} /* FALL THROUGH */
 	case DNS_SO_SOCKS_AUTH_SEND:
 		if ((error = dns_so_tcp_send(so)))
 			goto error;
@@ -7742,7 +7822,7 @@ retry:
 		/* Skip the two length octets, and receive two octets.  */
 		dns_so_tcp_recv_expect(so, 2);
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_SOCKS_AUTH_RECV:
 		if ((error = dns_so_tcp_recv(so)))
 			goto error;
@@ -7759,7 +7839,7 @@ retry:
 			goto error;
 		}
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_SOCKS_REQUEST_PREPARE:
 		/* Send request details (rfc-1928, 4).  */
 		buffer = dns_so_tcp_send_buffer(so, so->remote.ss_family == AF_INET6 ? 22 : 10);
@@ -7780,7 +7860,7 @@ retry:
 			memcpy (buffer+8, &addr_in->sin_port, 2);        /* DST.PORT */
 		}
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_SOCKS_REQUEST_SEND:
 		if ((error = dns_so_tcp_send(so)))
 			goto error;
@@ -7788,7 +7868,7 @@ retry:
 		/* Expect ten octets.  This is the length of the
 		 * response assuming a IPv4 address is used.  */
 		dns_so_tcp_recv_expect(so, 10);
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_SOCKS_REQUEST_RECV:
 		if ((error = dns_so_tcp_recv(so)))
 			goto error;
@@ -7846,12 +7926,12 @@ retry:
 		 * the remaining bytes assuming an IPv6 address is
 		 * used.  */
 		dns_so_tcp_recv_expect(so, 12);
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_SOCKS_REQUEST_RECV_V6:
 		if ((error = dns_so_tcp_recv(so)))
 			goto error;
 
-		so->state++;
+		so->state++;	/* FALL THROUGH */
 	case DNS_SO_SOCKS_HANDSHAKE_DONE:
 		/* We have not way to store the actual address used by
 		 * the server.  Then again, we don't really care.  */
@@ -8055,6 +8135,8 @@ enum dns_res_state {
 	DNS_R_RESOLV1_NS,	/* Epilog: Inspect answer */
 	DNS_R_FOREACH_A,
 	DNS_R_QUERY_A,
+	DNS_R_FOREACH_AAAA,
+	DNS_R_QUERY_AAAA,
 	DNS_R_CNAME0_A,
 	DNS_R_CNAME1_A,
 
@@ -8477,7 +8559,7 @@ exec:
 
 	switch (F->state) {
 	case DNS_R_INIT:
-		F->state++;
+		F->state++;	/* FALL THROUGH */
 	case DNS_R_GLUE:
 		if (R->sp == 0)
 			dgoto(R->sp, DNS_R_SWITCH);
@@ -8591,17 +8673,17 @@ exec:
 		} else if (error)
 			goto error;
 
-		F->state++;
+		F->state++;	/* FALL THROUGH */
 	case DNS_R_SUBMIT:
 		if ((error = R->cache->submit(F->query, R->cache)))
 			goto error;
 
-		F->state++;
+		F->state++;	/* FALL THROUGH */
 	case DNS_R_CHECK:
 		if ((error = R->cache->check(R->cache)))
 			goto error;
 
-		F->state++;
+		F->state++;	/* FALL THROUGH */
 	case DNS_R_FETCH:
 		error = 0;
 
@@ -8626,7 +8708,7 @@ exec:
 
 		R->search = 0;
 
-		F->state++;
+		F->state++;	/* FALL THROUGH */
 	case DNS_R_SEARCH:
 		/*
 		 * XXX: We probably should only apply the domain search
@@ -8638,12 +8720,12 @@ exec:
 		if ((error = dns_q_make2(&F->query, u.name, len, R->qtype, R->qclass, F->qflags)))
 			goto error;
 
-		F->state++;
+		F->state++;	/* FALL THROUGH */
 	case DNS_R_HINTS:
 		if (!dns_p_setptr(&F->hints, dns_hints_query(R->hints, F->query, &error)))
 			goto error;
 
-		F->state++;
+		F->state++;	/* FALL THROUGH */
 	case DNS_R_ITERATE:
 		dns_rr_i_init(&F->hints_i, F->hints);
 
@@ -8652,7 +8734,7 @@ exec:
 		F->hints_i.sort		= &dns_res_nameserv_cmp;
 		F->hints_i.args[0]	= F->hints->end;
 
-		F->state++;
+		F->state++;	/* FALL THROUGH */
 	case DNS_R_FOREACH_NS:
 		dns_rr_i_save(&F->hints_i);
 
@@ -8714,8 +8796,22 @@ exec:
 		F->hints_j.section	= DNS_S_ALL & ~DNS_S_QD;
 
 		if (!dns_rr_grep(&rr, 1, &F->hints_j, F->hints, &error)) {
-			if (!dns_rr_i_count(&F->hints_j))
+			if (!dns_rr_i_count(&F->hints_j)) {
+				/* Check if we have in fact servers
+				   with an IPv6 address.  */
+				dns_rr_i_init(&F->hints_j, F->hints);
+				F->hints_j.name		= u.ns.host;
+				F->hints_j.type		= DNS_T_AAAA;
+				F->hints_j.section	= DNS_S_ALL & ~DNS_S_QD;
+				if (dns_rr_grep(&rr, 1, &F->hints_j, F->hints, &error)) {
+					/* We do.  Reinitialize
+					   iterator and handle it.  */
+					dns_rr_i_init(&F->hints_j, F->hints);
+					dgoto(R->sp, DNS_R_FOREACH_AAAA);
+				}
+
 				dgoto(R->sp, DNS_R_RESOLV0_NS);
+			}
 
 			dgoto(R->sp, DNS_R_FOREACH_NS);
 		}
@@ -8744,12 +8840,15 @@ exec:
 			goto error;
 
 		F->state++;
-	}
+	} /* FALL THROUGH */
 	case DNS_R_QUERY_A:
 		if (dns_so_elapsed(&R->so) >= dns_resconf_timeout(R->resconf))
 			dgoto(R->sp, DNS_R_FOREACH_A);
 
-		if ((error = dns_so_check(&R->so)))
+		error = dns_so_check(&R->so);
+		if (R->so.state != DNS_SO_SOCKS_CONN && error == ECONNREFUSED)
+			dgoto(R->sp, DNS_R_FOREACH_A);
+		else if (error)
 			goto error;
 
 		if (!dns_p_setptr(&F->answer, dns_so_fetch(&R->so, &error)))
@@ -8816,6 +8915,142 @@ exec:
 		/* XXX: Should we copy F->answer to R->nodata? */
 
 		dgoto(R->sp, DNS_R_FOREACH_A);
+	case DNS_R_FOREACH_AAAA: {
+		struct dns_aaaa aaaa;
+		struct sockaddr_in6 sin6;
+
+		/*
+		 * NOTE: Iterator initialized in DNS_R_FOREACH_NS because
+		 * this state is re-entrant, but we need to reset
+		 * .name to a valid pointer each time.
+		 */
+		if ((error = dns_ns_parse(&u.ns, &F->hints_ns, F->hints)))
+			goto error;
+
+		F->hints_j.name		= u.ns.host;
+		F->hints_j.type		= DNS_T_AAAA;
+		F->hints_j.section	= DNS_S_ALL & ~DNS_S_QD;
+
+		if (!dns_rr_grep(&rr, 1, &F->hints_j, F->hints, &error)) {
+			if (!dns_rr_i_count(&F->hints_j)) {
+				/* Check if we have in fact servers
+				   with an IPv4 address.  */
+				dns_rr_i_init(&F->hints_j, F->hints);
+				F->hints_j.name		= u.ns.host;
+				F->hints_j.type		= DNS_T_A;
+				F->hints_j.section	= DNS_S_ALL & ~DNS_S_QD;
+				if (dns_rr_grep(&rr, 1, &F->hints_j, F->hints, &error)) {
+					/* We do.  Reinitialize
+					   iterator and handle it.  */
+					dns_rr_i_init(&F->hints_j, F->hints);
+					dgoto(R->sp, DNS_R_FOREACH_A);
+				}
+
+				dgoto(R->sp, DNS_R_RESOLV0_NS);
+			}
+
+			dgoto(R->sp, DNS_R_FOREACH_NS);
+		}
+
+		if ((error = dns_aaaa_parse(&aaaa, &rr, F->hints)))
+			goto error;
+
+		memset(&sin6, '\0', sizeof sin6); /* NB: silence valgrind */
+		sin6.sin6_family	= AF_INET6;
+		sin6.sin6_addr	= aaaa.addr;
+		if (R->sp == 0)
+			sin6.sin6_port = dns_hints_port(R->hints, AF_INET, &sin6.sin6_addr);
+		else
+			sin6.sin6_port = htons(53);
+
+		if (DNS_DEBUG) {
+			char addr[INET6_ADDRSTRLEN + 1];
+			dns_aaaa_print(addr, sizeof addr, &aaaa);
+			dns_header(F->query)->qid = dns_so_mkqid(&R->so);
+			DNS_SHOW(F->query, "ASKING: %s/%s @ DEPTH: %u)", u.ns.host, addr, R->sp);
+		}
+
+		dns_trace_setcname(R->trace, u.ns.host, (struct sockaddr *)&sin6);
+
+		if ((error = dns_so_submit(&R->so, F->query, (struct sockaddr *)&sin6)))
+			goto error;
+
+		F->state++;
+	} /* FALL THROUGH */
+	case DNS_R_QUERY_AAAA:
+		if (dns_so_elapsed(&R->so) >= dns_resconf_timeout(R->resconf))
+			dgoto(R->sp, DNS_R_FOREACH_AAAA);
+
+		error = dns_so_check(&R->so);
+		if (error == ECONNREFUSED)
+			dgoto(R->sp, DNS_R_FOREACH_AAAA);
+		else if (error)
+			goto error;
+
+		if (!dns_p_setptr(&F->answer, dns_so_fetch(&R->so, &error)))
+			goto error;
+
+		if (DNS_DEBUG) {
+			DNS_SHOW(F->answer, "ANSWER @ DEPTH: %u)", R->sp);
+		}
+
+		if (dns_p_rcode(F->answer) == DNS_RC_FORMERR ||
+		    dns_p_rcode(F->answer) == DNS_RC_NOTIMP ||
+		    dns_p_rcode(F->answer) == DNS_RC_BADVERS) {
+			/* Temporarily disable EDNS0 and try again. */
+			if (F->qflags & DNS_Q_EDNS0) {
+				F->qflags &= ~DNS_Q_EDNS0;
+				if ((error = dns_q_remake(&F->query, F->qflags)))
+					goto error;
+
+				dgoto(R->sp, DNS_R_FOREACH_AAAA);
+			}
+		}
+
+		if ((error = dns_rr_parse(&rr, 12, F->query)))
+			goto error;
+
+		if (!(len = dns_d_expand(u.name, sizeof u.name, rr.dn.p, F->query, &error)))
+			goto error;
+		else if (len >= sizeof u.name)
+			goto toolong;
+
+		dns_rr_foreach(&rr, F->answer, .section = DNS_S_AN, .name = u.name, .type = rr.type) {
+			dgoto(R->sp, DNS_R_FINISH);	/* Found */
+		}
+
+		dns_rr_foreach(&rr, F->answer, .section = DNS_S_AN, .name = u.name, .type = DNS_T_CNAME) {
+			F->ans_cname	= rr;
+
+			dgoto(R->sp, DNS_R_CNAME0_A);
+		}
+
+		/*
+		 * XXX: The condition here should probably check whether
+		 * R->sp == 0, because DNS_R_SEARCH runs regardless of
+		 * options.recurse. See DNS_R_BIND.
+		 */
+		if (!R->resconf->options.recurse) {
+			/* Make first answer our tentative answer */
+			if (!R->nodata)
+				dns_p_movptr(&R->nodata, &F->answer);
+
+			dgoto(R->sp, DNS_R_SEARCH);
+		}
+
+		dns_rr_foreach(&rr, F->answer, .section = DNS_S_NS, .type = DNS_T_NS) {
+			dns_p_movptr(&F->hints, &F->answer);
+
+			dgoto(R->sp, DNS_R_ITERATE);
+		}
+
+		/* XXX: Should this go further up? */
+		if (dns_header(F->answer)->aa)
+			dgoto(R->sp, DNS_R_FINISH);
+
+		/* XXX: Should we copy F->answer to R->nodata? */
+
+		dgoto(R->sp, DNS_R_FOREACH_AAAA);
 	case DNS_R_CNAME0_A:
 		if (&F[1] >= endof(R->stack))
 			dgoto(R->sp, DNS_R_FINISH);
@@ -8847,7 +9082,7 @@ exec:
 
 		dns_rr_i_init(&R->smart, F->answer);
 
-		F->state++;
+		F->state++;	/* FALL THROUGH */
 	case DNS_R_SMART0_A:
 		if (&F[1] >= endof(R->stack))
 			dgoto(R->sp, DNS_R_DONE);
@@ -9439,29 +9674,31 @@ void dns_ai_close(struct dns_addrinfo *ai) {
 
 
 static int dns_ai_setent(struct addrinfo **ent, union dns_any *any, enum dns_type type, struct dns_addrinfo *ai) {
-	struct sockaddr *saddr;
-	struct sockaddr_in sin;
-	struct sockaddr_in6 sin6;
+	union u {
+		struct sockaddr_in sin;
+		struct sockaddr_in6 sin6;
+		struct sockaddr_storage ss;
+	} addr;
 	const char *cname;
 	size_t clen;
 
 	switch (type) {
 	case DNS_T_A:
-		saddr	= memset(&sin, '\0', sizeof sin);
+		memset(&addr.sin, '\0', sizeof addr.sin);
 
-		sin.sin_family	= AF_INET;
-		sin.sin_port	= htons(ai->port);
+		addr.sin.sin_family	= AF_INET;
+		addr.sin.sin_port	= htons(ai->port);
 
-		memcpy(&sin.sin_addr, any, sizeof sin.sin_addr);
+		memcpy(&addr.sin.sin_addr, any, sizeof addr.sin.sin_addr);
 
 		break;
 	case DNS_T_AAAA:
-		saddr	= memset(&sin6, '\0', sizeof sin6);
+		memset(&addr.sin6, '\0', sizeof addr.sin6);
 
-		sin6.sin6_family	= AF_INET6;
-		sin6.sin6_port		= htons(ai->port);
+		addr.sin6.sin6_family	= AF_INET6;
+		addr.sin6.sin6_port	= htons(ai->port);
 
-		memcpy(&sin6.sin6_addr, any, sizeof sin6.sin6_addr);
+		memcpy(&addr.sin6.sin6_addr, any, sizeof addr.sin6.sin6_addr);
 
 		break;
 	default:
@@ -9476,20 +9713,20 @@ static int dns_ai_setent(struct addrinfo **ent, union dns_any *any, enum dns_typ
 		clen	= 0;
 	}
 
-	if (!(*ent = malloc(sizeof **ent + dns_sa_len(saddr) + ((ai->hints.ai_flags & AI_CANONNAME)? clen + 1 : 0))))
+	if (!(*ent = malloc(sizeof **ent + dns_sa_len(&addr) + ((ai->hints.ai_flags & AI_CANONNAME)? clen + 1 : 0))))
 		return dns_syerr();
 
 	memset(*ent, '\0', sizeof **ent);
 
-	(*ent)->ai_family	= saddr->sa_family;
+	(*ent)->ai_family	= addr.ss.ss_family;
 	(*ent)->ai_socktype	= ai->hints.ai_socktype;
 	(*ent)->ai_protocol	= ai->hints.ai_protocol;
 
-	(*ent)->ai_addr		= memcpy((unsigned char *)*ent + sizeof **ent, saddr, dns_sa_len(saddr));
-	(*ent)->ai_addrlen	= dns_sa_len(saddr);
+	(*ent)->ai_addr		= memcpy((unsigned char *)*ent + sizeof **ent, &addr, dns_sa_len(&addr));
+	(*ent)->ai_addrlen	= dns_sa_len(&addr);
 
 	if (ai->hints.ai_flags & AI_CANONNAME)
-		(*ent)->ai_canonname	= memcpy((unsigned char *)*ent + sizeof **ent + dns_sa_len(saddr), cname, clen + 1);
+		(*ent)->ai_canonname	= memcpy((unsigned char *)*ent + sizeof **ent + dns_sa_len(&addr), cname, clen + 1);
 
 	ai->found++;
 
@@ -9530,12 +9767,12 @@ exec:
 
 	switch (ai->state) {
 	case DNS_AI_S_INIT:
-		ai->state++;
+		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_NEXTAF:
 		if (!dns_ai_nextaf(ai))
 			dns_ai_goto(DNS_AI_S_DONE);
 
-		ai->state++;
+		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_NUMERIC:
 		if (1 == dns_inet_pton(AF_INET, ai->qname, &any.a)) {
 			if (ai->af.atype == AF_INET) {
@@ -9558,19 +9795,19 @@ exec:
 		if (ai->hints.ai_flags & AI_NUMERICHOST)
 			dns_ai_goto(DNS_AI_S_NEXTAF);
 
-		ai->state++;
+		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_SUBMIT:
 		assert(ai->res);
 
 		if ((error = dns_res_submit(ai->res, ai->qname, dns_ai_qtype(ai), DNS_C_IN)))
 			return error;
 
-		ai->state++;
+		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_CHECK:
 		if ((error = dns_res_check(ai->res)))
 			return error;
 
-		ai->state++;
+		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_FETCH:
 		if (!(ans = dns_res_fetch_and_study(ai->res, &error)))
 			return error;
@@ -9593,7 +9830,7 @@ exec:
 		ai->i.type    = dns_ai_qtype(ai);
 		ai->i.sort    = &dns_rr_i_order;
 
-		ai->state++;
+		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_FOREACH_I:
 		if (!dns_rr_grep(&rr, 1, &ai->i, ai->answer, &error))
 			dns_ai_goto(DNS_AI_S_NEXTAF);
@@ -9627,11 +9864,11 @@ exec:
 			break;
 		} /* switch() */
 
-		ai->state++;
+		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_INIT_G:
 		ai->g_depth = 0;
 
-		ai->state++;
+		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_ITERATE_G:
 		dns_strlcpy(ai->g_cname, ai->cname, sizeof ai->g_cname);
 		dns_rr_i_init(&ai->g, ai->glue);
@@ -9639,7 +9876,7 @@ exec:
 		ai->g.name    = ai->g_cname;
 		ai->g.type    = ai->af.qtype;
 
-		ai->state++;
+		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_FOREACH_G:
 		if (!dns_rr_grep(&rr, 1, &ai->g, ai->glue, &error)) {
 			if (dns_rr_i_count(&ai->g) > 0)
@@ -9663,12 +9900,12 @@ exec:
 		if ((error = dns_res_submit(ai->res, ai->g.name, ai->g.type, DNS_C_IN)))
 			return error;
 
-		ai->state++;
+		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_CHECK_G:
 		if ((error = dns_res_check(ai->res)))
 			return error;
 
-		ai->state++;
+		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_FETCH_G:
 		if (!(ans = dns_res_fetch_and_study(ai->res, &error)))
 			return error;
@@ -10659,6 +10896,7 @@ static int send_query(int argc, char *argv[]) {
 	struct dns_socket *so;
 	int error, type;
 
+	memset(&ss, 0, sizeof ss);
 	if (argc > 1) {
 		ss.ss_family	= (strchr(argv[1], ':'))? AF_INET6 : AF_INET;
 

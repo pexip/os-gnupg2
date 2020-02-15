@@ -4,8 +4,8 @@
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify it
- * under the terms of either
+ * GnuPG is free software; you can redistribute and/or modify this
+ * part of GnuPG under the terms of either
  *
  *   - the GNU Lesser General Public License as published by the Free
  *     Software Foundation; either version 3 of the License, or (at
@@ -90,6 +90,8 @@ enum jnlib_log_levels {
 };
 void log_log (int level, const char *fmt, ...) GPGRT_ATTR_PRINTF(2,3);
 void log_logv (int level, const char *fmt, va_list arg_ptr);
+void log_logv_with_prefix (int level, const char *prefix,
+                           const char *fmt, va_list arg_ptr);
 void log_string (int level, const char *string);
 void log_bug (const char *fmt, ...)    GPGRT_ATTR_NR_PRINTF(1,2);
 void log_fatal (const char *fmt, ...)  GPGRT_ATTR_NR_PRINTF(1,2);
@@ -108,6 +110,32 @@ void log_flush (void);
 void log_printhex (const char *text, const void *buffer, size_t length);
 
 void log_clock (const char *string);
+
+
+/* Some handy assertion macros which don't abort.  */
+
+#define return_if_fail(expr) do {                        \
+    if (!(expr)) {                                       \
+        log_debug ("%s:%d: assertion '%s' failed\n",     \
+                   __FILE__, __LINE__, #expr );          \
+        return;	                                         \
+    } } while (0)
+#define return_null_if_fail(expr) do {                   \
+    if (!(expr)) {                                       \
+        log_debug ("%s:%d: assertion '%s' failed\n",     \
+                   __FILE__, __LINE__, #expr );          \
+        return NULL;	                                 \
+    } } while (0)
+#define return_val_if_fail(expr,val) do {                \
+    if (!(expr)) {                                       \
+        log_debug ("%s:%d: assertion '%s' failed\n",     \
+                   __FILE__, __LINE__, #expr );          \
+        return (val);	                                 \
+    } } while (0)
+#define never_reached() do {                             \
+    log_debug ("%s:%d: oops - should never get here\n",  \
+               __FILE__, __LINE__ );                     \
+    } while (0)
 
 
 #endif /*GNUPG_COMMON_LOGGING_H*/

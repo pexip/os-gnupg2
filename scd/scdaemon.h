@@ -123,8 +123,11 @@ int  scd_command_handler (ctrl_t, int);
 void send_status_info (ctrl_t ctrl, const char *keyword, ...)
      GPGRT_ATTR_SENTINEL(1);
 void send_status_direct (ctrl_t ctrl, const char *keyword, const char *args);
-void scd_update_reader_status_file (void);
 void send_client_notifications (app_t app, int removal);
+void scd_kick_the_loop (void);
+int get_active_connection_count (void);
 
+/*-- app.c --*/
+int scd_update_reader_status_file (void);
 
 #endif /*SCDAEMON_H*/

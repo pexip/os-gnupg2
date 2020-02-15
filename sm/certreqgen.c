@@ -66,7 +66,7 @@
 #include <ksba.h>
 
 #include "keydb.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 
 
 enum para_name
@@ -737,14 +737,18 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
 
   if (!outctrl->dryrun)
     {
-      Base64Context b64writer = NULL;
+      gnupg_ksba_io_t b64writer = NULL;
       ksba_writer_t writer;
       int create_cert ;
 
       create_cert = !!get_parameter_value (para, pSERIAL, 0);
 
       ctrl->pem_name = create_cert? "CERTIFICATE" : "CERTIFICATE REQUEST";
-      rc = gpgsm_create_writer (&b64writer, ctrl, out_fp, &writer);
+
+      rc = gnupg_ksba_create_writer
+        (&b64writer, ((ctrl->create_pem? GNUPG_KSBA_IO_PEM : 0)
+                      | (ctrl->create_base64? GNUPG_KSBA_IO_BASE64 : 0)),
+         ctrl->pem_name, out_fp, &writer);
       if (rc)
         log_error ("can't create writer: %s\n", gpg_strerror (rc));
       else
@@ -752,7 +756,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
           rc = create_request (ctrl, para, cardkeyid, public, sigkey, writer);
           if (!rc)
             {
-              rc = gpgsm_finish_writer (b64writer);
+              rc = gnupg_ksba_finish_writer (b64writer);
               if (rc)
                 log_error ("write failed: %s\n", gpg_strerror (rc));
               else
@@ -762,7 +766,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
                             create_cert?"":" request");
                 }
             }
-          gpgsm_destroy_writer (b64writer);
+          gnupg_ksba_destroy_writer (b64writer);
         }
     }
 

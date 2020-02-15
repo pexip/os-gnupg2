@@ -1,4 +1,4 @@
-/* pkdecrypt.c - public key decryption (well, acually using a secret key)
+/* pkdecrypt.c - public key decryption (well, actually using a secret key)
  *	Copyright (C) 2001, 2003 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
@@ -86,7 +86,7 @@ agent_pkdecrypt (ctrl_t ctrl, const char *desc_text,
           goto leave;
         }
 
-      rc = divert_pkdecrypt (ctrl, ciphertext, shadow_info,
+      rc = divert_pkdecrypt (ctrl, desc_text, ciphertext, shadow_info,
                              &buf, &len, r_padding);
       if (rc)
         {

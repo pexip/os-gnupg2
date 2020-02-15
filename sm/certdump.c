@@ -1,5 +1,5 @@
 /* certdump.c - Dump a certificate for debugging
- * Copyright (C) 2001, 2004, 2007 Free Software Foundation, Inc.
+ * Copyright (C) 2001-2010, 2014-2015  g10 Code GmbH
  *
  * This file is part of GnuPG.
  *
@@ -37,7 +37,7 @@
 #include <ksba.h>
 
 #include "keydb.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 
 
 struct dn_array_s {
@@ -492,7 +492,7 @@ print_dn_part (estream_t stream,
         {
           /* Forward to the last multi-valued RDN, so that we can
              print them all in reverse in the correct order.  Note
-             that this overrides the the standard sequence but that
+             that this overrides the standard sequence but that
              seems to a reasonable thing to do with multi-valued
              RDNs. */
           while (dn->multivalued && dn[1].key)

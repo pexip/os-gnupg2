@@ -35,12 +35,13 @@
 #include "passphrase.h"
 #include "../common/shareddefs.h"
 #include "../kbx/keybox.h" /* malloc hooks */
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "keydb.h"
-#include "sysutils.h"
-#include "gc-opt-flags.h"
-#include "asshelp.h"
+#include "../common/sysutils.h"
+#include "../common/gc-opt-flags.h"
+#include "../common/asshelp.h"
 #include "../common/init.h"
+#include "../common/compliance.h"
 
 
 #ifndef O_BINARY
@@ -124,6 +125,7 @@ enum cmd_and_opt_values {
 
   oPassphraseFD,
   oPinentryMode,
+  oRequestOrigin,
 
   oAssumeArmor,
   oAssumeBase64,
@@ -253,6 +255,7 @@ static ARGPARSE_OPTS opts[] = {
 
   ARGPARSE_s_i (oPassphraseFD,    "passphrase-fd", "@"),
   ARGPARSE_s_s (oPinentryMode,    "pinentry-mode", "@"),
+  ARGPARSE_s_s (oRequestOrigin,   "request-origin", "@"),
 
   ARGPARSE_s_n (oAssumeArmor, "assume-armor",
                 N_("assume input is in PEM format")),
@@ -946,6 +949,9 @@ main ( int argc, char **argv)
 
   dotlock_create (NULL, 0); /* Register lockfile cleanup.  */
 
+  /* Tell the compliance module who we are.  */
+  gnupg_initialize_compliance (GNUPG_MODULE_NAME_GPGSM);
+
   opt.autostart = 1;
   opt.session_env = session_env_new ();
   if (!opt.session_env)
@@ -1002,8 +1008,6 @@ main ( int argc, char **argv)
   assuan_set_malloc_hooks (&malloc_hooks);
   assuan_set_gpg_err_source (GPG_ERR_SOURCE_DEFAULT);
   setup_libassuan_logging (&opt.debug, NULL);
-
-  keybox_set_malloc_hooks (gcry_malloc, gcry_realloc, gcry_free);
 
   /* Setup a default control structure for command line mode */
   memset (&ctrl, 0, sizeof ctrl);
@@ -1157,6 +1161,12 @@ main ( int argc, char **argv)
 	  if (opt.pinentry_mode == -1)
             log_error (_("invalid pinentry mode '%s'\n"), pargs.r.ret_str);
 	  break;
+
+        case oRequestOrigin:
+          opt.request_origin = parse_request_origin (pargs.r.ret_str);
+          if (opt.request_origin == -1)
+            log_error (_("invalid request origin '%s'\n"), pargs.r.ret_str);
+          break;
 
           /* Input encoding selection.  */
         case oAssumeArmor:
@@ -1443,7 +1453,20 @@ main ( int argc, char **argv)
         case oNoAutostart: opt.autostart = 0; break;
 
         case oCompliance:
-          /* Dummy option for now.  */
+          {
+            struct gnupg_compliance_option compliance_options[] =
+              {
+                { "gnupg", CO_GNUPG },
+                { "de-vs", CO_DE_VS }
+              };
+            int compliance = gnupg_parse_compliance_option (pargs.r.ret_str,
+                                                            compliance_options,
+                                                            DIM (compliance_options),
+                                                            opt.quiet);
+            if (compliance < 0)
+              log_inc_errorcount (); /* Force later termination.  */
+            opt.compliance = compliance;
+          }
           break;
 
         default:
@@ -1470,7 +1493,11 @@ main ( int argc, char **argv)
                                          NULL);
 
   if (log_get_errorcount(0))
-    gpgsm_exit(2);
+    {
+      gpgsm_status_with_error (&ctrl, STATUS_FAILURE,
+                               "option-parser", gpg_error (GPG_ERR_GENERAL));
+      gpgsm_exit(2);
+    }
 
   if (pwfd != -1)	/* Read the passphrase now.  */
     read_passphrase_from_fd (pwfd);
@@ -1598,8 +1625,50 @@ main ( int argc, char **argv)
         }
     }
 
+  /* Check our chosen algorithms against the list of allowed
+   * algorithms in the current compliance mode, and fail hard if it is
+   * not.  This is us being nice to the user informing her early that
+   * the chosen algorithms are not available.  We also check and
+   * enforce this right before the actual operation.  */
+  if (! gnupg_cipher_is_allowed (opt.compliance,
+                                 cmd == aEncr || cmd == aSignEncr,
+                                 gcry_cipher_map_name (opt.def_cipher_algoid),
+                                 GCRY_CIPHER_MODE_NONE)
+      && ! gnupg_cipher_is_allowed (opt.compliance,
+                                    cmd == aEncr || cmd == aSignEncr,
+                                    gcry_cipher_mode_from_oid
+                                    (opt.def_cipher_algoid),
+                                    GCRY_CIPHER_MODE_NONE))
+    log_error (_("cipher algorithm '%s' may not be used in %s mode\n"),
+               opt.def_cipher_algoid,
+               gnupg_compliance_option_string (opt.compliance));
+
+  if (forced_digest_algo
+      && ! gnupg_digest_is_allowed (opt.compliance,
+                                     cmd == aSign
+                                     || cmd == aSignEncr
+                                     || cmd == aClearsign,
+                                     opt.forced_digest_algo))
+    log_error (_("digest algorithm '%s' may not be used in %s mode\n"),
+               forced_digest_algo,
+               gnupg_compliance_option_string (opt.compliance));
+
+  if (extra_digest_algo
+      && ! gnupg_digest_is_allowed (opt.compliance,
+                                     cmd == aSign
+                                     || cmd == aSignEncr
+                                     || cmd == aClearsign,
+                                     opt.extra_digest_algo))
+    log_error (_("digest algorithm '%s' may not be used in %s mode\n"),
+               extra_digest_algo,
+               gnupg_compliance_option_string (opt.compliance));
+
   if (log_get_errorcount(0))
-    gpgsm_exit(2);
+    {
+      gpgsm_status_with_error (&ctrl, STATUS_FAILURE, "option-postprocessing",
+                               gpg_error (GPG_ERR_GENERAL));
+      gpgsm_exit (2);
+    }
 
   /* Set the random seed file. */
   if (use_random_seed)
@@ -1732,6 +1801,7 @@ main ( int argc, char **argv)
            proc_parameters actually implements.  */
         es_printf ("default_pubkey_algo:%lu:\"%s:\n", GC_OPT_FLAG_DEFAULT,
                    "RSA-2048");
+        es_printf ("compliance:%lu:\"%s:\n", GC_OPT_FLAG_DEFAULT, "gnupg");
 
       }
       break;
@@ -1855,7 +1925,7 @@ main ( int argc, char **argv)
 
     case aListChain:
     case aDumpChain:
-       ctrl.with_chain = 1;
+       ctrl.with_chain = 1; /* fall through */
     case aListKeys:
     case aDumpKeys:
     case aListExternalKeys:
@@ -1998,7 +2068,7 @@ main ( int argc, char **argv)
           ksba_cert_t cert = NULL;
           char *grip = NULL;
 
-          rc = gpgsm_find_cert (&ctrl, *argv, NULL, &cert);
+          rc = gpgsm_find_cert (&ctrl, *argv, NULL, &cert, 0);
           if (rc)
             ;
           else if (!(grip = gpgsm_get_keygrip_hexstring (cert)))

@@ -1,4 +1,4 @@
-/* misc.c - Miscellaneous fucntions
+/* misc.c - Miscellaneous functions
  * Copyright (C) 2004, 2009, 2011 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
@@ -29,8 +29,8 @@
 #endif
 
 #include "gpgsm.h"
-#include "i18n.h"
-#include "sysutils.h"
+#include "../common/i18n.h"
+#include "../common/sysutils.h"
 #include "../common/tlv.h"
 #include "../common/sexp-parse.h"
 

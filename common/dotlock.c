@@ -4,8 +4,8 @@
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify it
- * under the terms of either
+ * GnuPG is free software; you can redistribute and/or modify this
+ * part of GnuPG under the terms of either
  *
  *   - the GNU Lesser General Public License as published by the Free
  *     Software Foundation; either version 3 of the License, or (at
@@ -332,7 +332,7 @@
 # endif
 #endif
 
-/* In GnuPG we use wrappers around the malloc fucntions.  If they are
+/* In GnuPG we use wrappers around the malloc functions.  If they are
    not defined we assume that this code is used outside of GnuPG and
    fall back to the regular malloc functions.  */
 #ifndef xtrymalloc
@@ -411,7 +411,7 @@ struct dotlock_handle
 };
 
 
-/* A list of of all lock handles.  The volatile attribute might help
+/* A list of all lock handles.  The volatile attribute might help
    if used in an atexit handler.  Note that [UN]LOCK_all_lockfiles
    must not change ERRNO. */
 static volatile dotlock_t all_lockfiles;
@@ -913,7 +913,7 @@ dotlock_create (const char *file_to_lock, unsigned int flags)
 
 
 
-/* Convenience function to store a file descriptor (or any any other
+/* Convenience function to store a file descriptor (or any other
    integer value) in the context of handle H.  */
 void
 dotlock_set_fd (dotlock_t h, int fd)
@@ -921,7 +921,7 @@ dotlock_set_fd (dotlock_t h, int fd)
   h->extra_fd = fd;
 }
 
-/* Convenience function to retrieve a file descriptor (or any any other
+/* Convenience function to retrieve a file descriptor (or any other
    integer value) stored in the context of handle H.  */
 int
 dotlock_get_fd (dotlock_t h)

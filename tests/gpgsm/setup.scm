@@ -17,14 +17,12 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "gpgsm-defs.scm"))
+(load (in-srcdir "tests" "gpgsm" "gpgsm-defs.scm"))
 
 (define tarball (flag "--create-tarball" *args*))
 (unless (and tarball (not (null? tarball)))
 	(error "Usage: setup.scm --create-tarball <file> ..."))
 
-(with-ephemeral-home-directory
- (chdir (getenv "GNUPGHOME"))
- (create-gpgsmhome)
- (stop-agent)
- (call-check `(,(tool 'gpgtar) --create --output ,(car tarball) ".")))
+(setenv "GNUPGHOME" (getcwd) #t)
+(create-gpgsmhome)
+(call-check `(,(tool 'gpgtar) --create --output ,(car tarball) "."))

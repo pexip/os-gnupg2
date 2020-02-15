@@ -1,5 +1,6 @@
 /* loadswdb.c - Load the swdb file from versions.gnupg.org
  * Copyright (C) 2016 g10 Code GmbH
+ * Copyright (C) 2016 Bundesamt für Sicherheit in der Informationstechnik
  *
  * This file is part of GnuPG.
  *
@@ -32,7 +33,7 @@
 
 /* Get the time from the current swdb file and store it at R_FILEDATE
  * and R_VERIFIED.  If the file does not exist 0 is stored at there.
- * The function returns 0 on sucess or an error code.  */
+ * The function returns 0 on success or an error code.  */
 static gpg_error_t
 time_of_saved_swdb (const char *fname, time_t *r_filedate, time_t *r_verified)
 {
@@ -59,7 +60,7 @@ time_of_saved_swdb (const char *fname, time_t *r_filedate, time_t *r_verified)
       goto leave;
     }
 
-  /* Note that the parser uses the first occurance of a matching
+  /* Note that the parser uses the first occurrence of a matching
    * values and ignores possible duplicated values.  */
   maxlen = 2048; /* Set limit.  */
   while ((len = es_read_line (fp, &line, &length_of_line, &maxlen)) > 0)
@@ -125,7 +126,7 @@ fetch_file (ctrl_t ctrl, const char *url, estream_t *r_fp)
   size_t nread, nwritten;
   char buffer[1024];
 
-  if ((err = ks_http_fetch (ctrl, url, &httpfp)))
+  if ((err = ks_http_fetch (ctrl, url, KS_HTTP_FETCH_NOCACHE, &httpfp)))
     goto leave;
 
   /* We now read the data from the web server into a memory buffer.
@@ -190,6 +191,9 @@ static void
 verify_status_cb (void *opaque, const char *keyword, char *args)
 {
   struct verify_status_parm_s *parm = opaque;
+
+  if (DBG_EXTPROG)
+    log_debug ("gpgv status: %s %s\n", keyword, args);
 
   /* We care only about the first valid signature.  */
   if (!strcmp (keyword, "VALIDSIG") && !parm->anyvalid)
@@ -302,12 +306,16 @@ dirmngr_load_swdb (ctrl_t ctrl, int force)
       goto leave;
     }
 
+  if (DBG_EXTPROG)
+    log_debug ("starting gpgv\n");
   err = gnupg_exec_tool_stream (gnupg_module_name (GNUPG_MODULE_NAME_GPGV),
                                 argv, swdb, swdb_sig, NULL,
                                 verify_status_cb, &verify_status_parm);
   if (!err && verify_status_parm.sigtime == (time_t)(-1))
     err = gpg_error (verify_status_parm.anyvalid? GPG_ERR_BAD_SIGNATURE
                      /**/                       : GPG_ERR_INV_TIME      );
+  if (DBG_EXTPROG)
+    log_debug ("gpgv finished: err=%d\n", err);
   if (err)
     goto leave;
 

@@ -32,7 +32,8 @@
 #include <ksba.h>
 
 #include "keydb.h"
-#include "i18n.h"
+#include "../common/i18n.h"
+#include "../common/compliance.h"
 
 static char *
 strtimestamp_r (ksba_isotime_t atime)
@@ -90,8 +91,8 @@ int
 gpgsm_verify (ctrl_t ctrl, int in_fd, int data_fd, estream_t out_fp)
 {
   int i, rc;
-  Base64Context b64reader = NULL;
-  Base64Context b64writer = NULL;
+  gnupg_ksba_io_t b64reader = NULL;
+  gnupg_ksba_io_t b64writer = NULL;
   ksba_reader_t reader;
   ksba_writer_t writer = NULL;
   ksba_cms_t cms = NULL;
@@ -125,7 +126,11 @@ gpgsm_verify (ctrl_t ctrl, int in_fd, int data_fd, estream_t out_fp)
       goto leave;
     }
 
-  rc = gpgsm_create_reader (&b64reader, ctrl, in_fp, 0, &reader);
+  rc = gnupg_ksba_create_reader
+    (&b64reader, ((ctrl->is_pem? GNUPG_KSBA_IO_PEM : 0)
+                  | (ctrl->is_base64? GNUPG_KSBA_IO_BASE64 : 0)
+                  | (ctrl->autodetect_encoding? GNUPG_KSBA_IO_AUTODETECT : 0)),
+     in_fp, &reader);
   if (rc)
     {
       log_error ("can't create reader: %s\n", gpg_strerror (rc));
@@ -134,7 +139,10 @@ gpgsm_verify (ctrl_t ctrl, int in_fd, int data_fd, estream_t out_fp)
 
   if (out_fp)
     {
-      rc = gpgsm_create_writer (&b64writer, ctrl, out_fp, &writer);
+      rc = gnupg_ksba_create_writer
+        (&b64writer, ((ctrl->create_pem? GNUPG_KSBA_IO_PEM : 0)
+                      | (ctrl->create_base64? GNUPG_KSBA_IO_BASE64 : 0)),
+         ctrl->pem_name, out_fp, &writer);
       if (rc)
         {
           log_error ("can't create writer: %s\n", gpg_strerror (rc));
@@ -246,7 +254,7 @@ gpgsm_verify (ctrl_t ctrl, int in_fd, int data_fd, estream_t out_fp)
 
   if (b64writer)
     {
-      rc = gpgsm_finish_writer (b64writer);
+      rc = gnupg_ksba_finish_writer (b64writer);
       if (rc)
         {
           log_error ("write failed: %s\n", gpg_strerror (rc));
@@ -334,16 +342,11 @@ gpgsm_verify (ctrl_t ctrl, int in_fd, int data_fd, estream_t out_fp)
                                         &msgdigest, &msgdigestlen);
       if (!rc)
         {
-          size_t is_enabled;
-
           algoid = ksba_cms_get_digest_algo (cms, signer);
           algo = gcry_md_map_name (algoid);
           if (DBG_X509)
             log_debug ("signer %d - digest algo: %d\n", signer, algo);
-          is_enabled = sizeof algo;
-          if ( gcry_md_info (data_md, GCRYCTL_IS_ALGO_ENABLED,
-                             &algo, &is_enabled)
-               || !is_enabled)
+          if (! gcry_md_is_enabled (data_md, algo))
             {
               log_error ("digest algo %d (%s) has not been enabled\n",
                          algo, algoid?algoid:"");
@@ -446,6 +449,39 @@ gpgsm_verify (ctrl_t ctrl, int in_fd, int data_fd, estream_t out_fp)
           audit_log_s (ctrl->audit, AUDIT_SIG_STATUS, "error");
           goto next_signer;
         }
+
+      /* Check compliance.  */
+      {
+        unsigned int nbits;
+        int pk_algo = gpgsm_get_key_algo_info (cert, &nbits);
+
+        if (! gnupg_pk_is_allowed (opt.compliance, PK_USE_VERIFICATION,
+                                   pk_algo, NULL, nbits, NULL))
+          {
+            char  kidstr[10+1];
+
+            snprintf (kidstr, sizeof kidstr, "0x%08lX",
+                      gpgsm_get_short_fingerprint (cert, NULL));
+            log_error (_("key %s may not be used for signing in %s mode\n"),
+                       kidstr,
+                       gnupg_compliance_option_string (opt.compliance));
+            goto next_signer;
+          }
+
+        if (! gnupg_digest_is_allowed (opt.compliance, 0, sigval_hash_algo))
+          {
+            log_error (_("digest algorithm '%s' may not be used in %s mode\n"),
+                       gcry_md_algo_name (sigval_hash_algo),
+                       gnupg_compliance_option_string (opt.compliance));
+            goto next_signer;
+          }
+
+        /* Check compliance with CO_DE_VS.  */
+        if (gnupg_pk_is_compliant (CO_DE_VS, pk_algo, NULL, nbits, NULL)
+            && gnupg_digest_is_compliant (CO_DE_VS, sigval_hash_algo))
+          gpgsm_status (ctrl, STATUS_VERIFICATION_COMPLIANCE_MODE,
+                        gnupg_status_compliance_flag (CO_DE_VS));
+      }
 
       log_info (_("Signature made "));
       if (*sigtime)
@@ -629,7 +665,6 @@ gpgsm_verify (ctrl_t ctrl, int in_fd, int data_fd, estream_t out_fp)
                     (verifyflags & VALIDATE_FLAG_CHAIN_MODEL)?
                     "0 chain": "0 shell");
 
-
     next_signer:
       rc = 0;
       xfree (issuer);
@@ -643,8 +678,8 @@ gpgsm_verify (ctrl_t ctrl, int in_fd, int data_fd, estream_t out_fp)
 
  leave:
   ksba_cms_release (cms);
-  gpgsm_destroy_reader (b64reader);
-  gpgsm_destroy_writer (b64writer);
+  gnupg_ksba_destroy_reader (b64reader);
+  gnupg_ksba_destroy_writer (b64writer);
   keydb_release (kh);
   gcry_md_close (data_md);
   es_fclose (in_fp);

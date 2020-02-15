@@ -31,12 +31,12 @@
 #include <npth.h>
 
 #include "dirmngr.h"
-#include "exechelp.h"
+#include "../common/exechelp.h"
 #include "crlfetch.h"
 #include "ldapserver.h"
 #include "misc.h"
 #include "ldap-wrapper.h"
-#include "host2net.h"
+#include "../common/host2net.h"
 
 
 #define UNENCODED_URL_CHARS "abcdefghijklmnopqrstuvwxyz"   \
@@ -136,8 +136,12 @@ run_ldap_wrapper (ctrl_t ctrl,
       argv[argc++] = "--pass";
       argv[argc++] = pass;
     }
-  if (opt.verbose)
+
+  if (DBG_LOOKUP)
     argv[argc++] = "-vv";
+  else if (DBG_EXTPROG)
+    argv[argc++] = "-v";
+
   argv[argc++] = "--log-with-pid";
   if (multi_mode)
     argv[argc++] = "--multi";
@@ -363,6 +367,7 @@ parse_one_pattern (const char *pattern)
       break;
     case '*':
       pattern++;
+      /* fall through */
     default:			/* Take as substring match. */
       {
 	const char format[] = "(|(sn=*%s*)(|(cn=*%s*)(mail=*%s*)))";
@@ -445,26 +450,16 @@ make_url (char **url, const char *dn, const char *filter)
       xfree (u_dn);
       return err;
     }
-  *url = malloc ( 8 + strlen (u_dn)
-                 + 1 + strlen (attrs)
-                 + 5 + strlen (u_filter) + 1 );
-  if (!*url)
-    {
-      err = gpg_error_from_errno (errno);
-      xfree (u_dn);
-      xfree (u_filter);
-      return err;
-    }
 
-  stpcpy (stpcpy (stpcpy (stpcpy (stpcpy (stpcpy (*url, "ldap:///"),
-                                          u_dn),
-                                  "?"),
-                          attrs),
-                  "?sub?"),
-          u_filter);
+  *url = strconcat ("ldap:///", u_dn, "?", attrs, "?sub?", u_filter, NULL);
+  if (!*url)
+    err = gpg_error_from_syserror ();
+  else
+    err = 0;
+
   xfree (u_dn);
   xfree (u_filter);
-  return 0;
+  return err;
 }
 
 
@@ -573,8 +568,12 @@ start_cert_fetch_ldap (ctrl_t ctrl, cert_fetch_context_t *context,
       argv[argc++] = "--pass";
       argv[argc++] = pass;
     }
-  if (opt.verbose)
+
+  if (DBG_LOOKUP)
     argv[argc++] = "-vv";
+  else if (DBG_EXTPROG)
+    argv[argc++] = "-v";
+
   argv[argc++] = "--log-with-pid";
   argv[argc++] = "--multi";
   if (opt.ldaptimeout)

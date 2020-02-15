@@ -1,19 +1,20 @@
 /* wks-receive.c - Receive a WKS mail
  * Copyright (C) 2016 g10 Code GmbH
+ * Copyright (C) 2016 Bundesamt für Sicherheit in der Informationstechnik
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
+ * This file is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation; either version 2.1 of
+ * the License, or (at your option) any later version.
  *
- * GnuPG is distributed in the hope that it will be useful,
+ * This file is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
@@ -22,9 +23,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "util.h"
-#include "ccparray.h"
-#include "exectool.h"
+#include "../common/util.h"
+#include "../common/ccparray.h"
+#include "../common/exectool.h"
 #include "gpg-wks.h"
 #include "rfc822parse.h"
 #include "mime-parser.h"
@@ -255,6 +256,38 @@ collect_signature (void *cookie, const char *data)
 }
 
 
+/* The callback for the transition from header to body.  We use it to
+ * look at some header values.  */
+static gpg_error_t
+t2body (void *cookie, int level)
+{
+  receive_ctx_t ctx = cookie;
+  rfc822parse_t msg;
+  char *value;
+  size_t valueoff;
+
+  log_info ("t2body for level %d\n", level);
+  if (!level)
+    {
+      /* This is the outermost header.  */
+      msg = mime_parser_rfc822parser (ctx->parser);
+      if (msg)
+        {
+          value = rfc822parse_get_field (msg, "Wks-Draft-Version",
+                                         -1, &valueoff);
+          if (value)
+            {
+              if (atoi(value+valueoff) >= 2 )
+                ctx->draft_version_2 = 1;
+              free (value);
+            }
+        }
+    }
+
+  return 0;
+}
+
+
 static gpg_error_t
 new_part (void *cookie, const char *mediatype, const char *mediasubtype)
 {
@@ -275,22 +308,6 @@ new_part (void *cookie, const char *mediatype, const char *mediasubtype)
         }
       else
         {
-          rfc822parse_t msg = mime_parser_rfc822parser (ctx->parser);
-          if (msg)
-            {
-              char *value;
-              size_t valueoff;
-
-              value = rfc822parse_get_field (msg, "Wks-Draft-Version",
-                                             -1, &valueoff);
-              if (value)
-                {
-                  if (atoi(value+valueoff) >= 2 )
-                    ctx->draft_version_2 = 1;
-                  free (value);
-                }
-            }
-
           ctx->key_data = es_fopenmem (0, "w+b");
           if (!ctx->key_data)
             {
@@ -413,6 +430,7 @@ wks_receive (estream_t fp,
     goto leave;
   if (DBG_PARSER)
     mime_parser_set_verbose (parser, 1);
+  mime_parser_set_t2body (parser, t2body);
   mime_parser_set_new_part (parser, new_part);
   mime_parser_set_part_data (parser, part_data);
   mime_parser_set_collect_encrypted (parser, collect_encrypted);

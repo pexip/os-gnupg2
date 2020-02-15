@@ -340,11 +340,10 @@ gnupg_usleep (unsigned int usecs)
       struct timespec req;
       struct timespec rem;
 
-      req.tv_sec = 0;
-      req.tv_nsec = usecs * 1000;
-
+      req.tv_sec  = usecs / 1000000;
+      req.tv_nsec = (usecs % 1000000) * 1000;
       while (nanosleep (&req, &rem) < 0 && errno == EINTR)
-        req = rem;
+          req = rem;
     }
 
 #else /*Standard Unix*/
@@ -416,7 +415,7 @@ translate_sys2libc_fd_int (int fd, int for_write)
 /* Check whether FNAME has the form "-&nnnn", where N is a non-zero
  * number.  Returns this number or -1 if it is not the case.  If the
  * caller wants to use the file descriptor for writing FOR_WRITE shall
- * be set to 1.  If NOTRANSLATE is set the Windows spefic mapping is
+ * be set to 1.  If NOTRANSLATE is set the Windows specific mapping is
  * not done. */
 int
 check_special_filename (const char *fname, int for_write, int notranslate)
@@ -552,14 +551,13 @@ gnupg_tmpfile (void)
 void
 gnupg_reopen_std (const char *pgmname)
 {
-#if defined(HAVE_STAT) && !defined(HAVE_W32_SYSTEM)
-  struct stat statbuf;
+#ifdef F_GETFD
   int did_stdin = 0;
   int did_stdout = 0;
   int did_stderr = 0;
   FILE *complain;
 
-  if (fstat (STDIN_FILENO, &statbuf) == -1 && errno ==EBADF)
+  if (fcntl (STDIN_FILENO, F_GETFD) == -1 && errno ==EBADF)
     {
       if (open ("/dev/null",O_RDONLY) == STDIN_FILENO)
 	did_stdin = 1;
@@ -567,7 +565,7 @@ gnupg_reopen_std (const char *pgmname)
 	did_stdin = 2;
     }
 
-  if (fstat (STDOUT_FILENO, &statbuf) == -1 && errno == EBADF)
+  if (fcntl (STDOUT_FILENO, F_GETFD) == -1 && errno == EBADF)
     {
       if (open ("/dev/null",O_WRONLY) == STDOUT_FILENO)
 	did_stdout = 1;
@@ -575,7 +573,7 @@ gnupg_reopen_std (const char *pgmname)
 	did_stdout = 2;
     }
 
-  if (fstat (STDERR_FILENO, &statbuf)==-1 && errno==EBADF)
+  if (fcntl (STDERR_FILENO, F_GETFD)==-1 && errno==EBADF)
     {
       if (open ("/dev/null", O_WRONLY) == STDERR_FILENO)
 	did_stderr = 1;
@@ -608,7 +606,7 @@ gnupg_reopen_std (const char *pgmname)
 
   if (did_stdin == 2 || did_stdout == 2 || did_stderr == 2)
     exit (3);
-#else /* !(HAVE_STAT && !HAVE_W32_SYSTEM) */
+#else /* !F_GETFD */
   (void)pgmname;
 #endif
 }
@@ -793,6 +791,15 @@ gnupg_mkdir (const char *name, const char *modestr)
 #else
   return mkdir (name, modestr_to_mode (modestr));
 #endif
+}
+
+
+/* A simple wrapper around chdir.  NAME is expected to be utf8
+ * encoded.  */
+int
+gnupg_chdir (const char *name)
+{
+  return chdir (name);
 }
 
 
@@ -1125,6 +1132,43 @@ w32_get_user_sid (void)
 
 /* Support for inotify under Linux.  */
 
+/* Store a new inotify file handle for FNAME at R_FD or return an
+ * error code.  This file descriptor watch the removal of FNAME. */
+gpg_error_t
+gnupg_inotify_watch_delete_self (int *r_fd, const char *fname)
+{
+#if HAVE_INOTIFY_INIT
+  gpg_error_t err;
+  int fd;
+
+  *r_fd = -1;
+
+  if (!fname)
+    return my_error (GPG_ERR_INV_VALUE);
+
+  fd = inotify_init ();
+  if (fd == -1)
+    return my_error_from_syserror ();
+
+  if (inotify_add_watch (fd, fname, IN_DELETE_SELF) == -1)
+    {
+      err = my_error_from_syserror ();
+      close (fd);
+      return err;
+    }
+
+  *r_fd = fd;
+  return 0;
+#else /*!HAVE_INOTIFY_INIT*/
+
+  (void)fname;
+  *r_fd = -1;
+  return my_error (GPG_ERR_NOT_SUPPORTED);
+
+#endif /*!HAVE_INOTIFY_INIT*/
+}
+
+
 /* Store a new inotify file handle for SOCKET_NAME at R_FD or return
  * an error code. */
 gpg_error_t
@@ -1281,3 +1325,14 @@ gnupg_get_socket_name (int fd)
   return name;
 }
 #endif /*!HAVE_W32_SYSTEM*/
+
+/* Check whether FD is valid.  */
+int
+gnupg_fd_valid (int fd)
+{
+  int d = dup (fd);
+  if (d < 0)
+    return 0;
+  close (d);
+  return 1;
+}

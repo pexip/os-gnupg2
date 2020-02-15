@@ -27,7 +27,7 @@
 #include <errno.h>
 
 #include "dirmngr.h"
-#include "util.h"
+#include "../common/util.h"
 #include "misc.h"
 
 
@@ -62,6 +62,8 @@ hashify_data( const char* data, size_t len )
   return hexify_data (buf, 20, 0);
 }
 
+
+/* FIXME: Replace this by hextobin.  */
 char*
 hexify_data (const unsigned char* data, size_t len, int with_prefix)
 {
@@ -513,7 +515,7 @@ host_and_port_from_url (const char *url, int *port)
   if ((p = strchr (buf, '/')))
     *p++ = 0;
   strlwr (buf);
-  if ((p = strchr (p, ':')))
+  if ((p = strchr (buf, ':')))
     {
       *p++ = 0;
       *port = atoi (p);
@@ -634,7 +636,9 @@ armor_data (char **r_string, const void *data, size_t datalen)
   return 0;
 }
 
-/* Copy all data from IN to OUT.  */
+
+/* Copy all data from IN to OUT.  OUT may be NULL to use this fucntion
+ * as a dummy reader.  */
 gpg_error_t
 copy_stream (estream_t in, estream_t out)
 {
@@ -645,9 +649,8 @@ copy_stream (estream_t in, estream_t out)
     {
       if (!nread)
         return 0; /* EOF */
-      if (es_write (out, buffer, nread, NULL))
+      if (out && es_write (out, buffer, nread, NULL))
         break;
-
     }
   return gpg_error_from_syserror ();
 }
