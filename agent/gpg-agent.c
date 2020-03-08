@@ -53,11 +53,11 @@
 #include "agent.h"
 #include <assuan.h> /* Malloc hooks  and socket wrappers. */
 
-#include "i18n.h"
-#include "sysutils.h"
-#include "gc-opt-flags.h"
-#include "exechelp.h"
-#include "asshelp.h"
+#include "../common/i18n.h"
+#include "../common/sysutils.h"
+#include "../common/gc-opt-flags.h"
+#include "../common/exechelp.h"
+#include "../common/asshelp.h"
 #include "../common/init.h"
 
 
@@ -83,6 +83,7 @@ enum cmd_and_opt_values
   oNoOptions,
   oHomedir,
   oNoDetach,
+  oGrab,
   oNoGrab,
   oLogFile,
   oServer,
@@ -111,6 +112,7 @@ enum cmd_and_opt_values
   oCheckPassphrasePattern,
   oMaxPassphraseDays,
   oEnablePassphraseHistory,
+  oEnableExtendedKeyFormat,
   oUseStandardSocket,
   oNoUseStandardSocket,
   oExtraSocket,
@@ -128,9 +130,15 @@ enum cmd_and_opt_values
   oKeepTTY,
   oKeepDISPLAY,
   oSSHSupport,
+  oSSHFingerprintDigest,
   oPuttySupport,
   oDisableScdaemon,
   oDisableCheckOwnSocket,
+  oS2KCount,
+  oS2KCalibration,
+  oAutoExpandSecmem,
+  oListenBacklog,
+
   oWriteEnvFile
 };
 
@@ -162,12 +170,15 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_s (oDebug,	     "debug",       "@"),
   ARGPARSE_s_n (oDebugAll,   "debug-all",   "@"),
   ARGPARSE_s_s (oDebugLevel, "debug-level", "@"),
-  ARGPARSE_s_i (oDebugWait,"  debug-wait",  "@"),
+  ARGPARSE_s_i (oDebugWait,  "debug-wait",  "@"),
   ARGPARSE_s_n (oDebugQuickRandom, "debug-quick-random", "@"),
   ARGPARSE_s_n (oDebugPinentry, "debug-pinentry", "@"),
 
   ARGPARSE_s_n (oNoDetach,  "no-detach", N_("do not detach from the console")),
-  ARGPARSE_s_n (oNoGrab,    "no-grab",   N_("do not grab keyboard and mouse")),
+  ARGPARSE_s_n (oGrab,      "grab",      "@"),
+                /* FIXME: Add the below string for 2.3 */
+                /* N_("let PIN-Entry grab keyboard and mouse")), */
+  ARGPARSE_s_n (oNoGrab,    "no-grab",   "@"),
   ARGPARSE_s_s (oLogFile,   "log-file",  N_("use a log file for the server")),
   ARGPARSE_s_s (oPinentryProgram, "pinentry-program",
                 /* */             N_("|PGM|use PGM as the PIN-Entry program")),
@@ -231,6 +242,8 @@ static ARGPARSE_OPTS opts[] = {
                 /* */    N_("allow passphrase to be prompted through Emacs")),
 
   ARGPARSE_s_n (oSSHSupport,   "enable-ssh-support", N_("enable ssh support")),
+  ARGPARSE_s_s (oSSHFingerprintDigest, "ssh-fingerprint-digest",
+                N_("|ALGO|use ALGO to show ssh fingerprints")),
   ARGPARSE_s_n (oPuttySupport, "enable-putty-support",
 #ifdef HAVE_W32_SYSTEM
                 /* */           N_("enable putty support")
@@ -238,13 +251,21 @@ static ARGPARSE_OPTS opts[] = {
                 /* */           "@"
 #endif
                 ),
+  ARGPARSE_s_n (oEnableExtendedKeyFormat, "enable-extended-key-format", "@"),
+
+  ARGPARSE_s_u (oS2KCount, "s2k-count", "@"),
+  ARGPARSE_s_u (oS2KCalibration, "s2k-calibration", "@"),
+
+  ARGPARSE_op_u (oAutoExpandSecmem, "auto-expand-secmem", "@"),
+
+  ARGPARSE_s_i (oListenBacklog, "listen-backlog", "@"),
 
   /* Dummy options for backward compatibility.  */
   ARGPARSE_o_s (oWriteEnvFile, "write-env-file", "@"),
   ARGPARSE_s_n (oUseStandardSocket, "use-standard-socket", "@"),
   ARGPARSE_s_n (oNoUseStandardSocket, "no-use-standard-socket", "@"),
 
-  {0} /* End of list */
+  ARGPARSE_end () /* End of list */
 };
 
 
@@ -271,19 +292,17 @@ static struct debug_flags_s debug_flags [] =
 #define MIN_PASSPHRASE_NONALPHA (1)
 #define MAX_PASSPHRASE_DAYS   (0)
 
-/* The timer tick used for housekeeping stuff.  For Windows we use a
-   longer period as the SetWaitableTimer seems to signal earlier than
-   the 2 seconds.  CHECK_OWN_SOCKET_INTERVAL defines how often we
-   check our own socket in standard socket mode.  If that value is 0
-   we don't check at all.   All values are in seconds. */
+/* The timer tick used for housekeeping stuff.  Note that on Windows
+ * we use a SetWaitableTimer seems to signal earlier than about 2
+ * seconds.  Thus we use 4 seconds on all platforms except for
+ * Windowsce.  CHECK_OWN_SOCKET_INTERVAL defines how often we check
+ * our own socket in standard socket mode.  If that value is 0 we
+ * don't check at all.  All values are in seconds. */
 #if defined(HAVE_W32CE_SYSTEM)
 # define TIMERTICK_INTERVAL         (60)
 # define CHECK_OWN_SOCKET_INTERVAL   (0)  /* Never */
-#elif defined(HAVE_W32_SYSTEM)
-# define TIMERTICK_INTERVAL          (4)
-# define CHECK_OWN_SOCKET_INTERVAL  (60)
 #else
-# define TIMERTICK_INTERVAL          (2)
+# define TIMERTICK_INTERVAL          (4)
 # define CHECK_OWN_SOCKET_INTERVAL  (60)
 #endif
 
@@ -357,6 +376,10 @@ static assuan_sock_nonce_t socket_nonce_extra;
 static assuan_sock_nonce_t socket_nonce_browser;
 static assuan_sock_nonce_t socket_nonce_ssh;
 
+/* Value for the listen() backlog argument.  We use the same value for
+ * all sockets - 64 is on current Linux half of the default maximum.
+ * Let's try this as default.  Change at runtime with --listen-backlog.  */
+static int listen_backlog = 64;
 
 /* Default values for options passed to the pinentry. */
 static char *default_display;
@@ -377,9 +400,19 @@ static const char *debug_level;
 static char *current_logfile;
 
 /* The handle_tick() function may test whether a parent is still
-   running.  We record the PID of the parent here or -1 if it should be
-   watched. */
+ * running.  We record the PID of the parent here or -1 if it should
+ * be watched.  */
 static pid_t parent_pid = (pid_t)(-1);
+
+/* This flag is true if the inotify mechanism for detecting the
+ * removal of the homedir is active.  This flag is used to disable the
+ * alternative but portable stat based check.  */
+static int have_homedir_inotify;
+
+/* Depending on how gpg-agent was started, the homedir inotify watch
+ * may not be reliable.  This flag is set if we assume that inotify
+ * works reliable.  */
+static int reliable_homedir_inotify;
 
 /* Number of active connections.  */
 static int active_connections;
@@ -767,12 +800,14 @@ cleanup (void)
 static int
 parse_rereadable_options (ARGPARSE_ARGS *pargs, int reread)
 {
+  int i;
+
   if (!pargs)
     { /* reset mode */
       opt.quiet = 0;
       opt.verbose = 0;
       opt.debug = 0;
-      opt.no_grab = 0;
+      opt.no_grab = 1;
       opt.debug_pinentry = 0;
       opt.pinentry_program = NULL;
       opt.pinentry_touch_file = NULL;
@@ -790,6 +825,7 @@ parse_rereadable_options (ARGPARSE_ARGS *pargs, int reread)
       opt.check_passphrase_pattern = NULL;
       opt.max_passphrase_days = MAX_PASSPHRASE_DAYS;
       opt.enable_passphrase_history = 0;
+      opt.enable_extended_key_format = 0;
       opt.ignore_cache_for_signing = 0;
       opt.allow_mark_trusted = 1;
       opt.allow_external_cache = 1;
@@ -797,6 +833,10 @@ parse_rereadable_options (ARGPARSE_ARGS *pargs, int reread)
       opt.allow_emacs_pinentry = 0;
       opt.disable_scdaemon = 0;
       disable_check_own_socket = 0;
+      /* Note: When changing the next line, change also gpgconf_list.  */
+      opt.ssh_fingerprint_digest = GCRY_MD_MD5;
+      opt.s2k_count = 0;
+      set_s2k_calibration_time (0);  /* Set to default.  */
       return 1;
     }
 
@@ -824,7 +864,8 @@ parse_rereadable_options (ARGPARSE_ARGS *pargs, int reread)
         }
       break;
 
-    case oNoGrab: opt.no_grab = 1; break;
+    case oNoGrab: opt.no_grab |= 1; break;
+    case oGrab: opt.no_grab |= 2; break;
 
     case oPinentryProgram: opt.pinentry_program = pargs->r.ret_str; break;
     case oPinentryTouchFile: opt.pinentry_touch_file = pargs->r.ret_str; break;
@@ -859,6 +900,10 @@ parse_rereadable_options (ARGPARSE_ARGS *pargs, int reread)
       opt.enable_passphrase_history = 1;
       break;
 
+    case oEnableExtendedKeyFormat:
+      opt.enable_extended_key_format = 1;
+      break;
+
     case oIgnoreCacheForSigning: opt.ignore_cache_for_signing = 1; break;
 
     case oAllowMarkTrusted: opt.allow_mark_trusted = 1; break;
@@ -875,6 +920,22 @@ parse_rereadable_options (ARGPARSE_ARGS *pargs, int reread)
     case oAllowEmacsPinentry: opt.allow_emacs_pinentry = 1;
       break;
 
+    case oSSHFingerprintDigest:
+      i = gcry_md_map_name (pargs->r.ret_str);
+      if (!i)
+        log_error (_("selected digest algorithm is invalid\n"));
+      else
+        opt.ssh_fingerprint_digest = i;
+      break;
+
+    case oS2KCount:
+      opt.s2k_count = pargs->r.ret_ulong;
+      break;
+
+    case oS2KCalibration:
+      set_s2k_calibration_time (pargs->r.ret_ulong);
+      break;
+
     default:
       return 0; /* not handled */
     }
@@ -887,6 +948,9 @@ parse_rereadable_options (ARGPARSE_ARGS *pargs, int reread)
 static void
 finalize_rereadable_options (void)
 {
+  /* Hack to allow --grab to override --no-grab.  */
+  if ((opt.no_grab & 2))
+    opt.no_grab = 0;
 }
 
 
@@ -978,6 +1042,7 @@ main (int argc, char **argv )
   assuan_set_malloc_hooks (&malloc_hooks);
   assuan_set_gpg_err_source (GPG_ERR_SOURCE_DEFAULT);
   assuan_sock_init ();
+  assuan_sock_set_system_hooks (ASSUAN_SYSTEM_NPTH);
   setup_libassuan_logging (&opt.debug, NULL);
 
   setup_libgcrypt_logging ();
@@ -1169,6 +1234,7 @@ main (int argc, char **argv )
 	case oSSHSupport:
           ssh_support = 1;
           break;
+
         case oPuttySupport:
 #        ifdef HAVE_W32_SYSTEM
           putty_support = 1;
@@ -1183,6 +1249,18 @@ main (int argc, char **argv )
         case oBrowserSocket:
           opt.browser_socket = 1;  /* (1 = points into argv)  */
           socket_name_browser = pargs.r.ret_str;
+          break;
+
+        case oAutoExpandSecmem:
+          /* Try to enable this option.  It will officially only be
+           * supported by Libgcrypt 1.9 but 1.8.2 already supports it
+           * on the quiet and thus we use the numeric value value.  */
+          gcry_control (78 /*GCRYCTL_AUTO_EXPAND_SECMEM*/,
+                        (unsigned int)pargs.r.ret_ulong,  0);
+          break;
+
+        case oListenBacklog:
+          listen_backlog = pargs.r.ret_int;
           break;
 
         case oDebugQuickRandom:
@@ -1362,6 +1440,8 @@ main (int argc, char **argv )
       es_printf ("disable-scdaemon:%lu:\n",
               GC_OPT_FLAG_NONE|GC_OPT_FLAG_RUNTIME);
       es_printf ("enable-ssh-support:%lu:\n", GC_OPT_FLAG_NONE);
+      es_printf ("ssh-fingerprint-digest:%lu:\"%s:\n",
+                 GC_OPT_FLAG_DEFAULT|GC_OPT_FLAG_RUNTIME, "md5");
 #ifdef HAVE_W32_SYSTEM
       es_printf ("enable-putty-support:%lu:\n", GC_OPT_FLAG_NONE);
 #endif
@@ -1371,6 +1451,10 @@ main (int argc, char **argv )
                  GC_OPT_FLAG_NONE|GC_OPT_FLAG_RUNTIME);
       es_printf ("pinentry-timeout:%lu:0:\n",
                  GC_OPT_FLAG_DEFAULT|GC_OPT_FLAG_RUNTIME);
+      es_printf ("enable-extended-key-format:%lu:\n",
+                 GC_OPT_FLAG_NONE|GC_OPT_FLAG_RUNTIME);
+      es_printf ("grab:%lu:\n",
+                 GC_OPT_FLAG_NONE|GC_OPT_FLAG_RUNTIME);
 
       agent_exit (0);
     }
@@ -1688,12 +1772,12 @@ main (int argc, char **argv )
           log_get_prefix (&oldflags);
           log_set_prefix (NULL, oldflags | GPGRT_LOG_RUN_DETACHED);
           opt.running_detached = 1;
-        }
 
-      if (chdir("/"))
-        {
-          log_error ("chdir to / failed: %s\n", strerror (errno));
-          exit (1);
+          /* Unless we are running with a program given on the command
+           * line we can assume that the inotify things works and thus
+           * we can avoid tye regular stat calls.  */
+          if (!argc)
+            reliable_homedir_inotify = 1;
         }
 
       {
@@ -1705,6 +1789,13 @@ main (int argc, char **argv )
         sigaction (SIGPIPE, &sa, NULL);
       }
 #endif /*!HAVE_W32_SYSTEM*/
+
+      if (gnupg_chdir (gnupg_daemon_rootdir ()))
+        {
+          log_error ("chdir to '%s' failed: %s\n",
+                     gnupg_daemon_rootdir (), strerror (errno));
+          exit (1);
+        }
 
       log_info ("%s %s started\n", strusage(11), strusage(13) );
       handle_connections (fd, fd_extra, fd_browser, fd_ssh);
@@ -1895,15 +1986,15 @@ agent_deinit_default_ctrl (ctrl_t ctrl)
 gpg_error_t
 agent_copy_startup_env (ctrl_t ctrl)
 {
-  static const char *names[] =
-    {"GPG_TTY", "DISPLAY", "TERM", "XAUTHORITY", "PINENTRY_USER_DATA", NULL};
   gpg_error_t err = 0;
-  int idx;
-  const char *value;
+  int iterator = 0;
+  const char *name, *value;
 
-  for (idx=0; !err && names[idx]; idx++)
-      if ((value = session_env_getenv (opt.startup_env, names[idx])))
-      err = session_env_setenv (ctrl->session_env, names[idx], value);
+  while (!err && (name = session_env_list_stdenvnames (&iterator, NULL)))
+    {
+      if ((value = session_env_getenv (opt.startup_env, name)))
+        err = session_env_setenv (ctrl->session_env, name, value);
+    }
 
   if (!err && !ctrl->lc_ctype && opt.startup_lc_ctype)
     if (!(ctrl->lc_ctype = xtrystrdup (opt.startup_lc_ctype)))
@@ -2111,6 +2202,7 @@ create_server_socket (char *name, int primary, int cygwin,
           log_error ("error preparing socket '%s': %s\n",
                      name, gpg_strerror (gpg_error_from_syserror ()));
         *name = 0; /* Inhibit removal of the socket by cleanup(). */
+        xfree (unaddr);
         agent_exit (2);
       }
     if (redirected)
@@ -2148,6 +2240,7 @@ create_server_socket (char *name, int primary, int cygwin,
                        "not starting a new one\n"));
           *name = 0; /* Inhibit removal of the socket by cleanup(). */
           assuan_sock_close (fd);
+          xfree (unaddr);
           agent_exit (2);
         }
       gnupg_remove (unaddr->sun_path);
@@ -2160,11 +2253,12 @@ create_server_socket (char *name, int primary, int cygwin,
       /* We use gpg_strerror here because it allows us to get strings
          for some W32 socket error codes.  */
       log_error (_("error binding socket to '%s': %s\n"),
-		 unaddr->sun_path,
+                 unaddr->sun_path,
                  gpg_strerror (gpg_error_from_syserror ()));
 
       assuan_sock_close (fd);
       *name = 0; /* Inhibit removal of the socket by cleanup(). */
+      xfree (unaddr);
       agent_exit (2);
     }
 
@@ -2172,17 +2266,20 @@ create_server_socket (char *name, int primary, int cygwin,
     log_error (_("can't set permissions of '%s': %s\n"),
                unaddr->sun_path, strerror (errno));
 
-  if (listen (FD2INT(fd), 5 ) == -1)
+  if (listen (FD2INT(fd), listen_backlog ) == -1)
     {
-      log_error (_("listen() failed: %s\n"), strerror (errno));
+      log_error ("listen(fd,%d) failed: %s\n",
+                 listen_backlog, strerror (errno));
       *name = 0; /* Inhibit removal of the socket by cleanup(). */
       assuan_sock_close (fd);
+      xfree (unaddr);
       agent_exit (2);
     }
 
   if (opt.verbose)
     log_info (_("listening on socket '%s'\n"), unaddr->sun_path);
 
+  xfree (unaddr);
   return fd;
 }
 
@@ -2275,6 +2372,7 @@ static void
 handle_tick (void)
 {
   static time_t last_minute;
+  struct stat statbuf;
 
   if (!last_minute)
     last_minute = time (NULL);
@@ -2307,6 +2405,17 @@ handle_tick (void)
     }
 #endif
 
+  /* Need to check for expired cache entries.  */
+  agent_cache_housekeeping ();
+
+  /* Check whether the homedir is still available.  */
+  if (!shutdown_pending
+      && (!have_homedir_inotify || !reliable_homedir_inotify)
+      && stat (gnupg_homedir (), &statbuf) && errno == ENOENT)
+    {
+      shutdown_pending = 1;
+      log_info ("homedir has been removed - shutting down\n");
+    }
 }
 
 
@@ -2341,7 +2450,7 @@ agent_sigusr2_action (void)
 
 #ifndef HAVE_W32_SYSTEM
 /* The signal handler for this program.  It is expected to be run in
-   its own trhead and not in the context of a signal handler.  */
+   its own thread and not in the context of a signal handler.  */
 static void
 handle_signal (int signo)
 {
@@ -2394,7 +2503,7 @@ handle_signal (int signo)
 }
 #endif
 
-/* Check the nonce on a new connection.  This is a NOP unless we we
+/* Check the nonce on a new connection.  This is a NOP unless we
    are using our Unix domain socket emulation under Windows.  */
 static int
 check_nonce (ctrl_t ctrl, assuan_sock_nonce_t *nonce)
@@ -2727,7 +2836,8 @@ handle_connections (gnupg_fd_t listen_fd,
   HANDLE events[2];
   unsigned int events_set;
 #endif
-  int my_inotify_fd = -1;
+  int sock_inotify_fd = -1;
+  int home_inotify_fd = -1;
   struct {
     const char *name;
     void *(*func) (void *arg);
@@ -2766,13 +2876,25 @@ handle_connections (gnupg_fd_t listen_fd,
 #endif
 
   if (disable_check_own_socket)
-    my_inotify_fd = -1;
-  else if ((err = gnupg_inotify_watch_socket (&my_inotify_fd, socket_name)))
+    sock_inotify_fd = -1;
+  else if ((err = gnupg_inotify_watch_socket (&sock_inotify_fd, socket_name)))
     {
       if (gpg_err_code (err) != GPG_ERR_NOT_SUPPORTED)
-        log_info ("error enabling fast daemon termination: %s\n",
+        log_info ("error enabling daemon termination by socket removal: %s\n",
                   gpg_strerror (err));
     }
+
+  if (disable_check_own_socket)
+    home_inotify_fd = -1;
+  else if ((err = gnupg_inotify_watch_delete_self (&home_inotify_fd,
+                                                   gnupg_homedir ())))
+    {
+      if (gpg_err_code (err) != GPG_ERR_NOT_SUPPORTED)
+        log_info ("error enabling daemon termination by homedir removal: %s\n",
+                  gpg_strerror (err));
+    }
+  else
+    have_homedir_inotify = 1;
 
   /* On Windows we need to fire up a separate thread to listen for
      requests from Putty (an SSH client), so we can replace Putty's
@@ -2815,11 +2937,17 @@ handle_connections (gnupg_fd_t listen_fd,
       if (FD2INT (listen_fd_ssh) > nfd)
         nfd = FD2INT (listen_fd_ssh);
     }
-  if (my_inotify_fd != -1)
+  if (sock_inotify_fd != -1)
     {
-      FD_SET (my_inotify_fd, &fdset);
-      if (my_inotify_fd > nfd)
-        nfd = my_inotify_fd;
+      FD_SET (sock_inotify_fd, &fdset);
+      if (sock_inotify_fd > nfd)
+        nfd = sock_inotify_fd;
+    }
+  if (home_inotify_fd != -1)
+    {
+      FD_SET (home_inotify_fd, &fdset);
+      if (home_inotify_fd > nfd)
+        nfd = home_inotify_fd;
     }
 
   listentbl[0].l_fd = listen_fd;
@@ -2847,10 +2975,16 @@ handle_connections (gnupg_fd_t listen_fd,
            * intention of a shutdown. */
           FD_ZERO (&fdset);
           nfd = -1;
-          if (my_inotify_fd != -1)
+          if (sock_inotify_fd != -1)
             {
-              FD_SET (my_inotify_fd, &fdset);
-              nfd = my_inotify_fd;
+              FD_SET (sock_inotify_fd, &fdset);
+              nfd = sock_inotify_fd;
+            }
+          if (home_inotify_fd != -1)
+            {
+              FD_SET (home_inotify_fd, &fdset);
+              if (home_inotify_fd > nfd)
+                nfd = home_inotify_fd;
             }
 	}
 
@@ -2900,19 +3034,33 @@ handle_connections (gnupg_fd_t listen_fd,
 	   next timeout.  */
 	continue;
 
+      /* The inotify fds are set even when a shutdown is pending (see
+       * above).  So we must handle them in any case.  To avoid that
+       * they trigger a second time we close them immediately.  */
+      if (sock_inotify_fd != -1
+          && FD_ISSET (sock_inotify_fd, &read_fdset)
+          && gnupg_inotify_has_name (sock_inotify_fd, GPG_AGENT_SOCK_NAME))
+        {
+          shutdown_pending = 1;
+          close (sock_inotify_fd);
+          sock_inotify_fd = -1;
+          log_info ("socket file has been removed - shutting down\n");
+        }
+
+      if (home_inotify_fd != -1
+          && FD_ISSET (home_inotify_fd, &read_fdset))
+        {
+          shutdown_pending = 1;
+          close (home_inotify_fd);
+          home_inotify_fd = -1;
+          log_info ("homedir has been removed - shutting down\n");
+        }
+
       if (!shutdown_pending)
         {
           int idx;
           ctrl_t ctrl;
           npth_t thread;
-
-          if (my_inotify_fd != -1
-              && FD_ISSET (my_inotify_fd, &read_fdset)
-              && gnupg_inotify_has_name (my_inotify_fd, GPG_AGENT_SOCK_NAME))
-            {
-              shutdown_pending = 1;
-              log_info ("socket file has been removed - shutting down\n");
-            }
 
           for (idx=0; idx < DIM(listentbl); idx++)
             {
@@ -2955,13 +3103,14 @@ handle_connections (gnupg_fd_t listen_fd,
                       xfree (ctrl);
                     }
                 }
-              fd = GNUPG_INVALID_FD;
             }
         }
     }
 
-  if (my_inotify_fd != -1)
-    close (my_inotify_fd);
+  if (sock_inotify_fd != -1)
+    close (sock_inotify_fd);
+  if (home_inotify_fd != -1)
+    close (home_inotify_fd);
   cleanup ();
   log_info (_("%s %s stopped\n"), strusage(11), strusage(13));
   npth_attr_destroy (&tattr);

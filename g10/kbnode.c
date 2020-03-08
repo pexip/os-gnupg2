@@ -24,7 +24,7 @@
 #include <string.h>
 
 #include "gpg.h"
-#include "util.h"
+#include "../common/util.h"
 #include "../common/init.h"
 #include "packet.h"
 #include "keydb.h"
@@ -117,8 +117,8 @@ release_kbnode( KBNODE n )
     while( n ) {
 	n2 = n->next;
 	if( !is_cloned_kbnode(n) ) {
-	    free_packet( n->pkt );
-	    xfree( n->pkt );
+            free_packet (n->pkt, NULL);
+            xfree( n->pkt );
 	}
 	free_node( n );
 	n = n2;
@@ -288,7 +288,7 @@ commit_kbnode( KBNODE *root )
 	    else
 		nl->next = n->next;
 	    if( !is_cloned_kbnode(n) ) {
-		free_packet( n->pkt );
+                free_packet (n->pkt, NULL);
 		xfree( n->pkt );
 	    }
 	    free_node( n );
@@ -312,7 +312,7 @@ remove_kbnode( KBNODE *root, KBNODE node )
 	    else
 		nl->next = n->next;
 	    if( !is_cloned_kbnode(n) ) {
-		free_packet( n->pkt );
+                free_packet (n->pkt, NULL);
 		xfree( n->pkt );
 	    }
 	    free_node( n );
@@ -392,10 +392,10 @@ dump_kbnode (KBNODE node)
           es_write_sanitized (log_get_stream (), uid->name, uid->len,
                               NULL, NULL);
           log_printf ("\" %c%c%c%c\n",
-                      uid->is_expired? 'e':'.',
-                      uid->is_revoked? 'r':'.',
+                      uid->flags.expired? 'e':'.',
+                      uid->flags.revoked? 'r':'.',
                       uid->created?    'v':'.',
-                      uid->is_primary? 'p':'.' );
+                      uid->flags.primary? 'p':'.' );
         }
       else if (node->pkt->pkttype == PKT_SIGNATURE)
         {

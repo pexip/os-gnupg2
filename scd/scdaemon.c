@@ -44,14 +44,15 @@
 
 #include <assuan.h> /* malloc hooks */
 
-#include "i18n.h"
-#include "sysutils.h"
+#include "../common/i18n.h"
+#include "../common/sysutils.h"
 #include "app-common.h"
 #include "iso7816.h"
 #include "apdu.h"
 #include "ccid-driver.h"
-#include "gc-opt-flags.h"
-#include "asshelp.h"
+#include "../common/gc-opt-flags.h"
+#include "../common/asshelp.h"
+#include "../common/exechelp.h"
 #include "../common/init.h"
 
 #ifndef ENAMETOOLONG
@@ -60,10 +61,10 @@
 
 enum cmd_and_opt_values
 { aNull = 0,
-  oCsh		  = 'c',
-  oQuiet	  = 'q',
-  oSh		  = 's',
-  oVerbose	  = 'v',
+  oCsh            = 'c',
+  oQuiet          = 'q',
+  oSh             = 's',
+  oVerbose        = 'v',
 
   oNoVerbose = 500,
   aGPGConfList,
@@ -98,7 +99,7 @@ enum cmd_and_opt_values
   oDenyAdmin,
   oDisableApplication,
   oEnablePinpadVarlen,
-  oDebugDisableTicker
+  oListenBacklog
 };
 
 
@@ -114,18 +115,17 @@ static ARGPARSE_OPTS opts[] = {
                 N_("run in multi server mode (foreground)")),
   ARGPARSE_s_n (oDaemon, "daemon", N_("run in daemon mode (background)")),
   ARGPARSE_s_n (oVerbose, "verbose", N_("verbose")),
-  ARGPARSE_s_n (oQuiet,	"quiet", N_("be somewhat more quiet")),
-  ARGPARSE_s_n (oSh,	"sh", N_("sh-style command output")),
-  ARGPARSE_s_n (oCsh,	"csh", N_("csh-style command output")),
+  ARGPARSE_s_n (oQuiet, "quiet", N_("be somewhat more quiet")),
+  ARGPARSE_s_n (oSh,    "sh", N_("sh-style command output")),
+  ARGPARSE_s_n (oCsh,   "csh", N_("csh-style command output")),
   ARGPARSE_s_s (oOptions, "options", N_("|FILE|read options from FILE")),
-  ARGPARSE_s_s (oDebug,	"debug", "@"),
+  ARGPARSE_s_s (oDebug, "debug", "@"),
   ARGPARSE_s_n (oDebugAll, "debug-all", "@"),
   ARGPARSE_s_s (oDebugLevel, "debug-level" ,
                 N_("|LEVEL|set the debugging level to LEVEL")),
   ARGPARSE_s_i (oDebugWait, "debug-wait", "@"),
   ARGPARSE_s_n (oDebugAllowCoreDump, "debug-allow-core-dump", "@"),
   ARGPARSE_s_n (oDebugCCIDDriver, "debug-ccid-driver", "@"),
-  ARGPARSE_s_n (oDebugDisableTicker, "debug-disable-ticker", "@"),
   ARGPARSE_s_n (oDebugLogTid, "debug-log-tid", "@"),
   ARGPARSE_p_u (oDebugAssuanLogCats, "debug-assuan-log-cats", "@"),
   ARGPARSE_s_n (oNoDetach, "no-detach", N_("do not detach from the console")),
@@ -157,6 +157,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oEnablePinpadVarlen, "enable-pinpad-varlen",
                 N_("use variable length input for pinpad")),
   ARGPARSE_s_s (oHomedir,    "homedir",      "@"),
+  ARGPARSE_s_i (oListenBacklog, "listen-backlog", "@"),
 
   ARGPARSE_end ()
 };
@@ -189,8 +190,13 @@ static struct debug_flags_s debug_flags [] =
 #define DEFAULT_PCSC_DRIVER "libpcsclite.so"
 #endif
 
-/* The timer tick used for housekeeping stuff.  We poll every 500ms to
-   let the user immediately know a status change.
+/* The timer tick used to check card removal.
+
+   We poll every 500ms to let the user immediately know a status
+   change.
+
+   For a card reader with an interrupt endpoint, this timer is not
+   used with the internal CCID driver.
 
    This is not too good for power saving but given that there is no
    easy way to block on card status changes it is the best we can do.
@@ -220,11 +226,20 @@ static char *redir_socket_name;
    POSIX systems). */
 static assuan_sock_nonce_t socket_nonce;
 
-/* Debug flag to disable the ticker.  The ticker is in fact not
-   disabled but it won't perform any ticker specific actions. */
-static int ticker_disabled;
+/* Value for the listen() backlog argument.  Change at runtime with
+ * --listen-backlog.  */
+static int listen_backlog = 64;
 
-
+#ifdef HAVE_W32_SYSTEM
+static HANDLE the_event;
+#else
+/* PID to notify update of usb devices.  */
+static pid_t main_thread_pid;
+#endif
+#ifdef HAVE_PSELECT_NO_EINTR
+/* FD to notify changes.  */
+static int notify_fd;
+#endif
 
 static char *create_socket_name (char *standard_name);
 static gnupg_fd_t create_server_socket (const char *name,
@@ -378,7 +393,21 @@ cleanup (void)
     }
 }
 
-
+static void
+setup_signal_mask (void)
+{
+#ifndef HAVE_W32_SYSTEM
+  npth_sigev_init ();
+  npth_sigev_add (SIGHUP);
+  npth_sigev_add (SIGUSR1);
+  npth_sigev_add (SIGUSR2);
+  npth_sigev_add (SIGINT);
+  npth_sigev_add (SIGCONT);
+  npth_sigev_add (SIGTERM);
+  npth_sigev_fini ();
+  main_thread_pid = getpid ();
+#endif
+}
 
 int
 main (int argc, char **argv )
@@ -456,13 +485,13 @@ main (int argc, char **argv )
         parse_debug++;
       else if (pargs.r_opt == oOptions)
         { /* yes there is one, so we do not try the default one, but
-	     read the option file when it is encountered at the
-	     commandline */
+             read the option file when it is encountered at the
+             commandline */
           default_config = 0;
-	}
-	else if (pargs.r_opt == oNoOptions)
+        }
+        else if (pargs.r_opt == oNoOptions)
           default_config = 0; /* --no-options */
-	else if (pargs.r_opt == oHomedir)
+        else if (pargs.r_opt == oHomedir)
           gnupg_set_homedir (pargs.r.ret_str);
     }
 
@@ -497,16 +526,16 @@ main (int argc, char **argv )
               if( parse_debug )
                 log_info (_("Note: no default option file '%s'\n"),
                           configname );
-	    }
+            }
           else
             {
               log_error (_("option file '%s': %s\n"),
                          configname, strerror(errno) );
               exit(2);
-	    }
+            }
           xfree (configname);
           configname = NULL;
-	}
+        }
       if (parse_debug && configname )
         log_info (_("reading options from '%s'\n"), configname );
       default_config = 0;
@@ -541,7 +570,6 @@ main (int argc, char **argv )
           ccid_set_debug_level (ccid_set_debug_level (-1)+1);
 #endif /*HAVE_LIBUSB*/
           break;
-        case oDebugDisableTicker: ticker_disabled = 1; break;
         case oDebugLogTid:
           log_set_pid_suffix_cb (tid_log_callback);
           break;
@@ -553,10 +581,10 @@ main (int argc, char **argv )
           /* config files may not be nested (silently ignore them) */
           if (!configfp)
             {
-		xfree(configname);
-		configname = xstrdup(pargs.r.ret_str);
-		goto next_pass;
-	    }
+                xfree(configname);
+                configname = xstrdup(pargs.r.ret_str);
+                goto next_pass;
+            }
           break;
         case oNoGreeting: nogreeting = 1; break;
         case oNoVerbose: opt.verbose = 0; break;
@@ -588,12 +616,16 @@ main (int argc, char **argv )
           add_to_strlist (&opt.disabled_applications, pargs.r.ret_str);
           break;
 
-	case oEnablePinpadVarlen: opt.enable_pinpad_varlen = 1; break;
+        case oEnablePinpadVarlen: opt.enable_pinpad_varlen = 1; break;
+
+        case oListenBacklog:
+          listen_backlog = pargs.r.ret_int;
+          break;
 
         default:
           pargs.err = configfp? ARGPARSE_PRINT_WARNING:ARGPARSE_PRINT_ERROR;
           break;
-	}
+        }
     }
   if (configfp)
     {
@@ -656,7 +688,7 @@ main (int argc, char **argv )
       char *filename_esc;
 
       if (config_filename)
-	filename = xstrdup (config_filename);
+        filename = xstrdup (config_filename);
       else
         filename = make_filename (gnupg_homedir (),
                                   SCDAEMON_NAME EXTSEP_S "conf", NULL);
@@ -726,6 +758,7 @@ main (int argc, char **argv )
 #endif
 
       npth_init ();
+      setup_signal_mask ();
       gpgrt_set_syscall_clamp (npth_unprotect, npth_protect);
 
       /* If --debug-allow-core-dump has been given we also need to
@@ -752,7 +785,7 @@ main (int argc, char **argv )
 
       res = npth_attr_init (&tattr);
       if (res)
-	{
+        {
           log_error ("error allocating thread attributes: %s\n",
                      strerror (res));
           scd_exit (2);
@@ -866,6 +899,7 @@ main (int argc, char **argv )
       /* This is the child. */
 
       npth_init ();
+      setup_signal_mask ();
       gpgrt_set_syscall_clamp (npth_unprotect, npth_protect);
 
       /* Detach from tty and put process into a new session. */
@@ -904,13 +938,14 @@ main (int argc, char **argv )
         sigaction (SIGPIPE, &sa, NULL);
       }
 
-      if (chdir("/"))
+#endif /*!HAVE_W32_SYSTEM*/
+
+      if (gnupg_chdir (gnupg_daemon_rootdir ()))
         {
-          log_error ("chdir to / failed: %s\n", strerror (errno));
+          log_error ("chdir to '%s' failed: %s\n",
+                     gnupg_daemon_rootdir (), strerror (errno));
           exit (1);
         }
-
-#endif /*!HAVE_W32_SYSTEM*/
 
       handle_connections (fd);
 
@@ -996,6 +1031,11 @@ handle_signal (int signo)
       log_info ("SIGUSR2 received - no action defined\n");
       break;
 
+    case SIGCONT:
+      /* Nothing.  */
+      log_debug ("SIGCONT received - breaking select\n");
+      break;
+
     case SIGTERM:
       if (!shutdown_pending)
         log_info ("SIGTERM received - shutting down ...\n");
@@ -1009,7 +1049,7 @@ handle_signal (int signo)
           log_info ("%s %s stopped\n", strusage(11), strusage(13) );
           cleanup ();
           scd_exit (0);
-	}
+        }
       break;
 
     case SIGINT:
@@ -1024,14 +1064,6 @@ handle_signal (int signo)
     }
 }
 #endif /*!HAVE_W32_SYSTEM*/
-
-
-static void
-handle_tick (void)
-{
-  if (!ticker_disabled)
-    scd_update_reader_status_file ();
-}
 
 
 /* Create a name for the socket.  We check for valid characters as
@@ -1116,7 +1148,7 @@ create_server_socket (const char *name, char **r_redir_name,
  if (rc == -1)
     {
       log_error (_("error binding socket to '%s': %s\n"),
-		 unaddr->sun_path,
+                 unaddr->sun_path,
                  gpg_strerror (gpg_error_from_syserror ()));
       assuan_sock_close (fd);
       scd_exit (2);
@@ -1126,10 +1158,10 @@ create_server_socket (const char *name, char **r_redir_name,
     log_error (_("can't set permissions of '%s': %s\n"),
                unaddr->sun_path, strerror (errno));
 
-  if (listen (FD2INT(fd), 5 ) == -1)
+  if (listen (FD2INT(fd), listen_backlog) == -1)
     {
-      log_error (_("listen() failed: %s\n"),
-                 gpg_strerror (gpg_error_from_syserror ()));
+      log_error ("listen(fd, %d) failed: %s\n",
+                 listen_backlog, gpg_strerror (gpg_error_from_syserror ()));
       assuan_sock_close (fd);
       scd_exit (2);
     }
@@ -1158,6 +1190,8 @@ start_connection_thread (void *arg)
       return NULL;
     }
 
+  active_connections++;
+
   scd_init_default_ctrl (ctrl);
   if (opt.verbose)
     log_info (_("handler for fd %d started\n"),
@@ -1177,9 +1211,32 @@ start_connection_thread (void *arg)
 
   scd_deinit_default_ctrl (ctrl);
   xfree (ctrl);
+
+  if (--active_connections == 0)
+    scd_kick_the_loop ();
+
   return NULL;
 }
 
+
+void
+scd_kick_the_loop (void)
+{
+  /* Kick the select loop.  */
+#ifdef HAVE_W32_SYSTEM
+  int ret = SetEvent (the_event);
+  if (ret == 0)
+    log_error ("SetEvent for scd_kick_the_loop failed: %s\n",
+               w32_strerror (-1));
+#elif defined(HAVE_PSELECT_NO_EINTR)
+  write (notify_fd, "", 1);
+#else
+  int ret = kill (main_thread_pid, SIGCONT);
+  if (ret < 0)
+    log_error ("SetEvent for scd_kick_the_loop failed: %s\n",
+               gpg_strerror (gpg_error_from_syserror ()));
+#endif
+}
 
 /* Connection handler loop.  Wait for connection requests and spawn a
    thread after accepting a connection.  LISTEN_FD is allowed to be -1
@@ -1192,29 +1249,63 @@ handle_connections (int listen_fd)
   struct sockaddr_un paddr;
   socklen_t plen;
   fd_set fdset, read_fdset;
+  int nfd;
   int ret;
   int fd;
-  int nfd;
-  struct timespec abstime;
-  struct timespec curtime;
   struct timespec timeout;
+  struct timespec *t;
   int saved_errno;
-#ifndef HAVE_W32_SYSTEM
+#ifdef HAVE_W32_SYSTEM
+  HANDLE events[2];
+  unsigned int events_set;
+#else
   int signo;
+#endif
+#ifdef HAVE_PSELECT_NO_EINTR
+  int pipe_fd[2];
+
+  ret = gnupg_create_pipe (pipe_fd);
+  if (ret)
+    {
+      log_error ("pipe creation failed: %s\n", gpg_strerror (ret));
+      return;
+    }
+  notify_fd = pipe_fd[1];
 #endif
 
   ret = npth_attr_init(&tattr);
-  /* FIXME: Check error.  */
+  if (ret)
+    {
+      log_error ("npth_attr_init failed: %s\n", strerror (ret));
+      return;
+    }
+
   npth_attr_setdetachstate (&tattr, NPTH_CREATE_DETACHED);
 
-#ifndef HAVE_W32_SYSTEM
-  npth_sigev_init ();
-  npth_sigev_add (SIGHUP);
-  npth_sigev_add (SIGUSR1);
-  npth_sigev_add (SIGUSR2);
-  npth_sigev_add (SIGINT);
-  npth_sigev_add (SIGTERM);
-  npth_sigev_fini ();
+#ifdef HAVE_W32_SYSTEM
+  {
+    HANDLE h, h2;
+    SECURITY_ATTRIBUTES sa = { sizeof (SECURITY_ATTRIBUTES), NULL, TRUE};
+
+    events[0] = the_event = INVALID_HANDLE_VALUE;
+    events[1] = INVALID_HANDLE_VALUE;
+    h = CreateEvent (&sa, TRUE, FALSE, NULL);
+    if (!h)
+      log_error ("can't create scd event: %s\n", w32_strerror (-1) );
+    else if (!DuplicateHandle (GetCurrentProcess(), h,
+                               GetCurrentProcess(), &h2,
+                               EVENT_MODIFY_STATE|SYNCHRONIZE, TRUE, 0))
+      {
+        log_error ("setting synchronize for scd_kick_the_loop failed: %s\n",
+                   w32_strerror (-1) );
+        CloseHandle (h);
+      }
+    else
+      {
+        CloseHandle (h);
+        events[0] = the_event = h2;
+      }
+  }
 #endif
 
   FD_ZERO (&fdset);
@@ -1225,14 +1316,11 @@ handle_connections (int listen_fd)
       nfd = listen_fd;
     }
 
-  npth_clock_gettime (&curtime);
-  timeout.tv_sec = TIMERTICK_INTERVAL_SEC;
-  timeout.tv_nsec = TIMERTICK_INTERVAL_USEC * 1000;
-  npth_timeradd (&curtime, &timeout, &abstime);
-  /* We only require abstime here.  The others will be reused.  */
-
   for (;;)
     {
+      int periodical_check;
+      int max_fd = nfd;
+
       if (shutdown_pending)
         {
           if (active_connections == 0)
@@ -1244,56 +1332,76 @@ handle_connections (int listen_fd)
              used to just wait on a signal or timeout event. */
           FD_ZERO (&fdset);
           listen_fd = -1;
-	}
+        }
 
-      npth_clock_gettime (&curtime);
-      if (!(npth_timercmp (&curtime, &abstime, <)))
-	{
-	  /* Timeout.  */
-	  handle_tick ();
-	  timeout.tv_sec = TIMERTICK_INTERVAL_SEC;
-	  timeout.tv_nsec = TIMERTICK_INTERVAL_USEC * 1000;
-	  npth_timeradd (&curtime, &timeout, &abstime);
-	}
-      npth_timersub (&abstime, &curtime, &timeout);
+      periodical_check = scd_update_reader_status_file ();
+
+      timeout.tv_sec = TIMERTICK_INTERVAL_SEC;
+      timeout.tv_nsec = TIMERTICK_INTERVAL_USEC * 1000;
+
+      if (shutdown_pending || periodical_check)
+        t = &timeout;
+      else
+        t = NULL;
 
       /* POSIX says that fd_set should be implemented as a structure,
          thus a simple assignment is fine to copy the entire set.  */
       read_fdset = fdset;
 
+#ifdef HAVE_PSELECT_NO_EINTR
+      FD_SET (pipe_fd[0], &read_fdset);
+      if (max_fd < pipe_fd[0])
+        max_fd = pipe_fd[0];
+#else
+      (void)max_fd;
+#endif
+
 #ifndef HAVE_W32_SYSTEM
-      ret = npth_pselect (nfd+1, &read_fdset, NULL, NULL, &timeout, npth_sigev_sigmask());
+      ret = npth_pselect (max_fd+1, &read_fdset, NULL, NULL, t,
+                          npth_sigev_sigmask ());
       saved_errno = errno;
 
       while (npth_sigev_get_pending(&signo))
-	handle_signal (signo);
+        handle_signal (signo);
 #else
-      ret = npth_eselect (nfd+1, &read_fdset, NULL, NULL, &timeout, NULL, NULL);
+      ret = npth_eselect (nfd+1, &read_fdset, NULL, NULL, t,
+                          events, &events_set);
       saved_errno = errno;
+      if (events_set & 1)
+        continue;
 #endif
 
       if (ret == -1 && saved_errno != EINTR)
-	{
+        {
           log_error (_("npth_pselect failed: %s - waiting 1s\n"),
                      strerror (saved_errno));
           npth_sleep (1);
-	  continue;
-	}
+          continue;
+        }
 
       if (ret <= 0)
-	/* Timeout.  Will be handled when calculating the next timeout.  */
-	continue;
+        /* Timeout.  Will be handled when calculating the next timeout.  */
+        continue;
+
+#ifdef HAVE_PSELECT_NO_EINTR
+      if (FD_ISSET (pipe_fd[0], &read_fdset))
+        {
+          char buf[256];
+
+          read (pipe_fd[0], buf, sizeof buf);
+        }
+#endif
 
       if (listen_fd != -1 && FD_ISSET (listen_fd, &read_fdset))
-	{
+        {
           ctrl_t ctrl;
 
           plen = sizeof paddr;
-	  fd = npth_accept (listen_fd, (struct sockaddr *)&paddr, &plen);
-	  if (fd == -1)
-	    {
-	      log_error ("accept failed: %s\n", strerror (errno));
-	    }
+          fd = npth_accept (listen_fd, (struct sockaddr *)&paddr, &plen);
+          if (fd == -1)
+            {
+              log_error ("accept failed: %s\n", strerror (errno));
+            }
           else if ( !(ctrl = xtrycalloc (1, sizeof *ctrl)) )
             {
               log_error ("error allocating connection control data: %s\n",
@@ -1303,12 +1411,12 @@ handle_connections (int listen_fd)
           else
             {
               char threadname[50];
-	      npth_t thread;
+              npth_t thread;
 
               snprintf (threadname, sizeof threadname, "conn fd=%d", fd);
               ctrl->thread_startup.fd = INT2FD (fd);
               ret = npth_create (&thread, &tattr, start_connection_thread, ctrl);
-	      if (ret)
+              if (ret)
                 {
                   log_error ("error spawning connection handler: %s\n",
                              strerror (ret));
@@ -1316,13 +1424,27 @@ handle_connections (int listen_fd)
                   close (fd);
                 }
               else
-		npth_setname_np (thread, threadname);
+                npth_setname_np (thread, threadname);
             }
-          fd = -1;
-	}
+        }
     }
 
+#ifdef HAVE_W32_SYSTEM
+  if (the_event != INVALID_HANDLE_VALUE)
+    CloseHandle (the_event);
+#endif
+#ifdef HAVE_PSELECT_NO_EINTR
+  close (pipe_fd[0]);
+  close (pipe_fd[1]);
+#endif
   cleanup ();
   log_info (_("%s %s stopped\n"), strusage(11), strusage(13));
   npth_attr_destroy (&tattr);
+}
+
+/* Return the number of active connections. */
+int
+get_active_connection_count (void)
+{
+  return active_connections;
 }

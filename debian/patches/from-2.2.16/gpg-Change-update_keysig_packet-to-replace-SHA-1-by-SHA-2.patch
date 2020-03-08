@@ -1,0 +1,39 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Mon, 13 May 2019 19:01:28 +0200
+Subject: gpg: Change update_keysig_packet to replace SHA-1 by SHA-256.
+
+* g10/sign.c (update_keysig_packet): Convert digest algo when needed.
+--
+
+Several gpg commands try to keep most properties of a key signature
+when updating (i.e. creating a new version of a key signature).  This
+included the use of the current hash-algorithm.  This patch changes
+this so that SHA-1 or RMD160 are replaced by SHA-256 if
+possible (i.e. for RSA signatures).  Affected commands are for example
+--quick-set-expire and --quick-set-primary-uid.
+
+GnuPG-bug-id: 4508
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit c1dc7a832921fdf5686d377f33db78707c0345e2)
+---
+ g10/sign.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/g10/sign.c b/g10/sign.c
+index 095fa11..92ff361 100644
+--- a/g10/sign.c
++++ b/g10/sign.c
+@@ -1593,6 +1593,13 @@ update_keysig_packet (ctrl_t ctrl,
+ 
+     if ( opt.cert_digest_algo )
+       digest_algo = opt.cert_digest_algo;
++    else if (pksk->pubkey_algo == PUBKEY_ALGO_DSA
++             || pksk->pubkey_algo == PUBKEY_ALGO_ECDSA
++             || pksk->pubkey_algo == PUBKEY_ALGO_EDDSA)
++      digest_algo = orig_sig->digest_algo;
++    else if (orig_sig->digest_algo == DIGEST_ALGO_SHA1
++             || orig_sig->digest_algo == DIGEST_ALGO_RMD160)
++      digest_algo = DEFAULT_DIGEST_ALGO;
+     else
+       digest_algo = orig_sig->digest_algo;
+ 

@@ -1,0 +1,38 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Mon, 13 May 2019 21:22:38 -0400
+Subject: gpg: enable OpenPGP export of cleartext keys with comments
+
+* g10/export.c (cleartext_secret_key_to_openpgp): ignore trailing
+sublists in private-key S-expression.
+
+--
+
+When gpg-agent learns about a private key from its ssh-agent
+interface, it stores its S-expression with the comment attached.  The
+export mechanism for OpenPGP keys already in cleartext was too brittle
+because it would choke on these comments.  This change lets it ignore
+any additional trailing sublists.
+
+Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Gnupg-Bug-Id: 4490
+(cherry picked from commit 9c704d9d46338769a66bfc6c378efeda3c4bd9ec)
+---
+ g10/export.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/g10/export.c b/g10/export.c
+index e94e959..70f5261 100644
+--- a/g10/export.c
++++ b/g10/export.c
+@@ -596,7 +596,10 @@ cleartext_secret_key_to_openpgp (gcry_sexp_t s_key, PKT_public_key *pk)
+   top_list = gcry_sexp_find_token (s_key, "private-key", 0);
+   if (!top_list)
+     goto bad_seckey;
+-  if (gcry_sexp_length(top_list) != 2)
++
++  /* ignore all S-expression after the first sublist -- we assume that
++     they are comments or otherwise irrelevant to OpenPGP */
++  if (gcry_sexp_length(top_list) < 2)
+     goto bad_seckey;
+   key = gcry_sexp_nth (top_list, 1);
+   if (!key)

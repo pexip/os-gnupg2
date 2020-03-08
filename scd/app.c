@@ -25,11 +25,11 @@
 #include <npth.h>
 
 #include "scdaemon.h"
-#include "exechelp.h"
+#include "../common/exechelp.h"
 #include "app-common.h"
 #include "iso7816.h"
 #include "apdu.h"
-#include "tlv.h"
+#include "../common/tlv.h"
 
 static npth_mutex_t app_list_lock;
 static app_t app_top;
@@ -99,7 +99,7 @@ app_dump_state (void)
   npth_mutex_unlock (&app_list_lock);
 }
 
-/* Check wether the application NAME is allowed.  This does not mean
+/* Check whether the application NAME is allowed.  This does not mean
    we have support for it though.  */
 static int
 is_app_allowed (const char *name)
@@ -136,45 +136,38 @@ check_application_conflict (const char *name, app_t app)
 }
 
 
-static void
-release_application_internal (app_t app)
-{
-  if (!app->ref_count)
-    log_bug ("trying to release an already released context\n");
-
-  --app->ref_count;
-}
-
 gpg_error_t
 app_reset (app_t app, ctrl_t ctrl, int send_reset)
 {
-  gpg_error_t err;
-
-  err = lock_app (app, ctrl);
-  if (err)
-    return err;
+  gpg_error_t err = 0;
 
   if (send_reset)
     {
-      int sw = apdu_reset (app->slot);
+      int sw;
+
+      lock_app (app, ctrl);
+      sw = apdu_reset (app->slot);
       if (sw)
         err = gpg_error (GPG_ERR_CARD_RESET);
 
-      /* Release the same application which is used by other sessions.  */
-      send_client_notifications (app, 1);
+      app->reset_requested = 1;
+      unlock_app (app);
+
+      scd_kick_the_loop ();
+      gnupg_sleep (1);
     }
   else
     {
       ctrl->app_ctx = NULL;
-      release_application_internal (app);
+      release_application (app, 0);
     }
 
-  unlock_app (app);
   return err;
 }
 
 static gpg_error_t
-app_new_register (int slot, ctrl_t ctrl, const char *name)
+app_new_register (int slot, ctrl_t ctrl, const char *name,
+                  int periodical_check_needed)
 {
   gpg_error_t err = 0;
   app_t app = NULL;
@@ -192,6 +185,7 @@ app_new_register (int slot, ctrl_t ctrl, const char *name)
     }
 
   app->slot = slot;
+  app->card_status = (unsigned int)-1;
 
   if (npth_mutex_init (&app->lock, NULL))
     {
@@ -214,9 +208,9 @@ app_new_register (int slot, ctrl_t ctrl, const char *name)
      We skip this if the undefined application has been requested. */
   if (!want_undefined)
     {
-      err = iso7816_select_file (slot, 0x3F00, 1, NULL, NULL);
+      err = iso7816_select_file (slot, 0x3F00, 1);
       if (!err)
-        err = iso7816_select_file (slot, 0x2F02, 0, NULL, NULL);
+        err = iso7816_select_file (slot, 0x2F02, 0);
       if (!err)
         err = iso7816_read_binary (slot, 0, 0, &result, &resultlen);
       if (!err)
@@ -302,7 +296,7 @@ app_new_register (int slot, ctrl_t ctrl, const char *name)
       return err;
     }
 
-  app->require_get_status = 1;   /* For token, this can be 0.  */
+  app->periodical_check_needed = periodical_check_needed;
 
   npth_mutex_lock (&app_list_lock);
   app->next = app_top;
@@ -322,14 +316,16 @@ select_application (ctrl_t ctrl, const char *name, app_t *r_app,
                     size_t serialno_bin_len)
 {
   gpg_error_t err = 0;
-  app_t a;
+  app_t a, a_prev = NULL;
 
   *r_app = NULL;
 
   if (scan || !app_top)
     {
       struct dev_list *l;
+      int new_app = 0;
 
+      /* Scan the devices to find new device(s).  */
       err = apdu_dev_list_start (opt.reader_port, &l);
       if (err)
         return err;
@@ -337,38 +333,34 @@ select_application (ctrl_t ctrl, const char *name, app_t *r_app,
       while (1)
         {
           int slot;
-          int sw;
+          int periodical_check_needed_this;
 
-          slot = apdu_open_reader (l);
+          slot = apdu_open_reader (l, !app_top);
           if (slot < 0)
             break;
 
-          err = 0;
-          sw = apdu_connect (slot);
-
-          if (sw == SW_HOST_CARD_INACTIVE)
-            {
-              /* Try again.  */
-              sw = apdu_reset (slot);
-            }
-
-          if (!sw || sw == SW_HOST_ALREADY_CONNECTED)
-            err = 0;
-          else if (sw == SW_HOST_NO_CARD)
-            err = gpg_error (GPG_ERR_CARD_NOT_PRESENT);
-          else
-            err = gpg_error (GPG_ERR_ENODEV);
-
-          if (!err)
-            err = app_new_register (slot, ctrl, name);
-          else
+          periodical_check_needed_this = apdu_connect (slot);
+          if (periodical_check_needed_this < 0)
             {
               /* We close a reader with no card.  */
-              apdu_close_reader (slot);
+              err = gpg_error (GPG_ERR_ENODEV);
             }
+          else
+            {
+              err = app_new_register (slot, ctrl, name,
+                                      periodical_check_needed_this);
+              new_app++;
+            }
+
+          if (err)
+            apdu_close_reader (slot);
         }
 
       apdu_dev_list_finish (l);
+
+      /* If new device(s), kick the scdaemon loop.  */
+      if (new_app)
+        scd_kick_the_loop ();
     }
 
   npth_mutex_lock (&app_list_lock);
@@ -381,6 +373,7 @@ select_application (ctrl_t ctrl, const char *name, app_t *r_app,
           && !memcmp (a->serialno, serialno_bin, a->serialnolen))
         break;
       unlock_app (a);
+      a_prev = a;
     }
 
   if (a)
@@ -390,7 +383,13 @@ select_application (ctrl_t ctrl, const char *name, app_t *r_app,
         {
           a->ref_count++;
           *r_app = a;
-        }
+          if (a_prev)
+            {
+              a_prev->next = a->next;
+              a->next = app_top;
+              app_top = a;
+            }
+      }
       unlock_app (a);
     }
   else
@@ -464,6 +463,8 @@ deallocate_app (app_t app)
     }
 
   xfree (app->serialno);
+
+  unlock_app (app);
   xfree (app);
 }
 
@@ -473,7 +474,7 @@ deallocate_app (app_t app)
    actually deferring the deallocation to allow for a later reuse by
    a new connection. */
 void
-release_application (app_t app)
+release_application (app_t app, int locked_already)
 {
   if (!app)
     return;
@@ -483,9 +484,15 @@ release_application (app_t app)
      is using the card - this way the PIN cache and other cached data
      are preserved.  */
 
-  lock_app (app, NULL);
-  release_application_internal (app);
-  unlock_app (app);
+  if (!locked_already)
+    lock_app (app, NULL);
+
+  if (!app->ref_count)
+    log_bug ("trying to release an already released context\n");
+
+  --app->ref_count;
+  if (!locked_already)
+    unlock_app (app);
 }
 
 
@@ -930,7 +937,7 @@ app_change_pin (app_t app, ctrl_t ctrl, const char *chvnostr, int reset_mode,
 
 
 /* Perform a VERIFY operation without doing anything lese.  This may
-   be used to initialze a the PIN cache for long lasting other
+   be used to initialize a the PIN cache for long lasting other
    operations.  Its use is highly application dependent. */
 gpg_error_t
 app_check_pin (app_t app, ctrl_t ctrl, const char *keyidstr,
@@ -1014,21 +1021,26 @@ report_change (int slot, int old_status, int cur_status)
   xfree (homestr);
 }
 
-void
+int
 scd_update_reader_status_file (void)
 {
   app_t a, app_next;
+  int periodical_check_needed = 0;
 
   npth_mutex_lock (&app_list_lock);
   for (a = app_top; a; a = app_next)
     {
-      app_next = a->next;
-      if (a->require_get_status)
-        {
-          int sw;
-          unsigned int status;
-          sw = apdu_get_status (a->slot, 0, &status);
+      int sw;
+      unsigned int status;
 
+      lock_app (a, NULL);
+      app_next = a->next;
+
+      if (a->reset_requested)
+        status = 0;
+      else
+        {
+          sw = apdu_get_status (a->slot, 0, &status);
           if (sw == SW_HOST_NO_READER)
             {
               /* Most likely the _reader_ has been unplugged.  */
@@ -1037,26 +1049,42 @@ scd_update_reader_status_file (void)
           else if (sw)
             {
               /* Get status failed.  Ignore that.  */
+              if (a->periodical_check_needed)
+                periodical_check_needed = 1;
+              unlock_app (a);
               continue;
             }
+        }
 
-          if (a->card_status != status)
+      if (a->card_status != status)
+        {
+          report_change (a->slot, a->card_status, status);
+          send_client_notifications (a, status == 0);
+
+          if (status == 0)
             {
-              report_change (a->slot, a->card_status, status);
-              send_client_notifications (a, status == 0);
-
-              if (status == 0)
-                {
-                  log_debug ("Removal of a card: %d\n", a->slot);
-                  apdu_close_reader (a->slot);
-                  deallocate_app (a);
-                }
-              else
-                a->card_status = status;
+              log_debug ("Removal of a card: %d\n", a->slot);
+              apdu_close_reader (a->slot);
+              deallocate_app (a);
             }
+          else
+            {
+              a->card_status = status;
+              if (a->periodical_check_needed)
+                periodical_check_needed = 1;
+              unlock_app (a);
+            }
+        }
+      else
+        {
+          if (a->periodical_check_needed)
+            periodical_check_needed = 1;
+          unlock_app (a);
         }
     }
   npth_mutex_unlock (&app_list_lock);
+
+  return periodical_check_needed;
 }
 
 /* This function must be called once to initialize this module.  This
@@ -1076,19 +1104,6 @@ initialize_module_command (void)
     }
 
   return apdu_init ();
-}
-
-app_t
-app_list_start (void)
-{
-  npth_mutex_lock (&app_list_lock);
-  return app_top;
-}
-
-void
-app_list_finish (void)
-{
-  npth_mutex_unlock (&app_list_lock);
 }
 
 void

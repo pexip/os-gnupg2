@@ -37,7 +37,7 @@
 
 #include "agent.h"
 #include <assuan.h>
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "cvt-openpgp.h"
 #include "../common/ssh-utils.h"
 #include "../common/asshelp.h"
@@ -199,14 +199,14 @@ clear_nonce_cache (ctrl_t ctrl)
 {
   if (ctrl->server_local->last_cache_nonce)
     {
-      agent_put_cache (ctrl->server_local->last_cache_nonce,
+      agent_put_cache (ctrl, ctrl->server_local->last_cache_nonce,
                        CACHE_MODE_NONCE, NULL, 0);
       xfree (ctrl->server_local->last_cache_nonce);
       ctrl->server_local->last_cache_nonce = NULL;
     }
   if (ctrl->server_local->last_passwd_nonce)
     {
-      agent_put_cache (ctrl->server_local->last_passwd_nonce,
+      agent_put_cache (ctrl, ctrl->server_local->last_passwd_nonce,
                        CACHE_MODE_NONCE, NULL, 0);
       xfree (ctrl->server_local->last_passwd_nonce);
       ctrl->server_local->last_passwd_nonce = NULL;
@@ -293,50 +293,19 @@ parse_keygrip (assuan_context_t ctx, const char *string, unsigned char *buf)
 
 
 /* Write an Assuan status line.  KEYWORD is the first item on the
-   status line.  The following arguments are all separated by a space
-   in the output.  The last argument must be a NULL.  Linefeeds and
-   carriage returns characters (which are not allowed in an Assuan
-   status line) are silently quoted in C-style.  */
+ * status line.  The following arguments are all separated by a space
+ * in the output.  The last argument must be a NULL.  Linefeeds and
+ * carriage returns characters (which are not allowed in an Assuan
+ * status line) are silently quoted in C-style.  */
 gpg_error_t
 agent_write_status (ctrl_t ctrl, const char *keyword, ...)
 {
-  gpg_error_t err = 0;
+  gpg_error_t err;
   va_list arg_ptr;
-  const char *text;
   assuan_context_t ctx = ctrl->server_local->assuan_ctx;
-  char buf[950], *p;
-  size_t n;
 
   va_start (arg_ptr, keyword);
-
-  p = buf;
-  n = 0;
-  while ( (text = va_arg (arg_ptr, const char *)) )
-    {
-      if (n)
-        {
-          *p++ = ' ';
-          n++;
-        }
-      for ( ; *text && n < DIM (buf)-3; n++, text++)
-        {
-          if (*text == '\n')
-            {
-              *p++ = '\\';
-              *p++ = 'n';
-            }
-          else if (*text == '\r')
-            {
-              *p++ = '\\';
-              *p++ = 'r';
-            }
-          else
-            *p++ = *text;
-        }
-    }
-  *p = 0;
-  err = assuan_write_status (ctx, keyword, buf);
-
+  err = vprint_assuan_status_strings (ctx, keyword, arg_ptr);
   va_end (arg_ptr);
   return err;
 }
@@ -434,7 +403,7 @@ leave_cmd (assuan_context_t ctx, gpg_error_t err)
 static const char hlp_geteventcounter[] =
   "GETEVENTCOUNTER\n"
   "\n"
-  "Return a a status line named EVENTCOUNTER with the current values\n"
+  "Return a status line named EVENTCOUNTER with the current values\n"
   "of all event counters.  The values are decimal numbers in the range\n"
   "0 to UINT_MAX and wrapping around to 0.  The actual values should\n"
   "not be relied upon, they shall only be used to detect a change.\n"
@@ -782,7 +751,7 @@ static const char hlp_pksign[] =
 static gpg_error_t
 cmd_pksign (assuan_context_t ctx, char *line)
 {
-  int rc;
+  gpg_error_t err;
   cache_mode_t cache_mode = CACHE_MODE_NORMAL;
   ctrl_t ctrl = assuan_get_pointer (ctx);
   membuf_t outbuf;
@@ -791,7 +760,6 @@ cmd_pksign (assuan_context_t ctx, char *line)
 
   line = skip_options (line);
 
-  p = line;
   for (p=line; *p && *p != ' ' && *p != '\t'; p++)
     ;
   *p = '\0';
@@ -805,17 +773,17 @@ cmd_pksign (assuan_context_t ctx, char *line)
 
   init_membuf (&outbuf, 512);
 
-  rc = agent_pksign (ctrl, cache_nonce, ctrl->server_local->keydesc,
-                     &outbuf, cache_mode);
-  if (rc)
+  err = agent_pksign (ctrl, cache_nonce, ctrl->server_local->keydesc,
+                      &outbuf, cache_mode);
+  if (err)
     clear_outbuf (&outbuf);
   else
-    rc = write_and_clear_outbuf (ctx, &outbuf);
+    err = write_and_clear_outbuf (ctx, &outbuf);
 
   xfree (cache_nonce);
   xfree (ctrl->server_local->keydesc);
   ctrl->server_local->keydesc = NULL;
-  return leave_cmd (ctx, rc);
+  return leave_cmd (ctx, err);
 }
 
 
@@ -892,7 +860,7 @@ cmd_genkey (assuan_context_t ctx, char *line)
   ctrl_t ctrl = assuan_get_pointer (ctx);
   int rc;
   int no_protection;
-  unsigned char *value;
+  unsigned char *value = NULL;
   size_t valuelen;
   unsigned char *newpasswd = NULL;
   membuf_t outbuf;
@@ -927,7 +895,6 @@ cmd_genkey (assuan_context_t ctx, char *line)
     }
   line = skip_options (line);
 
-  p = line;
   for (p=line; *p && *p != ' ' && *p != '\t'; p++)
     ;
   *p = '\0';
@@ -963,7 +930,7 @@ cmd_genkey (assuan_context_t ctx, char *line)
 
     }
   else if (passwd_nonce)
-    newpasswd = agent_get_cache (passwd_nonce, CACHE_MODE_NONCE);
+    newpasswd = agent_get_cache (ctrl, passwd_nonce, CACHE_MODE_NONCE);
 
   rc = agent_genkey (ctrl, cache_nonce, (char*)value, valuelen, no_protection,
                      newpasswd, opt_preset, &outbuf);
@@ -1064,7 +1031,8 @@ cmd_readkey (assuan_context_t ctx, char *line)
             rc = gpg_error_from_syserror ();
           else
             {
-              gcry_sexp_sprint (s_pkey, GCRYSEXP_FMT_CANON, pkbuf, pkbuflen);
+              pkbuflen = gcry_sexp_sprint (s_pkey, GCRYSEXP_FMT_CANON,
+                                           pkbuf, pkbuflen);
               rc = assuan_send_data (ctx, pkbuf, pkbuflen);
             }
         }
@@ -1203,7 +1171,7 @@ do_one_keyinfo (ctrl_t ctrl, const unsigned char *grip, assuan_context_t ctx,
 
       if (!agent_raw_key_from_file (ctrl, grip, &key))
         {
-          ssh_get_fingerprint_string (key, &fpr);
+          ssh_get_fingerprint_string (key, GCRY_MD_MD5, &fpr);
           gcry_sexp_release (key);
         }
     }
@@ -1211,7 +1179,7 @@ do_one_keyinfo (ctrl_t ctrl, const unsigned char *grip, assuan_context_t ctx,
   /* Here we have a little race by doing the cache check separately
      from the retrieval function.  Given that the cache flag is only a
      hint, it should not really matter.  */
-  pw = agent_get_cache (hexgrip, CACHE_MODE_NORMAL);
+  pw = agent_get_cache (ctrl, hexgrip, CACHE_MODE_NORMAL);
   cached = pw ? "1" : "-";
   xfree (pw);
 
@@ -1516,7 +1484,7 @@ cmd_get_passphrase (assuan_context_t ctx, char *line)
   if (!strcmp (desc, "X"))
     desc = NULL;
 
-  pw = cacheid ? agent_get_cache (cacheid, CACHE_MODE_USER) : NULL;
+  pw = cacheid ? agent_get_cache (ctrl, cacheid, CACHE_MODE_USER) : NULL;
   if (pw)
     {
       rc = send_back_passphrase (ctx, opt_data, pw);
@@ -1583,7 +1551,7 @@ cmd_get_passphrase (assuan_context_t ctx, char *line)
           if (!rc)
             {
               if (cacheid)
-                agent_put_cache (cacheid, CACHE_MODE_USER, response, 0);
+                agent_put_cache (ctrl, cacheid, CACHE_MODE_USER, response, 0);
               rc = send_back_passphrase (ctx, opt_data, response);
             }
           xfree (response);
@@ -1625,7 +1593,8 @@ cmd_clear_passphrase (assuan_context_t ctx, char *line)
   if (!*cacheid || strlen (cacheid) > 50)
     return set_error (GPG_ERR_ASS_PARAMETER, "invalid length of cacheID");
 
-  agent_put_cache (cacheid, opt_normal ? CACHE_MODE_NORMAL : CACHE_MODE_USER,
+  agent_put_cache (ctrl, cacheid,
+                   opt_normal ? CACHE_MODE_NORMAL : CACHE_MODE_USER,
                    NULL, 0);
 
   agent_clear_passphrase (ctrl, cacheid,
@@ -1802,7 +1771,7 @@ cmd_passwd (assuan_context_t ctx, char *line)
               passwd_nonce = bin2hex (buf, 12, NULL);
             }
           if (passwd_nonce
-              && !agent_put_cache (passwd_nonce, CACHE_MODE_NONCE,
+              && !agent_put_cache (ctrl, passwd_nonce, CACHE_MODE_NONCE,
                                    passphrase, CACHE_TTL_NONCE))
             {
               assuan_write_status (ctx, "PASSWD_NONCE", passwd_nonce);
@@ -1817,7 +1786,7 @@ cmd_passwd (assuan_context_t ctx, char *line)
       char *newpass = NULL;
 
       if (passwd_nonce)
-        newpass = agent_get_cache (passwd_nonce, CACHE_MODE_NONCE);
+        newpass = agent_get_cache (ctrl, passwd_nonce, CACHE_MODE_NONCE);
       err = agent_protect_and_store (ctrl, s_skey, &newpass);
       if (!err && passphrase)
         {
@@ -1832,7 +1801,7 @@ cmd_passwd (assuan_context_t ctx, char *line)
               cache_nonce = bin2hex (buf, 12, NULL);
             }
           if (cache_nonce
-              && !agent_put_cache (cache_nonce, CACHE_MODE_NONCE,
+              && !agent_put_cache (ctrl, cache_nonce, CACHE_MODE_NONCE,
                                    passphrase, CACHE_TTL_NONCE))
             {
               assuan_write_status (ctx, "CACHE_NONCE", cache_nonce);
@@ -1852,7 +1821,7 @@ cmd_passwd (assuan_context_t ctx, char *line)
                   passwd_nonce = bin2hex (buf, 12, NULL);
                 }
               if (passwd_nonce
-                  && !agent_put_cache (passwd_nonce, CACHE_MODE_NONCE,
+                  && !agent_put_cache (ctrl, passwd_nonce, CACHE_MODE_NONCE,
                                        newpass, CACHE_TTL_NONCE))
                 {
                   assuan_write_status (ctx, "PASSWD_NONCE", passwd_nonce);
@@ -1866,7 +1835,7 @@ cmd_passwd (assuan_context_t ctx, char *line)
         {
 	  char hexgrip[40+1];
 	  bin2hex(grip, 20, hexgrip);
-	  err = agent_put_cache (hexgrip, CACHE_MODE_ANY, newpass,
+	  err = agent_put_cache (ctrl, hexgrip, CACHE_MODE_ANY, newpass,
                                  ctrl->cache_ttl_opt_preset);
         }
       xfree (newpass);
@@ -1971,7 +1940,7 @@ cmd_preset_passphrase (assuan_context_t ctx, char *line)
 
   if (!rc)
     {
-      rc = agent_put_cache (grip_clear, CACHE_MODE_ANY, passphrase, ttl);
+      rc = agent_put_cache (ctrl, grip_clear, CACHE_MODE_ANY, passphrase, ttl);
       if (opt_inquire)
 	xfree (passphrase);
     }
@@ -1990,14 +1959,17 @@ static const char hlp_scd[] =
 static gpg_error_t
 cmd_scd (assuan_context_t ctx, char *line)
 {
-  ctrl_t ctrl = assuan_get_pointer (ctx);
   int rc;
-
+#ifdef BUILD_WITH_SCDAEMON
+  ctrl_t ctrl = assuan_get_pointer (ctx);
   if (ctrl->restricted)
     return leave_cmd (ctx, gpg_error (GPG_ERR_FORBIDDEN));
 
   rc = divert_generic_cmd (ctrl, line, ctx);
-
+#else
+  (void)ctx; (void)line;
+  rc = gpg_error (GPG_ERR_NOT_SUPPORTED);
+#endif
   return rc;
 }
 
@@ -2007,7 +1979,7 @@ static const char hlp_keywrap_key[] =
   "KEYWRAP_KEY [--clear] <mode>\n"
   "\n"
   "Return a key to wrap another key.  For now the key is returned\n"
-  "verbatim and and thus makes not much sense because an eavesdropper on\n"
+  "verbatim and thus makes not much sense because an eavesdropper on\n"
   "the gpg-agent connection will see the key as well as the wrapped key.\n"
   "However, this function may either be equipped with a public key\n"
   "mechanism or not used at all if the key is a pre-shared key.  In any\n"
@@ -2105,7 +2077,6 @@ cmd_import_key (assuan_context_t ctx, char *line)
   force = has_option (line, "--force");
   line = skip_options (line);
 
-  p = line;
   for (p=line; *p && *p != ' ' && *p != '\t'; p++)
     ;
   *p = '\0';
@@ -2204,7 +2175,7 @@ cmd_import_key (assuan_context_t ctx, char *line)
               cache_nonce = bin2hex (buf, 12, NULL);
             }
           if (cache_nonce
-              && !agent_put_cache (cache_nonce, CACHE_MODE_NONCE,
+              && !agent_put_cache (ctrl, cache_nonce, CACHE_MODE_NONCE,
                                    passphrase, CACHE_TTL_NONCE))
             assuan_write_status (ctx, "CACHE_NONCE", cache_nonce);
         }
@@ -2366,7 +2337,7 @@ cmd_export_key (assuan_context_t ctx, char *line)
               cache_nonce = bin2hex (buf, 12, NULL);
             }
           if (cache_nonce
-              && !agent_put_cache (cache_nonce, CACHE_MODE_NONCE,
+              && !agent_put_cache (ctrl, cache_nonce, CACHE_MODE_NONCE,
                                    passphrase, CACHE_TTL_NONCE))
             {
               assuan_write_status (ctx, "CACHE_NONCE", cache_nonce);
@@ -2433,23 +2404,25 @@ cmd_export_key (assuan_context_t ctx, char *line)
 
 
 static const char hlp_delete_key[] =
-  "DELETE_KEY [--force] <hexstring_with_keygrip>\n"
+  "DELETE_KEY [--force|--stub-only] <hexstring_with_keygrip>\n"
   "\n"
   "Delete a secret key from the key store.  If --force is used\n"
   "and a loopback pinentry is allowed, the agent will not ask\n"
-  "the user for confirmation.";
+  "the user for confirmation.  If --stub-only is used the key will\n"
+  "only be deleted if it is a reference to a token.";
 static gpg_error_t
 cmd_delete_key (assuan_context_t ctx, char *line)
 {
   ctrl_t ctrl = assuan_get_pointer (ctx);
   gpg_error_t err;
-  int force;
+  int force, stub_only;
   unsigned char grip[20];
 
   if (ctrl->restricted)
     return leave_cmd (ctx, gpg_error (GPG_ERR_FORBIDDEN));
 
   force = has_option (line, "--force");
+  stub_only = has_option (line, "--stub-only");
   line = skip_options (line);
 
   /* If the use of a loopback pinentry has been disabled, we assume
@@ -2461,7 +2434,8 @@ cmd_delete_key (assuan_context_t ctx, char *line)
   if (err)
     goto leave;
 
-  err = agent_delete_key (ctrl, ctrl->server_local->keydesc, grip, force );
+  err = agent_delete_key (ctrl, ctrl->server_local->keydesc, grip,
+                          force, stub_only);
   if (err)
     goto leave;
 
@@ -2474,6 +2448,12 @@ cmd_delete_key (assuan_context_t ctx, char *line)
 
 
 
+#if SIZEOF_TIME_T > SIZEOF_UNSIGNED_LONG
+#define KEYTOCARD_TIMESTAMP_FORMAT "(10:created-at10:%010llu))"
+#else
+#define KEYTOCARD_TIMESTAMP_FORMAT "(10:created-at10:%010lu))"
+#endif
+
 static const char hlp_keytocard[] =
   "KEYTOCARD [--force] <hexstring_with_keygrip> <serialno> <id> <timestamp>\n"
   "\n";
@@ -2486,7 +2466,7 @@ cmd_keytocard (assuan_context_t ctx, char *line)
   unsigned char grip[20];
   gcry_sexp_t s_skey = NULL;
   unsigned char *keydata;
-  size_t keydatalen, timestamplen;
+  size_t keydatalen;
   const char *serialno, *timestamp_str, *id;
   unsigned char *shadow_info = NULL;
   time_t timestamp;
@@ -2499,11 +2479,15 @@ cmd_keytocard (assuan_context_t ctx, char *line)
 
   err = parse_keygrip (ctx, line, grip);
   if (err)
-    return err;
+    goto leave;
 
   if (agent_key_available (grip))
-    return gpg_error (GPG_ERR_NO_SECKEY);
+    {
+      err =gpg_error (GPG_ERR_NO_SECKEY);
+      goto leave;
+    }
 
+  /* Fixme: Replace the parsing code by split_fields().  */
   line += 40;
   while (*line && (*line == ' ' || *line == '\t'))
     line++;
@@ -2511,7 +2495,10 @@ cmd_keytocard (assuan_context_t ctx, char *line)
   while (*line && (*line != ' ' && *line != '\t'))
     line++;
   if (!*line)
-    return gpg_error (GPG_ERR_MISSING_VALUE);
+    {
+      err = gpg_error (GPG_ERR_MISSING_VALUE);
+      goto leave;
+    }
   *line = '\0';
   line++;
   while (*line && (*line == ' ' || *line == '\t'))
@@ -2520,7 +2507,10 @@ cmd_keytocard (assuan_context_t ctx, char *line)
   while (*line && (*line != ' ' && *line != '\t'))
     line++;
   if (!*line)
-    return gpg_error (GPG_ERR_MISSING_VALUE);
+    {
+      err = gpg_error (GPG_ERR_MISSING_VALUE);
+      goto leave;
+    }
   *line = '\0';
   line++;
   while (*line && (*line == ' ' || *line == '\t'))
@@ -2530,9 +2520,12 @@ cmd_keytocard (assuan_context_t ctx, char *line)
     line++;
   if (*line)
     *line = '\0';
-  timestamplen = line - timestamp_str;
-  if (timestamplen != 15)
-    return gpg_error (GPG_ERR_INV_VALUE);
+
+  if ((timestamp = isotime2epoch (timestamp_str)) == (time_t)(-1))
+    {
+      err = gpg_error (GPG_ERR_INV_TIME);
+      goto leave;
+    }
 
   err = agent_key_from_file (ctrl, NULL, ctrl->server_local->keydesc, grip,
                              &shadow_info, CACHE_MODE_IGNORE, NULL,
@@ -2540,34 +2533,36 @@ cmd_keytocard (assuan_context_t ctx, char *line)
   if (err)
     {
       xfree (shadow_info);
-      return err;
+      goto leave;
     }
   if (shadow_info)
     {
       /* Key is on a smartcard already.  */
       xfree (shadow_info);
       gcry_sexp_release (s_skey);
-      return gpg_error (GPG_ERR_UNUSABLE_SECKEY);
+      err = gpg_error (GPG_ERR_UNUSABLE_SECKEY);
+      goto leave;
     }
 
   keydatalen =  gcry_sexp_sprint (s_skey, GCRYSEXP_FMT_CANON, NULL, 0);
   keydata = xtrymalloc_secure (keydatalen + 30);
   if (keydata == NULL)
     {
+      err = gpg_error_from_syserror ();
       gcry_sexp_release (s_skey);
-      return gpg_error_from_syserror ();
+      goto leave;
     }
 
   gcry_sexp_sprint (s_skey, GCRYSEXP_FMT_CANON, keydata, keydatalen);
   gcry_sexp_release (s_skey);
   keydatalen--;			/* Decrement for last '\0'.  */
   /* Add timestamp "created-at" in the private key */
-  timestamp = isotime2epoch (timestamp_str);
-  snprintf (keydata+keydatalen-1, 30, "(10:created-at10:%010lu))", timestamp);
+  snprintf (keydata+keydatalen-1, 30, KEYTOCARD_TIMESTAMP_FORMAT, timestamp);
   keydatalen += 10 + 19 - 1;
   err = divert_writekey (ctrl, force, serialno, id, keydata, keydatalen);
   xfree (keydata);
 
+ leave:
   return leave_cmd (ctx, err);
 }
 
@@ -2631,7 +2626,7 @@ static const char hlp_putval[] =
   "try to connect to that daemon.  Only if that fails they may start\n"
   "an own instance of the service daemon. \n"
   "\n"
-  "KEY is an an arbitrary symbol with the same syntax rules as keys\n"
+  "KEY is an arbitrary symbol with the same syntax rules as keys\n"
   "for shell environment variables.  PERCENT_ESCAPED_VALUE is the\n"
   "corresponding value; they should be similar to the values of\n"
   "envronment variables but gpg-agent does not enforce any\n"
@@ -2819,19 +2814,23 @@ static const char hlp_getinfo[] =
   "Multipurpose function to return a variety of information.\n"
   "Supported values for WHAT are:\n"
   "\n"
-  "  version     - Return the version of the program.\n"
-  "  pid         - Return the process id of the server.\n"
-  "  socket_name - Return the name of the socket.\n"
+  "  version         - Return the version of the program.\n"
+  "  pid             - Return the process id of the server.\n"
+  "  socket_name     - Return the name of the socket.\n"
   "  ssh_socket_name - Return the name of the ssh socket.\n"
-  "  scd_running - Return OK if the SCdaemon is already running.\n"
-  "  s2k_count   - Return the calibrated S2K count.\n"
+  "  scd_running     - Return OK if the SCdaemon is already running.\n"
+  "  s2k_time        - Return the time in milliseconds required for S2K.\n"
+  "  s2k_count       - Return the standard S2K count.\n"
+  "  s2k_count_cal   - Return the calibrated S2K count.\n"
   "  std_env_names   - List the names of the standard environment.\n"
   "  std_session_env - List the standard session environment.\n"
   "  std_startup_env - List the standard startup environment.\n"
-  "  cmd_has_option\n"
-  "              - Returns OK if the command CMD implements the option OPT.\n"
-  "  connections - Return number of active connections.\n"
-  "  restricted  - Returns OK if the connection is in restricted mode.\n";
+  "  getenv NAME     - Return value of envvar NAME.\n"
+  "  connections     - Return number of active connections.\n"
+  "  jent_active     - Returns OK if Libgcrypt's JENT is active.\n"
+  "  restricted      - Returns OK if the connection is in restricted mode.\n"
+  "  cmd_has_option CMD OPT\n"
+  "                  - Returns OK if command CMD has option OPT.\n";
 static gpg_error_t
 cmd_getinfo (assuan_context_t ctx, char *line)
 {
@@ -2963,12 +2962,61 @@ cmd_getinfo (assuan_context_t ctx, char *line)
             }
         }
     }
+  else if (!strncmp (line, "getenv", 6)
+           && (line[6] == ' ' || line[6] == '\t' || !line[6]))
+    {
+      line += 6;
+      while (*line == ' ' || *line == '\t')
+        line++;
+      if (!*line)
+        rc = gpg_error (GPG_ERR_MISSING_VALUE);
+      else
+        {
+          const char *s = getenv (line);
+          if (!s)
+            rc = set_error (GPG_ERR_NOT_FOUND, "No such envvar");
+          else
+            rc = assuan_send_data (ctx, s, strlen (s));
+        }
+    }
   else if (!strcmp (line, "connections"))
     {
       char numbuf[20];
 
       snprintf (numbuf, sizeof numbuf, "%d",
                 get_agent_active_connection_count ());
+      rc = assuan_send_data (ctx, numbuf, strlen (numbuf));
+    }
+  else if (!strcmp (line, "jent_active"))
+    {
+#if GCRYPT_VERSION_NUMBER >= 0x010800
+      char *buf;
+      char *fields[5];
+
+      buf = gcry_get_config (0, "rng-type");
+      if (buf
+          && split_fields_colon (buf, fields, DIM (fields)) >= 5
+          && atoi (fields[4]) > 0)
+        rc = 0;
+      else
+        rc = gpg_error (GPG_ERR_FALSE);
+      gcry_free (buf);
+#else
+      rc = gpg_error (GPG_ERR_FALSE);
+#endif
+    }
+  else if (!strcmp (line, "s2k_count_cal"))
+    {
+      char numbuf[50];
+
+      snprintf (numbuf, sizeof numbuf, "%lu", get_calibrated_s2k_count ());
+      rc = assuan_send_data (ctx, numbuf, strlen (numbuf));
+    }
+  else if (!strcmp (line, "s2k_time"))
+    {
+      char numbuf[50];
+
+      snprintf (numbuf, sizeof numbuf, "%lu", get_standard_s2k_time ());
       rc = assuan_send_data (ctx, numbuf, strlen (numbuf));
     }
   else
@@ -3070,6 +3118,21 @@ option_handler (assuan_context_t ctx, const char *key, const char *value)
       if (ctrl->s2k_count && ctrl->s2k_count < 65536)
         {
 	  ctrl->s2k_count = 0;
+        }
+    }
+  else if (!strcmp (key, "pretend-request-origin"))
+    {
+      log_assert (!ctrl->restricted);
+      switch (parse_request_origin (value))
+        {
+        case REQUEST_ORIGIN_LOCAL:   ctrl->restricted = 0; break;
+        case REQUEST_ORIGIN_REMOTE:  ctrl->restricted = 1; break;
+        case REQUEST_ORIGIN_BROWSER: ctrl->restricted = 2; break;
+        default:
+          err = gpg_error (GPG_ERR_INV_VALUE);
+          /* Better pretend to be remote in case of a bad value.  */
+          ctrl->restricted = 1;
+          break;
         }
     }
   else
@@ -3288,6 +3351,8 @@ start_command_handler (ctrl_t ctrl, gnupg_fd_t listen_fd, gnupg_fd_t fd)
 
   for (;;)
     {
+      pid_t client_pid;
+
       rc = assuan_accept (ctx);
       if (gpg_err_code (rc) == GPG_ERR_EOF || rc == -1)
         {
@@ -3299,7 +3364,12 @@ start_command_handler (ctrl_t ctrl, gnupg_fd_t listen_fd, gnupg_fd_t fd)
           break;
         }
 
-      ctrl->server_local->connect_from_self = (assuan_get_pid (ctx)==getpid ());
+      client_pid = assuan_get_pid (ctx);
+      ctrl->server_local->connect_from_self = (client_pid == getpid ());
+      if (client_pid != ASSUAN_INVALID_PID)
+        ctrl->client_pid = (unsigned long)client_pid;
+      else
+        ctrl->client_pid = 0;
 
       rc = assuan_process (ctx);
       if (rc)

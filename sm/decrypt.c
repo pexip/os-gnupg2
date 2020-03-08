@@ -31,7 +31,8 @@
 #include <ksba.h>
 
 #include "keydb.h"
-#include "i18n.h"
+#include "../common/i18n.h"
+#include "../common/compliance.h"
 
 struct decrypt_filter_parm_s
 {
@@ -41,7 +42,7 @@ struct decrypt_filter_parm_s
   gcry_cipher_hd_t hd;
   char iv[16];
   size_t ivlen;
-  int any_data;  /* dod we push anything through the filter at all? */
+  int any_data;  /* did we push anything through the filter at all? */
   unsigned char lastblock[16];  /* to strip the padding we have to
                                    keep this one */
   char helpblock[16];  /* needed because there is no block buffering in
@@ -243,8 +244,8 @@ int
 gpgsm_decrypt (ctrl_t ctrl, int in_fd, estream_t out_fp)
 {
   int rc;
-  Base64Context b64reader = NULL;
-  Base64Context b64writer = NULL;
+  gnupg_ksba_io_t b64reader = NULL;
+  gnupg_ksba_io_t b64writer = NULL;
   ksba_reader_t reader;
   ksba_writer_t writer;
   ksba_cms_t cms = NULL;
@@ -274,14 +275,21 @@ gpgsm_decrypt (ctrl_t ctrl, int in_fd, estream_t out_fp)
       goto leave;
     }
 
-  rc = gpgsm_create_reader (&b64reader, ctrl, in_fp, 0, &reader);
+  rc = gnupg_ksba_create_reader
+    (&b64reader, ((ctrl->is_pem? GNUPG_KSBA_IO_PEM : 0)
+                  | (ctrl->is_base64? GNUPG_KSBA_IO_BASE64 : 0)
+                  | (ctrl->autodetect_encoding? GNUPG_KSBA_IO_AUTODETECT : 0)),
+     in_fp, &reader);
   if (rc)
     {
       log_error ("can't create reader: %s\n", gpg_strerror (rc));
       goto leave;
     }
 
-  rc = gpgsm_create_writer (&b64writer, ctrl, out_fp, &writer);
+  rc = gnupg_ksba_create_writer
+    (&b64writer, ((ctrl->create_pem? GNUPG_KSBA_IO_PEM : 0)
+                  | (ctrl->create_base64? GNUPG_KSBA_IO_BASE64 : 0)),
+     ctrl->pem_name, out_fp, &writer);
   if (rc)
     {
       log_error ("can't create writer: %s\n", gpg_strerror (rc));
@@ -318,6 +326,7 @@ gpgsm_decrypt (ctrl_t ctrl, int in_fd, estream_t out_fp)
           int algo, mode;
           const char *algoid;
           int any_key = 0;
+          int is_de_vs;	/* Computed compliance with CO_DE_VS.  */
 
           audit_log (ctrl->audit, AUDIT_GOT_DATA);
 
@@ -348,6 +357,20 @@ gpgsm_decrypt (ctrl_t ctrl, int in_fd, estream_t out_fp)
 
               goto leave;
             }
+
+          /* Check compliance.  */
+          if (! gnupg_cipher_is_allowed (opt.compliance, 0, algo, mode))
+            {
+              log_error (_("cipher algorithm '%s'"
+                           " may not be used in %s mode\n"),
+                         gcry_cipher_algo_name (algo),
+                         gnupg_compliance_option_string (opt.compliance));
+              rc = gpg_error (GPG_ERR_CIPHER_ALGO);
+              goto leave;
+            }
+
+          /* For CMS, CO_DE_VS demands CBC mode.  */
+          is_de_vs = gnupg_cipher_is_compliant (CO_DE_VS, algo, mode);
 
           audit_log_i (ctrl->audit, AUDIT_DATA_CIPHER_ALGO, algo);
           dfparm.algo = algo;
@@ -453,7 +476,42 @@ gpgsm_decrypt (ctrl_t ctrl, int in_fd, estream_t out_fp)
                   hexkeygrip = gpgsm_get_keygrip_hexstring (cert);
                   desc = gpgsm_format_keydesc (cert);
 
+                  {
+                    unsigned int nbits;
+                    int pk_algo = gpgsm_get_key_algo_info (cert, &nbits);
+
+                    /* Check compliance.  */
+                    if (!gnupg_pk_is_allowed (opt.compliance,
+                                              PK_USE_DECRYPTION,
+                                              pk_algo, NULL, nbits, NULL))
+                      {
+                        char  kidstr[10+1];
+
+                        snprintf (kidstr, sizeof kidstr, "0x%08lX",
+                                  gpgsm_get_short_fingerprint (cert, NULL));
+                        log_info
+                          (_("key %s is not suitable for decryption"
+                             " in %s mode\n"),
+                           kidstr,
+                           gnupg_compliance_option_string (opt.compliance));
+                        rc = gpg_error (GPG_ERR_PUBKEY_ALGO);
+                        goto oops;
+                      }
+
+                    /* Check that all certs are compliant with CO_DE_VS.  */
+                    is_de_vs =
+                      (is_de_vs
+                       && gnupg_pk_is_compliant (CO_DE_VS, pk_algo, NULL,
+                                                 nbits, NULL));
+                  }
+
                 oops:
+                  if (rc)
+                    {
+                      /* We cannot check compliance of certs that we
+                       * don't have.  */
+                      is_de_vs = 0;
+                    }
                   xfree (issuer);
                   xfree (serial);
                   ksba_cert_release (cert);
@@ -482,6 +540,11 @@ gpgsm_decrypt (ctrl_t ctrl, int in_fd, estream_t out_fp)
                       ksba_writer_set_filter (writer,
                                               decrypt_filter,
                                               &dfparm);
+
+                      if (is_de_vs)
+                        gpgsm_status (ctrl, STATUS_DECRYPTION_COMPLIANCE_MODE,
+                                      gnupg_status_compliance_flag (CO_DE_VS));
+
                     }
                   audit_log_ok (ctrl->audit, AUDIT_RECP_RESULT, rc);
                 }
@@ -557,7 +620,7 @@ gpgsm_decrypt (ctrl_t ctrl, int in_fd, estream_t out_fp)
     }
   while (stopreason != KSBA_SR_READY);
 
-  rc = gpgsm_finish_writer (b64writer);
+  rc = gnupg_ksba_finish_writer (b64writer);
   if (rc)
     {
       log_error ("write failed: %s\n", gpg_strerror (rc));
@@ -575,8 +638,8 @@ gpgsm_decrypt (ctrl_t ctrl, int in_fd, estream_t out_fp)
                  gpg_strerror (rc), gpg_strsource (rc));
     }
   ksba_cms_release (cms);
-  gpgsm_destroy_reader (b64reader);
-  gpgsm_destroy_writer (b64writer);
+  gnupg_ksba_destroy_reader (b64reader);
+  gnupg_ksba_destroy_writer (b64writer);
   keydb_release (kh);
   es_fclose (in_fp);
   if (dfparm.hd)

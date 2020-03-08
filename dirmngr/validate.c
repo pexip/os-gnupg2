@@ -1,6 +1,6 @@
 /* validate.c - Validate a certificate chain.
  * Copyright (C) 2001, 2003, 2004, 2008 Free Software Foundation, Inc.
- * Copyright (C) 2004, 2006, 2008 g10 Code GmbH
+ * Copyright (C) 2004, 2006, 2008, 2017 g10 Code GmbH
  *
  * This file is part of DirMngr.
  *
@@ -33,6 +33,20 @@
 #include "validate.h"
 #include "misc.h"
 
+
+/* Mode parameters for cert_check_usage().  */
+enum cert_usage_modes
+  {
+    CERT_USAGE_MODE_SIGN,  /* Usable for encryption.            */
+    CERT_USAGE_MODE_ENCR,  /* Usable for signing.               */
+    CERT_USAGE_MODE_VRFY,  /* Usable for verification.          */
+    CERT_USAGE_MODE_DECR,  /* Usable for decryption.            */
+    CERT_USAGE_MODE_CERT,  /* Usable for cert signing.          */
+    CERT_USAGE_MODE_OCSP,  /* Usable for OCSP respone signing.  */
+    CERT_USAGE_MODE_CRL    /* Usable for CRL signing.           */
+  };
+
+
 /* While running the validation function we need to keep track of the
    certificates and the validation outcome of each.  We use this type
    for it.  */
@@ -60,6 +74,29 @@ static const char oid_kp_ocspSigning[]    = "1.3.6.1.5.5.7.3.9";
 static gpg_error_t check_cert_sig (ksba_cert_t issuer_cert, ksba_cert_t cert);
 
 
+/* Make sure that the values defined in the headers are correct.  We
+ * can't use the preprocessor due to the use of enums.  */
+static void
+check_header_constants (void)
+{
+  log_assert (CERTTRUST_CLASS_SYSTEM   == VALIDATE_FLAG_TRUST_SYSTEM);
+  log_assert (CERTTRUST_CLASS_CONFIG   == VALIDATE_FLAG_TRUST_CONFIG);
+  log_assert (CERTTRUST_CLASS_HKP      == VALIDATE_FLAG_TRUST_HKP);
+  log_assert (CERTTRUST_CLASS_HKPSPOOL == VALIDATE_FLAG_TRUST_HKPSPOOL);
+
+#undef  X
+#define X (VALIDATE_FLAG_TRUST_SYSTEM | VALIDATE_FLAG_TRUST_CONFIG  \
+           | VALIDATE_FLAG_TRUST_HKP | VALIDATE_FLAG_TRUST_HKPSPOOL)
+
+#if ( X & VALIDATE_FLAG_MASK_TRUST ) !=  X
+# error VALIDATE_FLAG_MASK_TRUST is bad
+#endif
+#if ( ~X & VALIDATE_FLAG_MASK_TRUST )
+# error VALIDATE_FLAG_MASK_TRUST is bad
+#endif
+
+#undef X
+}
 
 
 /* Check whether CERT contains critical extensions we don't know
@@ -110,7 +147,7 @@ unknown_criticals (ksba_cert_t cert)
         }
     }
   if (err && gpg_err_code (err) != GPG_ERR_EOF)
-    rc = err; /* Such an error takes precendence.  */
+    rc = err; /* Such an error takes precedence.  */
 
   return rc;
 }
@@ -189,7 +226,7 @@ allowed_ca (ksba_cert_t cert, int *chainlen)
     return err;
   if (!flag)
     {
-      if (!is_trusted_cert (cert))
+      if (!is_trusted_cert (cert, CERTTRUST_CLASS_CONFIG))
         {
           /* The German SigG Root CA's certificate does not flag
              itself as a CA; thus we relax this requirement if we
@@ -219,8 +256,8 @@ check_revocations (ctrl_t ctrl, chain_item_t chain)
   int any_crl_too_old = 0;
   chain_item_t ci;
 
-  assert (ctrl->check_revocations_nest_level >= 0);
-  assert (chain);
+  log_assert (ctrl->check_revocations_nest_level >= 0);
+  log_assert (chain);
 
   if (ctrl->check_revocations_nest_level > 10)
     {
@@ -307,7 +344,7 @@ is_root_cert (ksba_cert_t cert, const char *issuerdn, const char *subjectdn)
     {
       if (gpg_err_code (err) == GPG_ERR_NO_DATA)
         return 1; /* Yes. Without a authorityKeyIdentifier this needs
-                     to be the Root certifcate (our trust anchor).  */
+                     to be the Root certificate (our trust anchor).  */
       log_error ("error getting authorityKeyIdentifier: %s\n",
                  gpg_strerror (err));
       return 0; /* Well, it is broken anyway.  Return No. */
@@ -365,19 +402,21 @@ is_root_cert (ksba_cert_t cert, const char *issuerdn, const char *subjectdn)
    R_TRUST_ANCHOR; in all other cases NULL is stored there.  */
 gpg_error_t
 validate_cert_chain (ctrl_t ctrl, ksba_cert_t cert, ksba_isotime_t r_exptime,
-                     int mode, char **r_trust_anchor)
+                     unsigned int flags, char **r_trust_anchor)
 {
   gpg_error_t err = 0;
   int depth, maxdepth;
   char *issuer = NULL;
   char *subject = NULL;
-  ksba_cert_t subject_cert = NULL, issuer_cert = NULL;
+  ksba_cert_t subject_cert = NULL;
+  ksba_cert_t issuer_cert = NULL;
   ksba_isotime_t current_time;
   ksba_isotime_t exptime;
   int any_expired = 0;
   int any_no_policy_match = 0;
   chain_item_t chain;
 
+  check_header_constants ();
 
   if (r_exptime)
     *r_exptime = 0;
@@ -390,20 +429,9 @@ validate_cert_chain (ctrl_t ctrl, ksba_cert_t cert, ksba_isotime_t r_exptime,
     dump_cert ("subject", cert);
 
   /* May the target certificate be used for this purpose?  */
-  switch (mode)
-    {
-    case VALIDATE_MODE_OCSP:
-      err = cert_use_ocsp_p (cert);
-      break;
-    case VALIDATE_MODE_CRL:
-    case VALIDATE_MODE_CRL_RECURSIVE:
-      err = cert_use_crl_p (cert);
-      break;
-    default:
-      err = 0;
-      break;
-    }
-  if (err)
+  if ((flags & VALIDATE_FLAG_OCSP) && (err = check_cert_use_ocsp (cert)))
+    return err;
+  if ((flags & VALIDATE_FLAG_CRL) && (err = check_cert_use_crl (cert)))
     return err;
 
   /* If we already validated the certificate not too long ago, we can
@@ -438,7 +466,7 @@ validate_cert_chain (ctrl_t ctrl, ksba_cert_t cert, ksba_isotime_t r_exptime,
 
   /* We walk up the chain until we find a trust anchor. */
   subject_cert = cert;
-  maxdepth = 10;
+  maxdepth = 10;  /* Sensible limit on the length of the chain.  */
   chain = NULL;
   depth = 0;
   for (;;)
@@ -520,7 +548,7 @@ validate_cert_chain (ctrl_t ctrl, ksba_cert_t cert, ksba_isotime_t r_exptime,
         goto leave;
 
       /* Is this a self-signed certificate? */
-      if (is_root_cert ( subject_cert, issuer, subject))
+      if (is_root_cert (subject_cert, issuer, subject))
         {
           /* Yes, this is our trust anchor.  */
           if (check_cert_sig (subject_cert, subject_cert) )
@@ -536,7 +564,8 @@ validate_cert_chain (ctrl_t ctrl, ksba_cert_t cert, ksba_isotime_t r_exptime,
           if (err)
             goto leave;  /* No. */
 
-          err = is_trusted_cert (subject_cert);
+          err = is_trusted_cert (subject_cert,
+                                 (flags & VALIDATE_FLAG_MASK_TRUST));
           if (!err)
             ; /* Yes we trust this cert.  */
           else if (gpg_err_code (err) == GPG_ERR_NOT_TRUSTED)
@@ -590,7 +619,7 @@ validate_cert_chain (ctrl_t ctrl, ksba_cert_t cert, ksba_isotime_t r_exptime,
                 log_info ("root certificate is good and trusted\n");
             }
 
-          break;  /* Okay: a self-signed certicate is an end-point. */
+          break;  /* Okay: a self-signed certificate is an end-point. */
         }
 
       /* To avoid loops, we use an arbitrary limit on the length of
@@ -630,9 +659,9 @@ validate_cert_chain (ctrl_t ctrl, ksba_cert_t cert, ksba_isotime_t r_exptime,
           dump_cert ("issuer", issuer_cert);
         }
 
-      /* Now check the signature of the certificate.  Well, we
-         should delay this until later so that faked certificates
-         can't be turned into a DoS easily.  */
+      /* Now check the signature of the certificate.  FIXME: we should
+       * delay this until later so that faked certificates can't be
+       * turned into a DoS easily.  */
       err = check_cert_sig (issuer_cert, subject_cert);
       if (err)
         {
@@ -669,14 +698,14 @@ validate_cert_chain (ctrl_t ctrl, ksba_cert_t cert, ksba_isotime_t r_exptime,
                 }
             }
 #endif
-          /* We give a more descriptive error code than the one
-             returned from the signature checking. */
+          /* Return a more descriptive error code than the one
+           * returned from the signature checking.  */
           err = gpg_error (GPG_ERR_BAD_CERT_CHAIN);
           goto leave;
         }
 
       /* Check that the length of the chain is not longer than allowed
-         by the CA.  */
+       * by the CA.  */
       {
         int chainlen;
 
@@ -693,7 +722,7 @@ validate_cert_chain (ctrl_t ctrl, ksba_cert_t cert, ksba_isotime_t r_exptime,
       }
 
       /* May that certificate be used for certification? */
-      err = cert_use_cert_p (issuer_cert);
+      err = check_cert_use_cert (issuer_cert);
       if (err)
         goto leave;  /* No.  */
 
@@ -722,9 +751,11 @@ validate_cert_chain (ctrl_t ctrl, ksba_cert_t cert, ksba_isotime_t r_exptime,
       issuer_cert = NULL;
     }
 
+  /* Even if we have no error here we need to check whether we
+   * encountered an error somewhere during the checks.  Set the error
+   * code to the most critical one.  */
   if (!err)
-    { /* If we encountered an error somewhere during the checks, set
-         the error code to the most critical one */
+    {
       if (any_expired)
         err = gpg_error (GPG_ERR_CERT_EXPIRED);
       else if (any_no_policy_match)
@@ -740,21 +771,26 @@ validate_cert_chain (ctrl_t ctrl, ksba_cert_t cert, ksba_isotime_t r_exptime,
         cert_log_name ("  certificate", citem->cert);
     }
 
-  if (!err && mode != VALIDATE_MODE_CRL)
+  /* Now check for revocations unless CRL checks are disabled or we
+   * are non-recursive CRL mode.  */
+  if (!err
+      && !(flags & VALIDATE_FLAG_NOCRLCHECK)
+      && !((flags & VALIDATE_FLAG_CRL)
+           && !(flags & VALIDATE_FLAG_RECURSIVE)))
     { /* Now that everything is fine, walk the chain and check each
-         certificate for revocations.
-
-         1. item in the chain  - The root certificate.
-         2. item               - the CA below the root
-         last item             - the target certificate.
-
-         Now for each certificate in the chain check whether it has
-         been included in a CRL and thus be revoked.  We don't do OCSP
-         here because this does not seem to make much sense.  This
-         might become a recursive process and we should better cache
-         our validity results to avoid double work.  Far worse a
-         catch-22 may happen for an improper setup hierarchy and we
-         need a way to break up such a deadlock. */
+       * certificate for revocations.
+       *
+       * 1. item in the chain  - The root certificate.
+       * 2. item               - the CA below the root
+       * last item             - the target certificate.
+       *
+       * Now for each certificate in the chain check whether it has
+       * been included in a CRL and thus be revoked.  We don't do OCSP
+       * here because this does not seem to make much sense.  This
+       * might become a recursive process and we should better cache
+       * our validity results to avoid double work.  Far worse a
+       * catch-22 may happen for an improper setup hierarchy and we
+       * need a way to break up such a deadlock.  */
       err = check_revocations (ctrl, chain);
     }
 
@@ -773,11 +809,11 @@ validate_cert_chain (ctrl_t ctrl, ksba_cert_t cert, ksba_isotime_t r_exptime,
   if (!err && !(r_trust_anchor && *r_trust_anchor))
     {
       /* With no error we can update the validation cache.  We do this
-         for all certificates in the chain.  Note that we can't use
-         the cache if the caller requested to check the trustiness of
-         the root certificate himself.  Adding such a feature would
-         require us to also store the fingerprint of root
-         certificate.  */
+       * for all certificates in the chain.  Note that we can't use
+       * the cache if the caller requested to check the trustiness of
+       * the root certificate himself.  Adding such a feature would
+       * require us to also store the fingerprint of root
+       * certificate.  */
       chain_item_t citem;
       time_t validated_at = gnupg_get_time ();
 
@@ -853,8 +889,8 @@ pk_algo_from_sexp (gcry_sexp_t pkey)
 
 
 /* Check the signature on CERT using the ISSUER_CERT.  This function
-   does only test the cryptographic signature and nothing else.  It is
-   assumed that the ISSUER_CERT is valid. */
+ * does only test the cryptographic signature and nothing else.  It is
+ * assumed that the ISSUER_CERT is valid.  */
 static gpg_error_t
 check_cert_sig (ksba_cert_t issuer_cert, ksba_cert_t cert)
 {
@@ -952,20 +988,23 @@ check_cert_sig (ksba_cert_t issuer_cert, ksba_cert_t cert)
 
 
   /* Prepare the values for signature verification. At this point we
-     have these values:
-
-     S_PKEY    - S-expression with the issuer's public key.
-     S_SIG     - Signature value as given in the certrificate.
-     MD        - Finalized hash context with hash of the certificate.
-     ALGO_NAME - Lowercase hash algorithm name
+   * have these values:
+   *
+   * S_PKEY    - S-expression with the issuer's public key.
+   * S_SIG     - Signature value as given in the certificate.
+   * MD        - Finalized hash context with hash of the certificate.
+   * ALGO_NAME - Lowercase hash algorithm name
    */
   digestlen = gcry_md_get_algo_dlen (algo);
   digest = gcry_md_read (md, algo);
   if (pk_algo_from_sexp (s_pkey) == GCRY_PK_DSA)
     {
+      /* NB.: We support only SHA-1 here because we had problems back
+       * then to get test data for DSA-2.  Meanwhile DSA has been
+       * replaced by ECDSA which we do not yet support.  */
       if (digestlen != 20)
         {
-          log_error (_("DSA requires the use of a 160 bit hash algorithm\n"));
+          log_error ("DSA requires the use of a 160 bit hash algorithm\n");
           gcry_md_close (md);
           gcry_sexp_release (s_sig);
           gcry_sexp_release (s_pkey);
@@ -975,7 +1014,7 @@ check_cert_sig (ksba_cert_t issuer_cert, ksba_cert_t cert)
                             (int)digestlen, digest) )
         BUG ();
     }
-  else /* Not DSA.  */
+  else /* Not DSA - we assume RSA  */
     {
       if ( gcry_sexp_build (&s_hash, NULL, "(data(flags pkcs1)(hash %s %b))",
                             algo_name, (int)digestlen, digest) )
@@ -995,13 +1034,9 @@ check_cert_sig (ksba_cert_t issuer_cert, ksba_cert_t cert)
 
 
 
-/* Return 0 if the cert is usable for encryption.  A MODE of 0 checks
-   for signing, a MODE of 1 checks for encryption, a MODE of 2 checks
-   for verification and a MODE of 3 for decryption (just for
-   debugging).  MODE 4 is for certificate signing, MODE 5 for OCSP
-   response signing, MODE 6 is for CRL signing. */
-static int
-cert_usage_p (ksba_cert_t cert, int mode)
+/* Return 0 if CERT is usable for MODE.  */
+static gpg_error_t
+check_cert_usage (ksba_cert_t cert, enum cert_usage_modes mode)
 {
   gpg_error_t err;
   unsigned int use;
@@ -1071,7 +1106,8 @@ cert_usage_p (ksba_cert_t cert, int mode)
       if (gpg_err_code (err) == GPG_ERR_NO_DATA)
         {
           err = 0;
-          if (opt.verbose && mode < 2)
+          if (opt.verbose && (mode == CERT_USAGE_MODE_SIGN
+                              || mode == CERT_USAGE_MODE_ENCR))
             log_info (_("no key usage specified - assuming all usages\n"));
           use = ~0;
         }
@@ -1088,17 +1124,36 @@ cert_usage_p (ksba_cert_t cert, int mode)
       return err;
     }
 
-  if (mode == 4)
+  switch (mode)
     {
+    case CERT_USAGE_MODE_SIGN:
+    case CERT_USAGE_MODE_VRFY:
+      if ((use & (KSBA_KEYUSAGE_DIGITAL_SIGNATURE
+                  | KSBA_KEYUSAGE_NON_REPUDIATION)))
+        return 0;
+      log_info (mode == CERT_USAGE_MODE_VRFY
+                ? _("certificate should not have been used for signing\n")
+                : _("certificate is not usable for signing\n"));
+      break;
+
+    case CERT_USAGE_MODE_ENCR:
+    case CERT_USAGE_MODE_DECR:
+      if ((use & (KSBA_KEYUSAGE_KEY_ENCIPHERMENT
+                  | KSBA_KEYUSAGE_DATA_ENCIPHERMENT)))
+        return 0;
+      log_info (mode == CERT_USAGE_MODE_DECR
+                ? _("certificate should not have been used for encryption\n")
+                : _("certificate is not usable for encryption\n"));
+      break;
+
+    case CERT_USAGE_MODE_CERT:
       if ((use & (KSBA_KEYUSAGE_KEY_CERT_SIGN)))
         return 0;
       log_info (_("certificate should not have "
                   "been used for certification\n"));
-      return gpg_error (GPG_ERR_WRONG_KEY_USAGE);
-    }
+      break;
 
-  if (mode == 5)
-    {
+    case CERT_USAGE_MODE_OCSP:
       if (use != ~0
           && (have_ocsp_signing
               || (use & (KSBA_KEYUSAGE_KEY_CERT_SIGN
@@ -1106,50 +1161,38 @@ cert_usage_p (ksba_cert_t cert, int mode)
         return 0;
       log_info (_("certificate should not have "
                   "been used for OCSP response signing\n"));
-      return gpg_error (GPG_ERR_WRONG_KEY_USAGE);
-    }
+      break;
 
-  if (mode == 6)
-    {
+    case CERT_USAGE_MODE_CRL:
       if ((use & (KSBA_KEYUSAGE_CRL_SIGN)))
         return 0;
       log_info (_("certificate should not have "
                   "been used for CRL signing\n"));
-      return gpg_error (GPG_ERR_WRONG_KEY_USAGE);
+      break;
     }
 
-  if ((use & ((mode&1)?
-              (KSBA_KEYUSAGE_KEY_ENCIPHERMENT|KSBA_KEYUSAGE_DATA_ENCIPHERMENT):
-              (KSBA_KEYUSAGE_DIGITAL_SIGNATURE|KSBA_KEYUSAGE_NON_REPUDIATION)))
-      )
-    return 0;
-
-  log_info (mode==3? _("certificate should not have been used "
-                       "for encryption\n"):
-            mode==2? _("certificate should not have been used for signing\n"):
-            mode==1? _("certificate is not usable for encryption\n"):
-                     _("certificate is not usable for signing\n"));
   return gpg_error (GPG_ERR_WRONG_KEY_USAGE);
 }
 
+
 /* Return 0 if the certificate CERT is usable for certification.  */
 gpg_error_t
-cert_use_cert_p (ksba_cert_t cert)
+check_cert_use_cert (ksba_cert_t cert)
 {
-  return cert_usage_p (cert, 4);
+  return check_cert_usage (cert, CERT_USAGE_MODE_CERT);
 }
 
 /* Return 0 if the certificate CERT is usable for signing OCSP
    responses.  */
 gpg_error_t
-cert_use_ocsp_p (ksba_cert_t cert)
+check_cert_use_ocsp (ksba_cert_t cert)
 {
-  return cert_usage_p (cert, 5);
+  return check_cert_usage (cert, CERT_USAGE_MODE_OCSP);
 }
 
 /* Return 0 if the certificate CERT is usable for signing CRLs. */
 gpg_error_t
-cert_use_crl_p (ksba_cert_t cert)
+check_cert_use_crl (ksba_cert_t cert)
 {
-  return cert_usage_p (cert, 6);
+  return check_cert_usage (cert, CERT_USAGE_MODE_CRL);
 }

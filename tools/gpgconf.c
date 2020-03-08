@@ -26,9 +26,10 @@
 #include <unistd.h>
 
 #include "gpgconf.h"
-#include "i18n.h"
-#include "sysutils.h"
+#include "../common/i18n.h"
+#include "../common/sysutils.h"
 #include "../common/init.h"
+#include "../common/status.h"
 
 
 /* Constants to identify the commands and options. */
@@ -45,6 +46,7 @@ enum cmd_and_opt_values
     oNoVerbose	= 500,
     oHomedir,
     oBuilddir,
+    oStatusFD,
 
     aListComponents,
     aCheckPrograms,
@@ -100,16 +102,23 @@ static ARGPARSE_OPTS opts[] =
     { oQuiet, "quiet",      0, N_("quiet") },
     { oDryRun, "dry-run",   0, N_("do not make any changes") },
     { oRuntime, "runtime",  0, N_("activate changes at runtime, if possible") },
+  ARGPARSE_s_i (oStatusFD, "status-fd", N_("|FD|write status info to this FD")),
     /* hidden options */
     { oHomedir, "homedir", 2, "@" },
     { oBuilddir, "build-prefix", 2, "@" },
     { oNull, "null", 0, "@" },
     { oNoVerbose, "no-verbose",  0, "@"},
-    {0}
+
+    ARGPARSE_end(),
   };
 
 
-/* Print usage information and and provide strings for help. */
+/* The stream to output the status information.  Status Output is disabled if
+ * this is NULL.  */
+static estream_t statusfp;
+
+
+/* Print usage information and provide strings for help. */
 static const char *
 my_strusage( int level )
 {
@@ -155,6 +164,60 @@ get_outfp (estream_t *fp)
         *fp = es_stdout;
     }
   return *fp;
+}
+
+
+/* Set the status FD.  */
+static void
+set_status_fd (int fd)
+{
+  static int last_fd = -1;
+
+  if (fd != -1 && last_fd == fd)
+    return;
+
+  if (statusfp && statusfp != es_stdout && statusfp != es_stderr)
+    es_fclose (statusfp);
+  statusfp = NULL;
+  if (fd == -1)
+    return;
+
+  if (fd == 1)
+    statusfp = es_stdout;
+  else if (fd == 2)
+    statusfp = es_stderr;
+  else
+    statusfp = es_fdopen (fd, "w");
+  if (!statusfp)
+    {
+      log_fatal ("can't open fd %d for status output: %s\n",
+                 fd, gpg_strerror (gpg_error_from_syserror ()));
+    }
+  last_fd = fd;
+}
+
+
+/* Write a status line with code NO followed by the output of the
+ * printf style FORMAT.  The caller needs to make sure that LFs and
+ * CRs are not printed.  */
+void
+gpgconf_write_status (int no, const char *format, ...)
+{
+  va_list arg_ptr;
+
+  if (!statusfp)
+    return;  /* Not enabled.  */
+
+  es_fputs ("[GNUPG:] ", statusfp);
+  es_fputs (get_status_string (no), statusfp);
+  if (format)
+    {
+      es_putc (' ', statusfp);
+      va_start (arg_ptr, format);
+      es_vfprintf (statusfp, format, arg_ptr);
+      va_end (arg_ptr);
+    }
+  es_putc ('\n', statusfp);
 }
 
 
@@ -291,7 +354,7 @@ query_swdb (estream_t out, const char *name, const char *current_version)
       goto leave;
     }
   if (!strcmp (name, "gnupg"))
-    search_name = "gnupg21";
+    search_name = GNUPG_SWDB_TAG;
   else if (!strcmp (name, "gnupg1"))
     search_name = "gnupg1";
   else
@@ -329,7 +392,7 @@ query_swdb (estream_t out, const char *name, const char *current_version)
       goto leave;
     }
 
-  /* Note that the parser uses the first occurance of a matching
+  /* Note that the parser uses the first occurrence of a matching
    * values and ignores possible duplicated values.  */
 
   maxlen = 2048; /* Set limit.  */
@@ -456,6 +519,7 @@ query_swdb (estream_t out, const char *name, const char *current_version)
 int
 main (int argc, char **argv)
 {
+  gpg_error_t err;
   ARGPARSE_ARGS pargs;
   const char *fname;
   int no_more_options = 0;
@@ -491,6 +555,9 @@ main (int argc, char **argv)
         case oHomedir:   gnupg_set_homedir (pargs.r.ret_str); break;
         case oBuilddir:  gnupg_set_builddir (pargs.r.ret_str); break;
         case oNull:      opt.null = 1; break;
+        case oStatusFD:
+          set_status_fd (translate_sys2libc_fd_int (pargs.r.ret_int, 1));
+          break;
 
 	case aListDirs:
         case aListComponents:
@@ -516,7 +583,7 @@ main (int argc, char **argv)
     }
 
   if (log_get_errorcount (0))
-    exit (2);
+    gpgconf_failure (GPG_ERR_USER_2);
 
   /* Print a warning if an argument looks like an option.  */
   if (!opt.quiet && !(pargs.flags & ARGPARSE_FLAG_STOP_SEEN))
@@ -552,7 +619,7 @@ main (int argc, char **argv)
 	  es_putc ('\n', es_stderr);
 	  es_fputs (_("Need one component argument"), es_stderr);
 	  es_putc ('\n', es_stderr);
-	  exit (2);
+	  gpgconf_failure (GPG_ERR_USER_2);
 	}
       else
 	{
@@ -561,7 +628,7 @@ main (int argc, char **argv)
 	    {
 	      es_fputs (_("Component not found"), es_stderr);
 	      es_putc ('\n', es_stderr);
-	      exit (1);
+	      gpgconf_failure (0);
 	    }
           if (cmd == aCheckOptions)
 	    gc_component_check_options (idx, get_outfp (&outfp), NULL);
@@ -569,7 +636,7 @@ main (int argc, char **argv)
             {
               gc_component_retrieve_options (idx);
               if (gc_process_gpgconf_conf (NULL, 1, 0, NULL))
-                exit (1);
+                gpgconf_failure (0);
               if (cmd == aListOptions)
                 gc_component_list_options (idx, get_outfp (&outfp));
               else if (cmd == aChangeOptions)
@@ -587,14 +654,14 @@ main (int argc, char **argv)
 	  es_putc ('\n', es_stderr);
 	  es_fputs (_("Need one component argument"), es_stderr);
 	  es_putc ('\n', es_stderr);
-	  exit (2);
+	  gpgconf_failure (GPG_ERR_USER_2);
 	}
       else if (!strcmp (fname, "all"))
         {
           if (cmd == aLaunch)
             {
               if (gc_component_launch (-1))
-                exit (1);
+                gpgconf_failure (0);
             }
           else
             {
@@ -611,12 +678,12 @@ main (int argc, char **argv)
             {
               es_fputs (_("Component not found"), es_stderr);
               es_putc ('\n', es_stderr);
-              exit (1);
+              gpgconf_failure (0);
             }
           else if (cmd == aLaunch)
             {
               if (gc_component_launch (idx))
-                exit (1);
+                gpgconf_failure (0);
             }
           else
             {
@@ -644,7 +711,7 @@ main (int argc, char **argv)
             {
               es_fputs (_("Component not found"), es_stderr);
               es_putc ('\n', es_stderr);
-              exit (1);
+              gpgconf_failure (0);
             }
           else
             {
@@ -655,12 +722,12 @@ main (int argc, char **argv)
 
     case aListConfig:
       if (gc_process_gpgconf_conf (fname, 0, 0, get_outfp (&outfp)))
-        exit (1);
+        gpgconf_failure (0);
       break;
 
     case aCheckConfig:
       if (gc_process_gpgconf_conf (fname, 0, 0, NULL))
-        exit (1);
+        gpgconf_failure (0);
       break;
 
     case aApplyDefaults:
@@ -670,17 +737,17 @@ main (int argc, char **argv)
 	  es_putc ('\n', es_stderr);
 	  es_fputs (_("No argument allowed"), es_stderr);
 	  es_putc ('\n', es_stderr);
-	  exit (2);
+	  gpgconf_failure (GPG_ERR_USER_2);
 	}
       gc_component_retrieve_options (-1);
       if (gc_process_gpgconf_conf (NULL, 1, 1, NULL))
-        exit (1);
+        gpgconf_failure (0);
       break;
 
     case aApplyProfile:
       gc_component_retrieve_options (-1);
       if (gc_apply_profile (fname))
-        exit (1);
+        gpgconf_failure (0);
       break;
 
     case aListDirs:
@@ -695,7 +762,7 @@ main (int argc, char **argv)
 	{
 	  es_fprintf (es_stderr, "usage: %s --query-swdb NAME [VERSION]\n",
                       GPGCONF_NAME);
-	  exit (2);
+	  gpgconf_failure (GPG_ERR_USER_2);
 	}
       get_outfp (&outfp);
       query_swdb (outfp, fname, argc > 1? argv[1] : NULL);
@@ -755,7 +822,42 @@ main (int argc, char **argv)
         else if (opt.dry_run)
           ;
         else if (rmdir (socketdir))
-          gc_error (1, errno, "error removing '%s'", socketdir);
+          {
+            /* If the director is not empty we first try to delet
+             * socket files.  */
+            err = gpg_error_from_syserror ();
+            if (gpg_err_code (err) == GPG_ERR_ENOTEMPTY
+                || gpg_err_code (err) == GPG_ERR_EEXIST)
+              {
+                static const char * const names[] = {
+                  GPG_AGENT_SOCK_NAME,
+                  GPG_AGENT_EXTRA_SOCK_NAME,
+                  GPG_AGENT_BROWSER_SOCK_NAME,
+                  GPG_AGENT_SSH_SOCK_NAME,
+                  SCDAEMON_SOCK_NAME,
+                  DIRMNGR_SOCK_NAME
+                };
+                int i;
+                char *p;
+
+                for (i=0; i < DIM(names); i++)
+                  {
+                    p = strconcat (socketdir , "/", names[i], NULL);
+                    if (p)
+                      gnupg_remove (p);
+                    xfree (p);
+                  }
+                if (rmdir (socketdir))
+                  gc_error (1, 0, "error removing '%s': %s",
+                            socketdir, gpg_strerror (err));
+              }
+            else if (gpg_err_code (err) == GPG_ERR_ENOENT)
+              gc_error (0, 0, "warning: removing '%s' failed: %s",
+                        socketdir, gpg_strerror (err));
+            else
+              gc_error (1, 0, "error removing '%s': %s",
+                        socketdir, gpg_strerror (err));
+          }
 
         xfree (socketdir);
       }
@@ -767,5 +869,22 @@ main (int argc, char **argv)
     if (es_fclose (outfp))
       gc_error (1, errno, "error closing '%s'", opt.outfile);
 
+
+  if (log_get_errorcount (0))
+    gpgconf_failure (0);
+  else
+    gpgconf_write_status (STATUS_SUCCESS, NULL);
   return 0;
+}
+
+
+void
+gpgconf_failure (gpg_error_t err)
+{
+  if (!err)
+    err = gpg_error (GPG_ERR_GENERAL);
+  gpgconf_write_status
+    (STATUS_FAILURE, "- %u",
+     gpg_err_code (err) == GPG_ERR_USER_2? GPG_ERR_EINVAL : err);
+  exit (gpg_err_code (err) == GPG_ERR_USER_2? 2 : 1);
 }

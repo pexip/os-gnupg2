@@ -26,15 +26,15 @@
 #include <string.h>
 
 #include "gpg.h"
-#include "util.h"
+#include "../common/util.h"
 #include "packet.h"
-#include "iobuf.h"
+#include "../common/iobuf.h"
 #include "filter.h"
 #include "photoid.h"
 #include "options.h"
 #include "main.h"
-#include "i18n.h"
-#include "host2net.h"
+#include "../common/i18n.h"
+#include "../common/host2net.h"
 
 
 /* Maximum length of packets to avoid excessive memory allocation.  */
@@ -43,14 +43,18 @@
 #define MAX_COMMENT_PACKET_LENGTH ( 64 * 1024)
 #define MAX_ATTR_PACKET_LENGTH    ( 16 * 1024*1024)
 
-
 static int mpi_print_mode;
 static int list_mode;
 static estream_t listfp;
 
-static int parse (IOBUF inp, PACKET * pkt, int onlykeypkts,
+/* A linked list of known notation names.  Note that the FLAG is used
+ * to store the length of the name to speed up the check.  */
+static strlist_t known_notations_list;
+
+
+static int parse (parse_packet_ctx_t ctx, PACKET *pkt, int onlykeypkts,
 		  off_t * retpos, int *skip, IOBUF out, int do_skip
-#ifdef DEBUG_PARSE_PACKET
+#if DEBUG_PARSE_PACKET
 		  , const char *dbg_w, const char *dbg_f, int dbg_l
 #endif
   );
@@ -74,8 +78,8 @@ static int parse_attribute (IOBUF inp, int pkttype, unsigned long pktlen,
 			    PACKET * packet);
 static int parse_comment (IOBUF inp, int pkttype, unsigned long pktlen,
 			  PACKET * packet);
-static void parse_trust (IOBUF inp, int pkttype, unsigned long pktlen,
-			 PACKET * packet);
+static gpg_error_t parse_ring_trust (parse_packet_ctx_t ctx,
+                                     unsigned long pktlen);
 static int parse_plaintext (IOBUF inp, int pkttype, unsigned long pktlen,
 			    PACKET * packet, int new_ctb, int partial);
 static int parse_compressed (IOBUF inp, int pkttype, unsigned long pktlen,
@@ -186,6 +190,36 @@ mpi_read (iobuf_t inp, unsigned int *ret_nread, int secure)
 }
 
 
+/* Register STRING as a known critical notation name.  */
+void
+register_known_notation (const char *string)
+{
+  strlist_t sl;
+
+  if (!known_notations_list)
+    {
+      sl = add_to_strlist (&known_notations_list,
+                           "preferred-email-encoding@pgp.com");
+      sl->flags = 32;
+      sl = add_to_strlist (&known_notations_list, "pka-address@gnupg.org");
+      sl->flags = 21;
+    }
+  if (!string)
+    return; /* Only initialized the default known notations.  */
+
+  /* In --set-notation we use an exclamation mark to indicate a
+   * critical notation.  As a convenience skip this here.  */
+  if (*string == '!')
+    string++;
+
+  if (!*string || strlist_find (known_notations_list, string))
+    return; /* Empty string or already registered.  */
+
+  sl = add_to_strlist (&known_notations_list, string);
+  sl->flags = strlen (string);
+}
+
+
 int
 set_packet_list_mode (int mode)
 {
@@ -261,28 +295,29 @@ unknown_pubkey_warning (int algo)
 }
 
 
-#ifdef DEBUG_PARSE_PACKET
+#if DEBUG_PARSE_PACKET
 int
-dbg_parse_packet (IOBUF inp, PACKET *pkt, const char *dbg_f, int dbg_l)
+dbg_parse_packet (parse_packet_ctx_t ctx, PACKET *pkt,
+                  const char *dbg_f, int dbg_l)
 {
   int skip, rc;
 
   do
     {
-      rc = parse (inp, pkt, 0, NULL, &skip, NULL, 0, "parse", dbg_f, dbg_l);
+      rc = parse (ctx, pkt, 0, NULL, &skip, NULL, 0, "parse", dbg_f, dbg_l);
     }
   while (skip && ! rc);
   return rc;
 }
 #else /*!DEBUG_PARSE_PACKET*/
 int
-parse_packet (IOBUF inp, PACKET * pkt)
+parse_packet (parse_packet_ctx_t ctx, PACKET *pkt)
 {
   int skip, rc;
 
   do
     {
-      rc = parse (inp, pkt, 0, NULL, &skip, NULL, 0);
+      rc = parse (ctx, pkt, 0, NULL, &skip, NULL, 0);
     }
   while (skip && ! rc);
   return rc;
@@ -294,31 +329,32 @@ parse_packet (IOBUF inp, PACKET * pkt)
  * Like parse packet, but only return secret or public (sub)key
  * packets.
  */
-#ifdef DEBUG_PARSE_PACKET
+#if DEBUG_PARSE_PACKET
 int
-dbg_search_packet (IOBUF inp, PACKET * pkt, off_t * retpos, int with_uid,
+dbg_search_packet (parse_packet_ctx_t ctx, PACKET *pkt,
+                   off_t * retpos, int with_uid,
 		   const char *dbg_f, int dbg_l)
 {
   int skip, rc;
 
   do
     {
-      rc =
-	parse (inp, pkt, with_uid ? 2 : 1, retpos, &skip, NULL, 0, "search",
-	       dbg_f, dbg_l);
+      rc = parse (ctx, pkt, with_uid ? 2 : 1, retpos, &skip, NULL, 0, "search",
+                  dbg_f, dbg_l);
     }
   while (skip && ! rc);
   return rc;
 }
 #else /*!DEBUG_PARSE_PACKET*/
 int
-search_packet (IOBUF inp, PACKET * pkt, off_t * retpos, int with_uid)
+search_packet (parse_packet_ctx_t ctx, PACKET *pkt,
+               off_t * retpos, int with_uid)
 {
   int skip, rc;
 
   do
     {
-      rc = parse (inp, pkt, with_uid ? 2 : 1, retpos, &skip, NULL, 0);
+      rc = parse (ctx, pkt, with_uid ? 2 : 1, retpos, &skip, NULL, 0);
     }
   while (skip && ! rc);
   return rc;
@@ -329,15 +365,18 @@ search_packet (IOBUF inp, PACKET * pkt, off_t * retpos, int with_uid)
 /*
  * Copy all packets from INP to OUT, thereby removing unused spaces.
  */
-#ifdef DEBUG_PARSE_PACKET
+#if DEBUG_PARSE_PACKET
 int
-dbg_copy_all_packets (IOBUF inp, IOBUF out, const char *dbg_f, int dbg_l)
+dbg_copy_all_packets (iobuf_t inp, iobuf_t out, const char *dbg_f, int dbg_l)
 {
   PACKET pkt;
+  struct parse_packet_ctx_s parsectx;
   int skip, rc = 0;
 
   if (! out)
     log_bug ("copy_all_packets: OUT may not be NULL.\n");
+
+  init_parse_packet (&parsectx, inp);
 
   do
     {
@@ -345,24 +384,34 @@ dbg_copy_all_packets (IOBUF inp, IOBUF out, const char *dbg_f, int dbg_l)
     }
   while (!
 	 (rc =
-	  parse (inp, &pkt, 0, NULL, &skip, out, 0, "copy", dbg_f, dbg_l)));
+	  parse (&parsectx, &pkt, 0, NULL, &skip, out, 0, "copy",
+                 dbg_f, dbg_l)));
+
+  deinit_parse_packet (&parsectx);
+
   return rc;
 }
 #else /*!DEBUG_PARSE_PACKET*/
 int
-copy_all_packets (IOBUF inp, IOBUF out)
+copy_all_packets (iobuf_t inp, iobuf_t out)
 {
   PACKET pkt;
+  struct parse_packet_ctx_s parsectx;
   int skip, rc = 0;
 
   if (! out)
     log_bug ("copy_all_packets: OUT may not be NULL.\n");
 
+  init_parse_packet (&parsectx, inp);
+
   do
     {
       init_packet (&pkt);
     }
-  while (!(rc = parse (inp, &pkt, 0, NULL, &skip, out, 0)));
+  while (!(rc = parse (&parsectx, &pkt, 0, NULL, &skip, out, 0)));
+
+  deinit_parse_packet (&parsectx);
+
   return rc;
 }
 #endif /*!DEBUG_PARSE_PACKET*/
@@ -373,36 +422,58 @@ copy_all_packets (IOBUF inp, IOBUF out)
  * Stop at offset STOPoff (i.e. don't copy packets at this or later
  * offsets)
  */
-#ifdef DEBUG_PARSE_PACKET
+#if DEBUG_PARSE_PACKET
 int
-dbg_copy_some_packets (IOBUF inp, IOBUF out, off_t stopoff,
+dbg_copy_some_packets (iobuf_t inp, iobuf_t out, off_t stopoff,
 		       const char *dbg_f, int dbg_l)
 {
+  int rc = 0;
   PACKET pkt;
-  int skip, rc = 0;
+  int skip;
+  struct parse_packet_ctx_s parsectx;
+
+  init_parse_packet (&parsectx, inp);
+
   do
     {
       if (iobuf_tell (inp) >= stopoff)
-	return 0;
+        {
+          deinit_parse_packet (&parsectx);
+          return 0;
+        }
       init_packet (&pkt);
     }
-  while (!(rc = parse (inp, &pkt, 0, NULL, &skip, out, 0,
+  while (!(rc = parse (&parsectx, &pkt, 0, NULL, &skip, out, 0,
 		       "some", dbg_f, dbg_l)));
+
+  deinit_parse_packet (&parsectx);
+
   return rc;
 }
 #else /*!DEBUG_PARSE_PACKET*/
 int
-copy_some_packets (IOBUF inp, IOBUF out, off_t stopoff)
+copy_some_packets (iobuf_t inp, iobuf_t out, off_t stopoff)
 {
+  int rc = 0;
   PACKET pkt;
-  int skip, rc = 0;
+  struct parse_packet_ctx_s parsectx;
+  int skip;
+
+  init_parse_packet (&parsectx, inp);
+
   do
     {
       if (iobuf_tell (inp) >= stopoff)
-	return 0;
+        {
+          deinit_parse_packet (&parsectx);
+          return 0;
+        }
       init_packet (&pkt);
     }
-  while (!(rc = parse (inp, &pkt, 0, NULL, &skip, out, 0)));
+  while (!(rc = parse (&parsectx, &pkt, 0, NULL, &skip, out, 0)));
+
+  deinit_parse_packet (&parsectx);
+
   return rc;
 }
 #endif /*!DEBUG_PARSE_PACKET*/
@@ -411,32 +482,47 @@ copy_some_packets (IOBUF inp, IOBUF out, off_t stopoff)
 /*
  * Skip over N packets
  */
-#ifdef DEBUG_PARSE_PACKET
+#if DEBUG_PARSE_PACKET
 int
-dbg_skip_some_packets (IOBUF inp, unsigned n, const char *dbg_f, int dbg_l)
+dbg_skip_some_packets (iobuf_t inp, unsigned n, const char *dbg_f, int dbg_l)
 {
-  int skip, rc = 0;
+  int rc = 0;
+  int skip;
   PACKET pkt;
+  struct parse_packet_ctx_s parsectx;
+
+  init_parse_packet (&parsectx, inp);
 
   for (; n && !rc; n--)
     {
       init_packet (&pkt);
-      rc = parse (inp, &pkt, 0, NULL, &skip, NULL, 1, "skip", dbg_f, dbg_l);
+      rc = parse (&parsectx, &pkt, 0, NULL, &skip, NULL, 1, "skip",
+                  dbg_f, dbg_l);
     }
+
+  deinit_parse_packet (&parsectx);
+
   return rc;
 }
 #else /*!DEBUG_PARSE_PACKET*/
 int
-skip_some_packets (IOBUF inp, unsigned n)
+skip_some_packets (iobuf_t inp, unsigned int n)
 {
-  int skip, rc = 0;
+  int rc = 0;
+  int skip;
   PACKET pkt;
+  struct parse_packet_ctx_s parsectx;
+
+  init_parse_packet (&parsectx, inp);
 
   for (; n && !rc; n--)
     {
       init_packet (&pkt);
-      rc = parse (inp, &pkt, 0, NULL, &skip, NULL, 1);
+      rc = parse (&parsectx, &pkt, 0, NULL, &skip, NULL, 1);
     }
+
+  deinit_parse_packet (&parsectx);
+
   return rc;
 }
 #endif /*!DEBUG_PARSE_PACKET*/
@@ -466,18 +552,20 @@ skip_some_packets (IOBUF inp, unsigned n)
    Note: ONLYKEYPKTS and DO_SKIP are only respected if OUT is NULL,
    i.e., the packets are not simply being copied.
 
-   If RETPOS is not NULL, then the position of INP (as returned by
-   iobuf_tell) is saved there before any data is read from INP.
+   If RETPOS is not NULL, then the position of CTX->INP (as returned by
+   iobuf_tell) is saved there before any data is read from CTX->INP.
   */
 static int
-parse (IOBUF inp, PACKET * pkt, int onlykeypkts, off_t * retpos,
+parse (parse_packet_ctx_t ctx, PACKET *pkt, int onlykeypkts, off_t * retpos,
        int *skip, IOBUF out, int do_skip
-#ifdef DEBUG_PARSE_PACKET
+#if DEBUG_PARSE_PACKET
        , const char *dbg_w, const char *dbg_f, int dbg_l
 #endif
        )
 {
-  int rc = 0, c, ctb, pkttype, lenbytes;
+  int rc = 0;
+  iobuf_t inp;
+  int c, ctb, pkttype, lenbytes;
   unsigned long pktlen;
   byte hdr[8];
   int hdrlen;
@@ -486,6 +574,9 @@ parse (IOBUF inp, PACKET * pkt, int onlykeypkts, off_t * retpos,
   off_t pos;
 
   *skip = 0;
+  inp = ctx->inp;
+
+ again:
   log_assert (!pkt->pkt.generic);
   if (retpos || list_mode)
     {
@@ -690,7 +781,7 @@ parse (IOBUF inp, PACKET * pkt, int onlykeypkts, off_t * retpos,
 
   if (DBG_PACKET)
     {
-#ifdef DEBUG_PARSE_PACKET
+#if DEBUG_PARSE_PACKET
       log_debug ("parse_packet(iob=%d): type=%d length=%lu%s (%s.%s.%d)\n",
 		 iobuf_id (inp), pkttype, pktlen, new_ctb ? " (new_ctb)" : "",
 		 dbg_w, dbg_f, dbg_l);
@@ -706,6 +797,9 @@ parse (IOBUF inp, PACKET * pkt, int onlykeypkts, off_t * retpos,
                 (unsigned long)pos, ctb, pkttype, hdrlen, pktlen,
                 partial? (new_ctb ? " partial" : " indeterminate") :"",
                 new_ctb? " new-ctb":"");
+
+  /* Count it.  */
+  ctx->n_parsed_packets++;
 
   pkt->pkttype = pkttype;
   rc = GPG_ERR_UNKNOWN_PACKET;	/* default error */
@@ -744,8 +838,11 @@ parse (IOBUF inp, PACKET * pkt, int onlykeypkts, off_t * retpos,
       rc = parse_comment (inp, pkttype, pktlen, pkt);
       break;
     case PKT_RING_TRUST:
-      parse_trust (inp, pkttype, pktlen, pkt);
-      rc = 0;
+      {
+        rc = parse_ring_trust (ctx, pktlen);
+        if (!rc)
+          goto again; /* Directly read the next packet.  */
+      }
       break;
     case PKT_PLAINTEXT:
       rc = parse_plaintext (inp, pkttype, pktlen, pkt, new_ctb, partial);
@@ -770,6 +867,17 @@ parse (IOBUF inp, PACKET * pkt, int onlykeypkts, off_t * retpos,
       /* Unknown packet.  Skip it.  */
       skip_packet (inp, pkttype, pktlen, partial);
       break;
+    }
+
+  /* Store a shallow copy of certain packets in the context.  */
+  free_packet (NULL, ctx);
+  if (!rc && (pkttype == PKT_PUBLIC_KEY
+              || pkttype == PKT_SECRET_KEY
+              || pkttype == PKT_USER_ID
+              || pkttype == PKT_ATTRIBUTE
+              || pkttype == PKT_SIGNATURE))
+    {
+      ctx->last_pkt = *pkt;
     }
 
  leave:
@@ -890,10 +998,10 @@ skip_packet (IOBUF inp, int pkttype, unsigned long pktlen, int partial)
 }
 
 
-/* Read PKTLEN bytes form INP and return them in a newly allocated
-   buffer.  In case of an error (including reading fewer than PKTLEN
-   bytes from INP before EOF is returned), NULL is returned and an
-   error message is logged.  */
+/* Read PKTLEN bytes from INP and return them in a newly allocated
+ * buffer.  In case of an error (including reading fewer than PKTLEN
+ * bytes from INP before EOF is returned), NULL is returned and an
+ * error message is logged.  */
 static void *
 read_rest (IOBUF inp, size_t pktlen)
 {
@@ -1097,7 +1205,7 @@ parse_symkeyenc (IOBUF inp, int pkttype, unsigned long pktlen,
     }
   if (s2kmode == 3)
     {
-      k->s2k.count = iobuf_get (inp);
+      k->s2k.count = iobuf_get_noeof (inp);
       pktlen--;
     }
   k->seskeylen = seskeylen;
@@ -1528,14 +1636,24 @@ parse_one_sig_subpkt (const byte * buffer, size_t n, int type)
 
 /* Return true if we understand the critical notation.  */
 static int
-can_handle_critical_notation (const byte * name, size_t len)
+can_handle_critical_notation (const byte *name, size_t len)
 {
-  if (len == 32 && memcmp (name, "preferred-email-encoding@pgp.com", 32) == 0)
-    return 1;
-  if (len == 21 && memcmp (name, "pka-address@gnupg.org", 21) == 0)
-    return 1;
+  strlist_t sl;
 
-  return 0;
+  register_known_notation (NULL); /* Make sure it is initialized.  */
+
+  for (sl = known_notations_list; sl; sl = sl->next)
+    if (sl->flags == len && !memcmp (sl->d, name, len))
+      return 1; /* Known */
+
+  if (opt.verbose)
+    {
+      log_info(_("Unknown critical signature notation: ") );
+      print_utf8_buffer (log_get_stream(), name, len);
+      log_printf ("\n");
+    }
+
+  return 0; /* Unknown.  */
 }
 
 
@@ -1572,6 +1690,7 @@ can_handle_critical (const byte * buffer, size_t n, int type)
       /* Is it enough to show the policy or keyserver? */
     case SIGSUBPKT_POLICY:
     case SIGSUBPKT_PREF_KS:
+    case SIGSUBPKT_REVOC_REASON: /* At least we know about it.  */
       return 1;
 
     default:
@@ -1627,6 +1746,8 @@ enum_sig_subpkt (const subpktarea_t * pktbuf, sigsubpkttype_t reqtype,
 	}
       if (buflen < n)
 	goto too_short;
+      if (!buflen)
+        goto no_type_byte;
       type = *buffer;
       if (type & 0x80)
 	{
@@ -1698,6 +1819,13 @@ enum_sig_subpkt (const subpktarea_t * pktbuf, sigsubpkttype_t reqtype,
  too_short:
   if (opt.verbose)
     log_info ("buffer shorter than subpacket\n");
+  if (start)
+    *start = -1;
+  return NULL;
+
+ no_type_byte:
+  if (opt.verbose)
+    log_info ("type octet missing in subpacket\n");
   if (start)
     *start = -1;
   return NULL;
@@ -2405,7 +2533,7 @@ parse_key (IOBUF inp, int pkttype, unsigned long pktlen,
 		      err = gpg_error (GPG_ERR_INV_PACKET);
 		      goto leave;
 		    }
-		  ski->s2k.count = iobuf_get (inp);
+		  ski->s2k.count = iobuf_get_noeof (inp);
 		  pktlen--;
 		  if (list_mode)
 		    es_fprintf (listfp, "\tprotect count: %lu (%lu)\n",
@@ -2807,42 +2935,164 @@ parse_comment (IOBUF inp, int pkttype, unsigned long pktlen, PACKET * packet)
 }
 
 
-static void
-parse_trust (IOBUF inp, int pkttype, unsigned long pktlen, PACKET * pkt)
+/* Parse a ring trust packet RFC4880 (5.10).
+ *
+ * This parser is special in that the packet is not stored as a packet
+ * but its content is merged into the previous packet.  */
+static gpg_error_t
+parse_ring_trust (parse_packet_ctx_t ctx, unsigned long pktlen)
 {
+  gpg_error_t err;
+  iobuf_t inp = ctx->inp;
+  PKT_ring_trust rt = {0};
   int c;
+  int not_gpg = 0;
 
-  (void) pkttype;
-
-  pkt->pkt.ring_trust = xmalloc (sizeof *pkt->pkt.ring_trust);
-  if (pktlen)
+  if (!pktlen)
     {
-      c = iobuf_get_noeof (inp);
-      pktlen--;
-      pkt->pkt.ring_trust->trustval = c;
-      pkt->pkt.ring_trust->sigcache = 0;
-      if (!c && pktlen == 1)
-	{
-	  c = iobuf_get_noeof (inp);
-	  pktlen--;
-	  /* We require that bit 7 of the sigcache is 0 (easier eof
-             handling).  */
-	  if (!(c & 0x80))
-	    pkt->pkt.ring_trust->sigcache = c;
-	}
-      if (list_mode)
-	es_fprintf (listfp, ":trust packet: flag=%02x sigcache=%02x\n",
-                    pkt->pkt.ring_trust->trustval,
-                    pkt->pkt.ring_trust->sigcache);
-    }
-  else
-    {
-      pkt->pkt.ring_trust->trustval = 0;
-      pkt->pkt.ring_trust->sigcache = 0;
       if (list_mode)
 	es_fprintf (listfp, ":trust packet: empty\n");
+      err = 0;
+      goto leave;
     }
+
+  c = iobuf_get_noeof (inp);
+  pktlen--;
+  rt.trustval = c;
+  if (pktlen)
+    {
+      if (!c)
+        {
+          c = iobuf_get_noeof (inp);
+          /* We require that bit 7 of the sigcache is 0 (easier
+           * eof handling).  */
+          if (!(c & 0x80))
+            rt.sigcache = c;
+        }
+      else
+        iobuf_get_noeof (inp);  /* Dummy read.  */
+      pktlen--;
+    }
+
+  /* Next is the optional subtype.  */
+  if (pktlen > 3)
+    {
+      char tmp[4];
+      tmp[0] = iobuf_get_noeof (inp);
+      tmp[1] = iobuf_get_noeof (inp);
+      tmp[2] = iobuf_get_noeof (inp);
+      tmp[3] = iobuf_get_noeof (inp);
+      pktlen -= 4;
+      if (!memcmp (tmp, "gpg", 3))
+        rt.subtype = tmp[3];
+      else
+        not_gpg = 1;
+    }
+  /* If it is a key or uid subtype read the remaining data.  */
+  if ((rt.subtype == RING_TRUST_KEY || rt.subtype == RING_TRUST_UID)
+      && pktlen >= 6 )
+    {
+      int i;
+      unsigned int namelen;
+
+      rt.keyorg = iobuf_get_noeof (inp);
+      pktlen--;
+      rt.keyupdate = read_32 (inp);
+      pktlen -= 4;
+      namelen = iobuf_get_noeof (inp);
+      pktlen--;
+      if (namelen && pktlen)
+        {
+          rt.url = xtrymalloc (namelen + 1);
+          if (!rt.url)
+            {
+              err = gpg_error_from_syserror ();
+              goto leave;
+            }
+          for (i = 0; pktlen && i < namelen; pktlen--, i++)
+            rt.url[i] = iobuf_get_noeof (inp);
+          rt.url[i] = 0;
+        }
+    }
+
+  if (list_mode)
+    {
+      if (rt.subtype == RING_TRUST_SIG)
+        es_fprintf (listfp, ":trust packet: sig flag=%02x sigcache=%02x\n",
+                    rt.trustval, rt.sigcache);
+      else if (rt.subtype == RING_TRUST_UID || rt.subtype == RING_TRUST_KEY)
+        {
+          unsigned char *p;
+
+          es_fprintf (listfp, ":trust packet: %s upd=%lu src=%d%s",
+                      (rt.subtype == RING_TRUST_UID? "uid" : "key"),
+                      (unsigned long)rt.keyupdate,
+                      rt.keyorg,
+                      (rt.url? " url=":""));
+          if (rt.url)
+            {
+              for (p = rt.url; *p; p++)
+                {
+                  if (*p >= ' ' && *p <= 'z')
+                    es_putc (*p, listfp);
+                  else
+                    es_fprintf (listfp, "\\x%02x", *p);
+                }
+            }
+          es_putc ('\n', listfp);
+        }
+      else if (not_gpg)
+        es_fprintf (listfp, ":trust packet: not created by gpg\n");
+      else
+        es_fprintf (listfp, ":trust packet: subtype=%02x\n",
+                    rt.subtype);
+    }
+
+  /* Now transfer the data to the respective packet.  Do not do this
+   * if SKIP_META is set.  */
+  if (!ctx->last_pkt.pkt.generic || ctx->skip_meta)
+    ;
+  else if (rt.subtype == RING_TRUST_SIG
+           && ctx->last_pkt.pkttype == PKT_SIGNATURE)
+    {
+      PKT_signature *sig = ctx->last_pkt.pkt.signature;
+
+      if ((rt.sigcache & 1))
+        {
+          sig->flags.checked = 1;
+          sig->flags.valid = !!(rt.sigcache & 2);
+        }
+    }
+  else if (rt.subtype == RING_TRUST_UID
+           && (ctx->last_pkt.pkttype == PKT_USER_ID
+               || ctx->last_pkt.pkttype == PKT_ATTRIBUTE))
+    {
+      PKT_user_id *uid = ctx->last_pkt.pkt.user_id;
+
+      uid->keyorg = rt.keyorg;
+      uid->keyupdate = rt.keyupdate;
+      uid->updateurl = rt.url;
+      rt.url = NULL;
+    }
+  else if (rt.subtype == RING_TRUST_KEY
+           && (ctx->last_pkt.pkttype == PKT_PUBLIC_KEY
+               || ctx->last_pkt.pkttype == PKT_SECRET_KEY))
+    {
+      PKT_public_key *pk = ctx->last_pkt.pkt.public_key;
+
+      pk->keyorg = rt.keyorg;
+      pk->keyupdate = rt.keyupdate;
+      pk->updateurl = rt.url;
+      rt.url = NULL;
+    }
+
+  err = 0;
+
+ leave:
+  xfree (rt.url);
+  free_packet (NULL, ctx); /* This sets ctx->last_pkt to NULL.  */
   iobuf_skip_rest (inp, pktlen, 0);
+  return err;
 }
 
 
@@ -2890,6 +3140,12 @@ parse_plaintext (IOBUF inp, int pkttype, unsigned long pktlen,
 	else
 	  pt->name[i] = c;
     }
+  /* Fill up NAME so that a check with valgrind won't complain about
+   * reading from uninitalized memory.  This case may be triggred by
+   * corrupted packets.  */
+  for (; i < namelen; i++)
+    pt->name[i] = 0;
+
   pt->timestamp = read_32 (inp);
   if (pktlen)
     pktlen -= 4;

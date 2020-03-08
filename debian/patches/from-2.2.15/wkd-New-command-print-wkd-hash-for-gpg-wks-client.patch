@@ -1,0 +1,295 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Fri, 22 Mar 2019 11:40:01 +0100
+Subject: wkd: New command --print-wkd-hash for gpg-wks-client.
+
+* tools/gpg-wks-client.c (aPrintWKDHash): New.
+(opts) : Add "--print-wkd-hash".
+(main): Implement that command.
+(proc_userid_from_stdin): New.
+* tools/wks-util.c (wks_fname_from_userid): Add option HASH_ONLY.
+(wks_cmd_print_wkd_hash): New.
+--
+
+GnuPG-bug-id: 4418
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 64621f1f40c31c7f453da98efb860ff8cf11edbc)
+---
+ doc/wks.texi           |  4 +++
+ tools/gpg-wks-client.c | 85 ++++++++++++++++++++++++++++++++++++++++++++++++--
+ tools/gpg-wks-server.c |  2 +-
+ tools/gpg-wks.h        |  3 +-
+ tools/wks-util.c       | 47 +++++++++++++++++++++++-----
+ 5 files changed, 129 insertions(+), 12 deletions(-)
+
+diff --git a/doc/wks.texi b/doc/wks.texi
+index 5fe2a33..0c8a59a 100644
+--- a/doc/wks.texi
++++ b/doc/wks.texi
+@@ -101,6 +101,10 @@ fingerprint and the mailbox separated by a space.  The command
+ @option{--remove-key} removes a key from that directory, its only
+ argument is a user-id.
+ 
++The command @option{--print-wkd-hash} prints a WKD user id identifier
++and the corresponding mailbox from the user-ids given on the command
++line or via stdin (one user-id per line).
++
+ @command{gpg-wks-client} is not commonly invoked directly and thus it
+ is not installed in the bin directory.  Here is an example how it can
+ be invoked manually to check for a Web Key Directory entry for
+diff --git a/tools/gpg-wks-client.c b/tools/gpg-wks-client.c
+index 78e4fe4..f1750bf 100644
+--- a/tools/gpg-wks-client.c
++++ b/tools/gpg-wks-client.c
+@@ -61,6 +61,7 @@ enum cmd_and_opt_values
+     aRead,
+     aInstallKey,
+     aRemoveKey,
++    aPrintWKDHash,
+ 
+     oGpgProgram,
+     oSend,
+@@ -90,6 +91,8 @@ static ARGPARSE_OPTS opts[] = {
+               "install a key into a directory"),
+   ARGPARSE_c (aRemoveKey, "remove-key",
+               "remove a key from a directory"),
++  ARGPARSE_c (aPrintWKDHash, "print-wkd-hash",
++              "Print the WKD identifier for the given user ids"),
+ 
+   ARGPARSE_group (301, ("@\nOptions:\n ")),
+ 
+@@ -129,6 +132,8 @@ const char *fake_submission_addr;
+ 
+ 
+ static void wrong_args (const char *text) GPGRT_ATTR_NORETURN;
++static gpg_error_t proc_userid_from_stdin (gpg_error_t (*func)(const char *),
++                                           const char *text);
+ static gpg_error_t command_supported (char *userid);
+ static gpg_error_t command_check (char *userid);
+ static gpg_error_t command_send (const char *fingerprint, const char *userid);
+@@ -230,6 +235,7 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
+         case aCheck:
+         case aInstallKey:
+         case aRemoveKey:
++        case aPrintWKDHash:
+           cmd = pargs->r_opt;
+           break;
+ 
+@@ -246,7 +252,7 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
+ int
+ main (int argc, char **argv)
+ {
+-  gpg_error_t err;
++  gpg_error_t err, delayed_err;
+   ARGPARSE_ARGS pargs;
+   enum cmd_and_opt_values cmd;
+ 
+@@ -377,6 +383,28 @@ main (int argc, char **argv)
+       err = wks_cmd_remove_key (*argv);
+       break;
+ 
++    case aPrintWKDHash:
++      if (!argc)
++        err = proc_userid_from_stdin (wks_cmd_print_wkd_hash, "printing hash");
++      else
++        {
++          for (err = delayed_err = 0; !err && argc; argc--, argv++)
++            {
++              err = wks_cmd_print_wkd_hash (*argv);
++              if (gpg_err_code (err) == GPG_ERR_INV_USER_ID)
++                {
++                  /* Diagnostic already printed.  */
++                  delayed_err = err;
++                  err = 0;
++                }
++              else if (err)
++                log_error ("printing hash failed: %s\n", gpg_strerror (err));
++            }
++          if (!err)
++            err = delayed_err;
++        }
++      break;
++
+     default:
+       usage (1);
+       err = 0;
+@@ -390,10 +418,63 @@ main (int argc, char **argv)
+     wks_write_status (STATUS_FAILURE, "- %u", GPG_ERR_GENERAL);
+   else
+     wks_write_status (STATUS_SUCCESS, NULL);
+-  return log_get_errorcount (0)? 1:0;
++  return (err || log_get_errorcount (0))? 1:0;
+ }
+ 
+ 
++/* Read user ids from stdin and call FUNC for each user id.  TEXT is
++ * used for error messages.  */
++static gpg_error_t
++proc_userid_from_stdin (gpg_error_t (*func)(const char *), const char *text)
++{
++  gpg_error_t err = 0;
++  gpg_error_t delayed_err = 0;
++  char line[2048];
++  size_t n = 0;
++
++  /* If we are on a terminal disable buffering to get direct response.  */
++  if (gnupg_isatty (es_fileno (es_stdin))
++      && gnupg_isatty (es_fileno (es_stdout)))
++    {
++      es_setvbuf (es_stdin, NULL, _IONBF, 0);
++      es_setvbuf (es_stdout, NULL, _IOLBF, 0);
++    }
++
++  while (es_fgets (line, sizeof line - 1, es_stdin))
++    {
++      n = strlen (line);
++      if (!n || line[n-1] != '\n')
++        {
++          err = gpg_error (*line? GPG_ERR_LINE_TOO_LONG
++                           : GPG_ERR_INCOMPLETE_LINE);
++          log_error ("error reading stdin: %s\n", gpg_strerror (err));
++          break;
++        }
++      trim_spaces (line);
++      err = func (line);
++      if (gpg_err_code (err) == GPG_ERR_INV_USER_ID)
++        {
++          delayed_err = err;
++          err = 0;
++        }
++      else if (err)
++        log_error ("%s failed: %s\n", text, gpg_strerror (err));
++    }
++  if (es_ferror (es_stdin))
++    {
++      err = gpg_error_from_syserror ();
++      log_error ("error reading stdin: %s\n", gpg_strerror (err));
++      goto leave;
++    }
++
++ leave:
++  if (!err)
++    err = delayed_err;
++  return err;
++}
++
++
++
+ 
+ /* Add the user id UID to the key identified by FINGERPRINT.  */
+ static gpg_error_t
+diff --git a/tools/gpg-wks-server.c b/tools/gpg-wks-server.c
+index f83ef65..2082fb8 100644
+--- a/tools/gpg-wks-server.c
++++ b/tools/gpg-wks-server.c
+@@ -1939,7 +1939,7 @@ command_check_key (const char *userid)
+   char *addrspec = NULL;
+   char *fname = NULL;
+ 
+-  err = wks_fname_from_userid (userid, &fname, &addrspec);
++  err = wks_fname_from_userid (userid, 0, &fname, &addrspec);
+   if (err)
+     goto leave;
+ 
+diff --git a/tools/gpg-wks.h b/tools/gpg-wks.h
+index e369430..99969c1 100644
+--- a/tools/gpg-wks.h
++++ b/tools/gpg-wks.h
+@@ -98,11 +98,12 @@ gpg_error_t wks_parse_policy (policy_flags_t flags, estream_t stream,
+                               int ignore_unknown);
+ void wks_free_policy (policy_flags_t policy);
+ 
+-gpg_error_t wks_fname_from_userid (const char *userid,
++gpg_error_t wks_fname_from_userid (const char *userid, int hash_only,
+                                    char **r_fname, char **r_addrspec);
+ gpg_error_t wks_compute_hu_fname (char **r_fname, const char *addrspec);
+ gpg_error_t wks_cmd_install_key (const char *fname, const char *userid);
+ gpg_error_t wks_cmd_remove_key (const char *userid);
++gpg_error_t wks_cmd_print_wkd_hash (const char *userid);
+ 
+ 
+ /*-- wks-receive.c --*/
+diff --git a/tools/wks-util.c b/tools/wks-util.c
+index 3e48709..fee46d6 100644
+--- a/tools/wks-util.c
++++ b/tools/wks-util.c
+@@ -749,9 +749,12 @@ write_to_file (estream_t src, const char *fname)
+ 
+ 
+ /* Return the filename and optionally the addrspec for USERID at
+- * R_FNAME and R_ADDRSPEC.  R_ADDRSPEC might also be set on error.  */
++ * R_FNAME and R_ADDRSPEC.  R_ADDRSPEC might also be set on error.  If
++ * HASH_ONLY is set only the has is returned at R_FNAME and no file is
++ * created.  */
+ gpg_error_t
+-wks_fname_from_userid (const char *userid, char **r_fname, char **r_addrspec)
++wks_fname_from_userid (const char *userid, int hash_only,
++                       char **r_fname, char **r_addrspec)
+ {
+   gpg_error_t err;
+   char *addrspec = NULL;
+@@ -767,7 +770,7 @@ wks_fname_from_userid (const char *userid, char **r_fname, char **r_addrspec)
+   addrspec = mailbox_from_userid (userid);
+   if (!addrspec)
+     {
+-      if (opt.verbose)
++      if (opt.verbose || hash_only)
+         log_info ("\"%s\" is not a proper mail address\n", userid);
+       err = gpg_error (GPG_ERR_INV_USER_ID);
+       goto leave;
+@@ -788,11 +791,20 @@ wks_fname_from_userid (const char *userid, char **r_fname, char **r_addrspec)
+       goto leave;
+     }
+ 
+-  *r_fname = make_filename_try (opt.directory, domain, "hu", hash, NULL);
+-  if (!*r_fname)
+-    err = gpg_error_from_syserror ();
++  if (hash_only)
++    {
++      *r_fname = hash;
++      hash = NULL;
++      err = 0;
++    }
+   else
+-    err = 0;
++    {
++      *r_fname = make_filename_try (opt.directory, domain, "hu", hash, NULL);
++      if (!*r_fname)
++        err = gpg_error_from_syserror ();
++      else
++        err = 0;
++    }
+ 
+  leave:
+   if (r_addrspec && addrspec)
+@@ -1062,7 +1074,7 @@ wks_cmd_remove_key (const char *userid)
+   char *addrspec = NULL;
+   char *fname = NULL;
+ 
+-  err = wks_fname_from_userid (userid, &fname, &addrspec);
++  err = wks_fname_from_userid (userid, 0, &fname, &addrspec);
+   if (err)
+     goto leave;
+ 
+@@ -1090,3 +1102,22 @@ wks_cmd_remove_key (const char *userid)
+   xfree (addrspec);
+   return err;
+ }
++
++
++/* Print the WKD hash for the user ids to stdout.  */
++gpg_error_t
++wks_cmd_print_wkd_hash (const char *userid)
++{
++  gpg_error_t err;
++  char *addrspec, *fname;
++
++  err = wks_fname_from_userid (userid, 1, &fname, &addrspec);
++  if (err)
++    return err;
++
++  es_printf ("%s %s\n", fname, addrspec);
++
++  xfree (fname);
++  xfree (addrspec);
++  return err;
++}

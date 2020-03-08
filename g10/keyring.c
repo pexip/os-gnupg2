@@ -28,13 +28,13 @@
 #include <sys/stat.h>
 
 #include "gpg.h"
-#include "util.h"
+#include "../common/util.h"
 #include "keyring.h"
 #include "packet.h"
 #include "keydb.h"
 #include "options.h"
 #include "main.h" /*for check_key_signature()*/
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "../kbx/keybox.h"
 
 
@@ -378,6 +378,7 @@ int
 keyring_get_keyblock (KEYRING_HANDLE hd, KBNODE *ret_kb)
 {
     PACKET *pkt;
+    struct parse_packet_ctx_s parsectx;
     int rc;
     KBNODE keyblock = NULL, node, lastnode;
     IOBUF a;
@@ -407,13 +408,14 @@ keyring_get_keyblock (KEYRING_HANDLE hd, KBNODE *ret_kb)
 
     pkt = xmalloc (sizeof *pkt);
     init_packet (pkt);
-    hd->found.n_packets = 0;;
+    init_parse_packet (&parsectx, a);
+    hd->found.n_packets = 0;
     lastnode = NULL;
     save_mode = set_packet_list_mode(0);
-    while ((rc=parse_packet (a, pkt)) != -1) {
-        hd->found.n_packets++;
+    while ((rc=parse_packet (&parsectx, pkt)) != -1) {
+        hd->found.n_packets = parsectx.n_parsed_packets;
         if (gpg_err_code (rc) == GPG_ERR_UNKNOWN_PACKET) {
-	    free_packet (pkt);
+	    free_packet (pkt, &parsectx);
 	    init_packet (pkt);
 	    continue;
 	}
@@ -457,9 +459,9 @@ keyring_get_keyblock (KEYRING_HANDLE hd, KBNODE *ret_kb)
             break; /* Allowed by us.  */
 
           default:
-	    log_error ("skipped packet of type %d in keyring\n",
-                       (int)pkt->pkttype);
-	    free_packet(pkt);
+	    log_info ("skipped packet of type %d in keyring\n",
+                      (int)pkt->pkttype);
+	    free_packet(pkt, &parsectx);
 	    init_packet(pkt);
 	    continue;
           }
@@ -471,29 +473,6 @@ keyring_get_keyblock (KEYRING_HANDLE hd, KBNODE *ret_kb)
         }
 
         in_cert = 1;
-        if (pkt->pkttype == PKT_RING_TRUST)
-          {
-            /*(this code is duplicated after the loop)*/
-            if ( lastnode
-                 && lastnode->pkt->pkttype == PKT_SIGNATURE
-                 && (pkt->pkt.ring_trust->sigcache & 1) ) {
-                /* This is a ring trust packet with a checked signature
-                 * status cache following directly a signature paket.
-                 * Set the cache status into that signature packet.  */
-                PKT_signature *sig = lastnode->pkt->pkt.signature;
-
-                sig->flags.checked = 1;
-                sig->flags.valid = !!(pkt->pkt.ring_trust->sigcache & 2);
-            }
-            /* Reset LASTNODE, so that we set the cache status only from
-             * the ring trust packet immediately following a signature. */
-            lastnode = NULL;
-	    free_packet(pkt);
-	    init_packet(pkt);
-	    continue;
-          }
-
-
         node = lastnode = new_kbnode (pkt);
         if (!keyblock)
           keyblock = node;
@@ -529,18 +508,10 @@ keyring_get_keyblock (KEYRING_HANDLE hd, KBNODE *ret_kb)
     if (rc || !ret_kb)
 	release_kbnode (keyblock);
     else {
-        /*(duplicated from the loop body)*/
-        if ( pkt && pkt->pkttype == PKT_RING_TRUST
-             && lastnode
-             && lastnode->pkt->pkttype == PKT_SIGNATURE
-             && (pkt->pkt.ring_trust->sigcache & 1) ) {
-            PKT_signature *sig = lastnode->pkt->pkt.signature;
-            sig->flags.checked = 1;
-            sig->flags.valid = !!(pkt->pkt.ring_trust->sigcache & 2);
-        }
-	*ret_kb = keyblock;
+        *ret_kb = keyblock;
     }
-    free_packet (pkt);
+    free_packet (pkt, &parsectx);
+    deinit_parse_packet (&parsectx);
     xfree (pkt);
     iobuf_close(a);
 
@@ -692,7 +663,6 @@ keyring_search_reset (KEYRING_HANDLE hd)
 {
     log_assert (hd);
 
-    hd->current.kr = NULL;
     iobuf_close (hd->current.iobuf);
     hd->current.iobuf = NULL;
     hd->current.eof = 0;
@@ -700,6 +670,12 @@ keyring_search_reset (KEYRING_HANDLE hd)
 
     hd->found.kr = NULL;
     hd->found.offset = 0;
+
+    if (hd->current.kr)
+      iobuf_ioctl (NULL, IOBUF_IOCTL_INVALIDATE_CACHE, 0,
+                   (char*)hd->current.kr->fname);
+    hd->current.kr = NULL;
+
     return 0;
 }
 
@@ -777,7 +753,7 @@ prepare_search (KEYRING_HANDLE hd)
 
 
 /* A map of the all characters valid used for word_match()
- * Valid characters are in in this table converted to uppercase.
+ * Valid characters are in this table converted to uppercase.
  * because the upper 128 bytes have special meaning, we assume
  * that they are all valid.
  * Note: We must use numerical values here in case that this program
@@ -928,13 +904,27 @@ compare_name (int mode, const char *name, const char *uid, size_t uidlen)
     else if (   mode == KEYDB_SEARCH_MODE_MAIL
              || mode == KEYDB_SEARCH_MODE_MAILSUB
              || mode == KEYDB_SEARCH_MODE_MAILEND) {
+        int have_angles = 1;
 	for (i=0, s= uid; i < uidlen && *s != '<'; s++, i++)
 	    ;
+	if (i == uidlen)
+	  {
+	    /* The UID is a plain addr-spec (cf. RFC2822 section 4.3).  */
+	    have_angles = 0;
+	    s = uid;
+	    i = 0;
+	  }
 	if (i < uidlen)  {
-	    /* skip opening delim and one char and look for the closing one*/
-	    s++; i++;
-	    for (se=s+1, i++; i < uidlen && *se != '>'; se++, i++)
-		;
+	    if (have_angles)
+	      {
+		/* skip opening delim and one char and look for the closing one*/
+		s++; i++;
+		for (se=s+1, i++; i < uidlen && *se != '>'; se++, i++)
+		  ;
+	      }
+	    else
+	      se = s + uidlen;
+
 	    if (i < uidlen) {
 		i = se - s;
 		if (mode == KEYDB_SEARCH_MODE_MAIL) {
@@ -971,6 +961,7 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
 {
   int rc;
   PACKET pkt;
+  struct parse_packet_ctx_s parsectx;
   int save_mode;
   off_t offset, main_offset;
   size_t n;
@@ -1106,15 +1097,16 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
   if (DBG_LOOKUP)
     log_debug ("%s: %ssearching from start of resource.\n",
                __func__, scanned_from_start ? "" : "not ");
+  init_parse_packet (&parsectx, hd->current.iobuf);
   while (1)
     {
       byte afp[MAX_FINGERPRINT_LEN];
       size_t an;
 
-      rc = search_packet (hd->current.iobuf, &pkt, &offset, need_uid);
+      rc = search_packet (&parsectx, &pkt, &offset, need_uid);
       if (ignore_legacy && gpg_err_code (rc) == GPG_ERR_LEGACY_KEY)
         {
-          free_packet (&pkt);
+          free_packet (&pkt, &parsectx);
           continue;
         }
       if (rc)
@@ -1128,7 +1120,7 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
         }
       if (initial_skip)
         {
-          free_packet (&pkt);
+          free_packet (&pkt, &parsectx);
           continue;
         }
 
@@ -1210,7 +1202,7 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
             goto found;
           }
 	}
-      free_packet (&pkt);
+      free_packet (&pkt, &parsectx);
       continue;
     found:
       if (rc)
@@ -1237,7 +1229,7 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
         }
       if (n == ndesc)
         goto real_found;
-      free_packet (&pkt);
+      free_packet (&pkt, &parsectx);
     }
  real_found:
   if (!rc)
@@ -1291,7 +1283,8 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
       hd->current.error = rc;
     }
 
-  free_packet(&pkt);
+  free_packet (&pkt, &parsectx);
+  deinit_parse_packet (&parsectx);
   set_packet_list_mode(save_mode);
   return rc;
 }
@@ -1400,35 +1393,11 @@ write_keyblock (IOBUF fp, KBNODE keyblock)
 
   while ( (node = walk_kbnode (keyblock, &kbctx, 0)) )
     {
-      if (node->pkt->pkttype == PKT_RING_TRUST)
-        continue; /* we write it later on our own */
-
-      if ( (rc = build_packet (fp, node->pkt) ))
+      if ( (rc = build_packet_and_meta (fp, node->pkt) ))
         {
           log_error ("build_packet(%d) failed: %s\n",
                      node->pkt->pkttype, gpg_strerror (rc) );
           return rc;
-        }
-      if (node->pkt->pkttype == PKT_SIGNATURE)
-        { /* always write a signature cache packet */
-          PKT_signature *sig = node->pkt->pkt.signature;
-          unsigned int cacheval = 0;
-
-          if (sig->flags.checked)
-            {
-              cacheval |= 1;
-              if (sig->flags.valid)
-                cacheval |= 2;
-            }
-          iobuf_put (fp, 0xb0); /* old style packet 12, 1 byte len*/
-          iobuf_put (fp, 2);    /* 2 bytes */
-          iobuf_put (fp, 0);    /* unused */
-          if (iobuf_put (fp, cacheval))
-            {
-              rc = gpg_error_from_syserror ();
-              log_error ("writing sigcache packet failed\n");
-              return rc;
-            }
         }
     }
   return 0;
@@ -1440,7 +1409,7 @@ write_keyblock (IOBUF fp, KBNODE keyblock)
  * This is only done for the public keyrings.
  */
 int
-keyring_rebuild_cache (void *token,int noisy)
+keyring_rebuild_cache (ctrl_t ctrl, void *token, int noisy)
 {
   KEYRING_HANDLE hd;
   KEYDB_SEARCH_DESC desc;
@@ -1557,7 +1526,7 @@ keyring_rebuild_cache (void *token,int noisy)
                          || openpgp_pk_test_algo(sig->pubkey_algo)))
                     sig->flags.checked=sig->flags.valid=0;
                   else
-                    check_key_signature (keyblock, node, NULL);
+                    check_key_signature (ctrl, keyblock, node, NULL);
 
                   sigcount++;
                 }
@@ -1619,6 +1588,7 @@ keyring_rebuild_cache (void *token,int noisy)
   keyring_release (hd);
   return rc;
 }
+
 
 
 /****************

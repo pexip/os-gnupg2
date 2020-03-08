@@ -1,0 +1,39 @@
+From: NIIBE Yutaka <gniibe@fsij.org>
+Date: Mon, 1 Jul 2019 13:07:22 +0900
+Subject: tools: gpgconf: Killing order is children-first.
+
+* tools/gpgconf-comp.c (gc_component_kill): Reverse the order.
+
+--
+
+Cherry-picked from master commit:
+	7c877f942a344e7778005840ed7f3e20ace12f4a
+
+The order matters in a corner case; On a busy machine, there was a
+race condition between gpg-agent's running KILLAGENT command and its
+accepting incoming request on the socket.  If a request by
+gpg-connect-agent was accepted, it resulted an error by sudden
+shutdown.  This change of the order can remove such a race.
+
+Here, we know backend=0 is none.
+
+GnuPG-bug-id: 4577
+Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
+(cherry picked from commit 526714806da4e50c8e683b25d76460916d58ff41)
+---
+ tools/gpgconf-comp.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tools/gpgconf-comp.c b/tools/gpgconf-comp.c
+index 7f7440b..2875c92 100644
+--- a/tools/gpgconf-comp.c
++++ b/tools/gpgconf-comp.c
+@@ -1367,7 +1367,7 @@ gc_component_kill (int component)
+     }
+ 
+   /* Do the restart for the selected backends.  */
+-  for (backend = 0; backend < GC_BACKEND_NR; backend++)
++  for (backend = GC_BACKEND_NR-1; backend; backend--)
+     {
+       if (runtime[backend] && gc_backend[backend].runtime_change)
+         (*gc_backend[backend].runtime_change) (1);

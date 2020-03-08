@@ -3,8 +3,8 @@
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify it
- * under the terms of either
+ * GnuPG is free software; you can redistribute and/or modify this
+ * part of GnuPG under the terms of either
  *
  *   - the GNU Lesser General Public License as published by the Free
  *     Software Foundation; either version 3 of the License, or (at
@@ -195,10 +195,10 @@ gpg_error_t get_rsa_pk_from_canon_sexp (const unsigned char *keydata,
                                         size_t *r_nlen,
                                         unsigned char const **r_e,
                                         size_t *r_elen);
-gpg_error_t get_pk_algo_from_canon_sexp (const unsigned char *keydata,
-                                         size_t keydatalen,
-                                         const char **r_algo);
+
 int get_pk_algo_from_key (gcry_sexp_t key);
+int get_pk_algo_from_canon_sexp (const unsigned char *keydata,
+                                 size_t keydatalen);
 
 /*-- convert.c --*/
 int hex2bin (const char *string, void *buffer, size_t length);
@@ -235,6 +235,7 @@ const char *default_homedir (void);
 void gnupg_set_homedir (const char *newdir);
 const char *gnupg_homedir (void);
 int gnupg_default_homedir_p (void);
+const char *gnupg_daemon_rootdir (void);
 const char *gnupg_socketdir (void);
 const char *gnupg_sysconfdir (void);
 const char *gnupg_bindir (void);
@@ -302,6 +303,7 @@ void print_utf8_buffer3 (estream_t fp, const void *p, size_t n,
                          const char *delim);
 void print_utf8_buffer2 (estream_t fp, const void *p, size_t n, int delim);
 void print_utf8_buffer (estream_t fp, const void *p, size_t n);
+void print_utf8_string (estream_t stream, const char *p);
 void print_hexstring (FILE *fp, const void *buffer, size_t length,
                       int reserved);
 char *try_make_printable_string (const void *p, size_t n, int delim);

@@ -24,20 +24,21 @@
 #include <string.h>
 
 #include "gpg.h"
-#include "util.h"
+#include "../common/util.h"
 #include "packet.h"
 #include "keydb.h"
 #include "trustdb.h"
-#include "status.h"
+#include "../common/status.h"
 #include "options.h"
 #include "main.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "pkglue.h"
 #include "call-agent.h"
-#include "host2net.h"
+#include "../common/host2net.h"
+#include "../common/compliance.h"
 
 
-static gpg_error_t get_it (PKT_pubkey_enc *k,
+static gpg_error_t get_it (ctrl_t ctrl, PKT_pubkey_enc *k,
                            DEK *dek, PKT_public_key *sk, u32 *keyid);
 
 
@@ -54,7 +55,7 @@ is_algo_in_prefs (kbnode_t keyblock, preftype_t type, int algo)
           PKT_user_id *uid = k->pkt->pkt.user_id;
           prefitem_t *prefs = uid->prefs;
 
-          if (uid->created && prefs && !uid->is_revoked && !uid->is_expired)
+          if (uid->created && prefs && !uid->flags.revoked && !uid->flags.expired)
             {
               for (; prefs->type; prefs++)
                 if (prefs->type == type && prefs->value == algo)
@@ -87,8 +88,22 @@ get_session_key (ctrl_t ctrl, PKT_pubkey_enc * k, DEK * dek)
     {
       sk = xmalloc_clear (sizeof *sk);
       sk->pubkey_algo = k->pubkey_algo; /* We want a pubkey with this algo.  */
-      if (!(rc = get_seckey (sk, k->keyid)))
-        rc = get_it (k, dek, sk, k->keyid);
+      if (!(rc = get_seckey (ctrl, sk, k->keyid)))
+        {
+          /* Check compliance.  */
+          if (! gnupg_pk_is_allowed (opt.compliance, PK_USE_DECRYPTION,
+                                     sk->pubkey_algo,
+                                     sk->pkey, nbits_from_pk (sk), NULL))
+            {
+              log_info (_("key %s is not suitable for decryption"
+                          " in %s mode\n"),
+                        keystr_from_pk (sk),
+                        gnupg_compliance_option_string (opt.compliance));
+              rc = gpg_error (GPG_ERR_PUBKEY_ALGO);
+            }
+          else
+            rc = get_it (ctrl, k, dek, sk, k->keyid);
+        }
     }
   else if (opt.skip_hidden_recipients)
     rc = gpg_error (GPG_ERR_NO_SECKEY);
@@ -116,7 +131,19 @@ get_session_key (ctrl_t ctrl, PKT_pubkey_enc * k, DEK * dek)
             log_info (_("anonymous recipient; trying secret key %s ...\n"),
                       keystr (keyid));
 
-          rc = get_it (k, dek, sk, keyid);
+          /* Check compliance.  */
+          if (! gnupg_pk_is_allowed (opt.compliance, PK_USE_DECRYPTION,
+                                     sk->pubkey_algo,
+                                     sk->pkey, nbits_from_pk (sk), NULL))
+            {
+              log_info (_("key %s is not suitable for decryption"
+                          " in %s mode\n"),
+                          keystr_from_pk (sk),
+                          gnupg_compliance_option_string (opt.compliance));
+              continue;
+            }
+
+          rc = get_it (ctrl, k, dek, sk, keyid);
           if (!rc)
             {
               if (!opt.quiet)
@@ -129,7 +156,7 @@ get_session_key (ctrl_t ctrl, PKT_pubkey_enc * k, DEK * dek)
       enum_secret_keys (ctrl, &enum_context, NULL);  /* free context */
     }
 
-leave:
+ leave:
   free_public_key (sk);
   if (DBG_CLOCK)
     log_clock ("get_session_key leave");
@@ -138,7 +165,8 @@ leave:
 
 
 static gpg_error_t
-get_it (PKT_pubkey_enc *enc, DEK *dek, PKT_public_key *sk, u32 *keyid)
+get_it (ctrl_t ctrl,
+        PKT_pubkey_enc *enc, DEK *dek, PKT_public_key *sk, u32 *keyid)
 {
   gpg_error_t err;
   byte *frame = NULL;
@@ -200,7 +228,7 @@ get_it (PKT_pubkey_enc *enc, DEK *dek, PKT_public_key *sk, u32 *keyid)
     }
 
   /* Decrypt. */
-  desc = gpg_format_keydesc (sk, FORMAT_KEYDESC_NORMAL, 1);
+  desc = gpg_format_keydesc (ctrl, sk, FORMAT_KEYDESC_NORMAL, 1);
   err = agent_pkdecrypt (NULL, keygrip,
                          desc, sk->keyid, sk->main_keyid, sk->pubkey_algo,
                          s_data, &frame, &nframe, &padding);
@@ -211,7 +239,7 @@ get_it (PKT_pubkey_enc *enc, DEK *dek, PKT_public_key *sk, u32 *keyid)
 
   /* Now get the DEK (data encryption key) from the frame
    *
-   * Old versions encode the DEK in in this format (msb is left):
+   * Old versions encode the DEK in this format (msb is left):
    *
    *     0  1  DEK(16 bytes)  CSUM(2 bytes)  0  RND(n bytes) 2
    *
@@ -335,10 +363,12 @@ get_it (PKT_pubkey_enc *enc, DEK *dek, PKT_public_key *sk, u32 *keyid)
   if (DBG_CRYPTO)
     log_printhex ("DEK is:", dek->key, dek->keylen);
 
-  /* Check that the algo is in the preferences and whether it has expired.  */
+  /* Check that the algo is in the preferences and whether it has
+   * expired.  Also print a status line with the key's fingerprint.  */
   {
     PKT_public_key *pk = NULL;
-    KBNODE pkb = get_pubkeyblock (keyid);
+    PKT_public_key *mainpk = NULL;
+    KBNODE pkb = get_pubkeyblock (ctrl, keyid);
 
     if (!pkb)
       {
@@ -351,9 +381,11 @@ get_it (PKT_pubkey_enc *enc, DEK *dek, PKT_public_key *sk, u32 *keyid)
              && !is_algo_in_prefs (pkb, PREFTYPE_SYM, dek->algo))
       log_info (_("WARNING: cipher algorithm %s not found in recipient"
                   " preferences\n"), openpgp_cipher_algo_name (dek->algo));
+
     if (!err)
       {
-        KBNODE k;
+        kbnode_t k;
+        int first = 1;
 
         for (k = pkb; k; k = k->next)
           {
@@ -361,8 +393,14 @@ get_it (PKT_pubkey_enc *enc, DEK *dek, PKT_public_key *sk, u32 *keyid)
                 || k->pkt->pkttype == PKT_PUBLIC_SUBKEY)
               {
                 u32 aki[2];
-                keyid_from_pk (k->pkt->pkt.public_key, aki);
 
+                if (first)
+                  {
+                    first = 0;
+                    mainpk = k->pkt->pkt.public_key;
+                  }
+
+                keyid_from_pk (k->pkt->pkt.public_key, aki);
                 if (aki[0] == keyid[0] && aki[1] == keyid[1])
                   {
                     pk = k->pkt->pkt.public_key;
@@ -383,7 +421,25 @@ get_it (PKT_pubkey_enc *enc, DEK *dek, PKT_public_key *sk, u32 *keyid)
       {
         log_info (_("Note: key has been revoked"));
         log_printf ("\n");
-        show_revocation_reason (pk, 1);
+        show_revocation_reason (ctrl, pk, 1);
+      }
+
+    if (is_status_enabled () && pk && mainpk)
+      {
+        char pkhex[MAX_FINGERPRINT_LEN*2+1];
+        char mainpkhex[MAX_FINGERPRINT_LEN*2+1];
+
+        hexfingerprint (pk, pkhex, sizeof pkhex);
+        hexfingerprint (mainpk, mainpkhex, sizeof mainpkhex);
+
+        /* Note that we do not want to create a trustdb just for
+         * getting the ownertrust: If there is no trustdb there can't
+         * be ulitmately trusted key anyway and thus the ownertrust
+         * value is irrelevant.  */
+        write_status_printf (STATUS_DECRYPTION_KEY, "%s %s %c",
+                             pkhex, mainpkhex,
+                             get_ownertrust_info (ctrl, mainpk, 1));
+
       }
 
     release_kbnode (pkb);

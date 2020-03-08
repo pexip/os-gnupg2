@@ -1,0 +1,77 @@
+From: NIIBE Yutaka <gniibe@fsij.org>
+Date: Wed, 10 Jul 2019 15:42:07 +0900
+Subject: gpg: Improve import slowness.
+
+* g10/import.c (read_block): Avoid O(N^2) append.
+(sec_to_pub_keyblock): Likewise.
+
+--
+
+Cherry-picking the master commit of:
+	33c17a8008c3ba3bb740069f9f97c7467f156b54
+
+Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
+(cherry picked from commit eb00a14f6d2de7c53487f39494c5cb9c0598fc96)
+---
+ g10/import.c | 18 +++++++++++++-----
+ 1 file changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/g10/import.c b/g10/import.c
+index 12f8f28..0a72a76 100644
+--- a/g10/import.c
++++ b/g10/import.c
+@@ -853,6 +853,7 @@ read_block( IOBUF a, unsigned int options,
+   struct parse_packet_ctx_s parsectx;
+   PACKET *pkt;
+   kbnode_t root = NULL;
++  kbnode_t lastnode = NULL;
+   int in_cert, in_v3key, skip_sigs;
+   u32 keyid[2];
+   int got_keyid = 0;
+@@ -862,7 +863,7 @@ read_block( IOBUF a, unsigned int options,
+ 
+   if (*pending_pkt)
+     {
+-      root = new_kbnode( *pending_pkt );
++      root = lastnode = new_kbnode( *pending_pkt );
+       *pending_pkt = NULL;
+       log_assert (root->pkt->pkttype == PKT_PUBLIC_KEY
+                   || root->pkt->pkttype == PKT_SECRET_KEY);
+@@ -1032,9 +1033,12 @@ read_block( IOBUF a, unsigned int options,
+           if (in_cert && valid_keyblock_packet (pkt->pkttype))
+             {
+               if (!root )
+-                root = new_kbnode (pkt);
++                root = lastnode = new_kbnode (pkt);
+               else
+-                add_kbnode (root, new_kbnode (pkt));
++                {
++                  lastnode->next = new_kbnode (pkt);
++                  lastnode = lastnode->next;
++                }
+               pkt = xmalloc (sizeof *pkt);
+             }
+           else
+@@ -2636,6 +2640,7 @@ sec_to_pub_keyblock (kbnode_t sec_keyblock)
+   kbnode_t pub_keyblock = NULL;
+   kbnode_t ctx = NULL;
+   kbnode_t secnode, pubnode;
++  kbnode_t lastnode = NULL;
+   unsigned int tag = 0;
+ 
+   /* Set a tag to all nodes.  */
+@@ -2675,9 +2680,12 @@ sec_to_pub_keyblock (kbnode_t sec_keyblock)
+       pubnode->tag = secnode->tag;
+ 
+       if (!pub_keyblock)
+-	pub_keyblock = pubnode;
++        pub_keyblock = lastnode = pubnode;
+       else
+-	add_kbnode (pub_keyblock, pubnode);
++        {
++          lastnode->next = pubnode;
++          lastnode = pubnode;
++        }
+     }
+ 
+   return pub_keyblock;

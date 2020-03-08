@@ -17,7 +17,7 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "gpgme-defs.scm"))
+(load (in-srcdir "tests" "gpgme" "gpgme-defs.scm"))
 
 (define executable (flag "--executable" *args*))
 (unless (and executable (not (null? executable)))
@@ -28,6 +28,7 @@
 (setenv "abs_builddir" (getcwd) #t)
 (setenv "top_srcdir" gpgme-srcdir #t)
 (setenv "srcdir" (path-join gpgme-srcdir "tests" "gpg") #t)
+(setenv "abs_top_srcdir" (path-join gpgme-srcdir "tests" "gpg") #t)
 
 (define (run what)
   (if (string-suffix? (car what) ".py")
@@ -39,22 +40,27 @@
 				   (getenv "LD_LIBRARY_PATH"))
 		    (path-join gpgme-builddir "src/.libs"))
 		#t)
-	(call-with-fds
-	 `("/usr/bin/python"
-	   ,(in-gpgme-srcdir "lang" "python" "tests" "run-tests.py")
-	   --quiet
-	   --interpreters=/usr/bin/python
-	   --builddir ,(path-join gpgme-builddir "lang" "python" "tests")
-	   ,@what)
-	 STDIN_FILENO STDOUT_FILENO STDERR_FILENO))
-      (if #f 77 (call-with-fds what STDIN_FILENO STDOUT_FILENO STDERR_FILENO))))
+	(if python
+	    (call-with-fds
+	     `(,python
+	       ,(in-gpgme-srcdir "lang" "python" "tests" "run-tests.py")
+	       --quiet
+	       ,(string-append "--interpreters=" python)
+	       --builddir ,(path-join gpgme-builddir "lang" "python" "tests")
+	       ,@what)
+	     STDIN_FILENO STDOUT_FILENO STDERR_FILENO)
+	    77))
+      (call-with-fds what STDIN_FILENO STDOUT_FILENO STDERR_FILENO)))
 
 (let ((name (basename (car executable))))
   (cond
-   ((string=? "t-keylist" name)
+   ((string=? (qualify "t-keylist") name)
     ;; This test assumes that 't-import' imported a key.
     (log "Importing extra key...")
     (call-check `(,@GPG --yes --import ,(in-srcdir "pubkey-1.asc"))))))
 
-(log "Running" (car executable))
-(exit (run executable))
+(if (file-exists? (car executable))
+    (begin
+      (log "Running" (car executable))
+      (exit (run executable)))
+    (skip (car executable) "is not built"))

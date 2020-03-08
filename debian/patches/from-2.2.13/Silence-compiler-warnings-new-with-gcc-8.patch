@@ -1,0 +1,98 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Mon, 17 Dec 2018 18:46:26 +0100
+Subject: Silence compiler warnings new with gcc 8.
+
+* dirmngr/dns.c: Include gpgrt.h.  Silence -Warray-bounds also gcc.
+* tests/gpgscm/scheme.c: Include gpgrt.h.
+(Eval_Cycle): Ignore -Wimplicit-fallthrough.
+--
+
+The funny use of case and labels in the CASE macro seems confuse the
+fallthrough detection.
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 21fc089148678f59edb02e0e16bed65b709fb972)
+---
+ dirmngr/dns.c         | 17 ++++++++++++-----
+ tests/gpgscm/scheme.c | 12 ++++++++++++
+ 2 files changed, 24 insertions(+), 5 deletions(-)
+
+diff --git a/dirmngr/dns.c b/dirmngr/dns.c
+index 77f83f4..968fc3d 100644
+--- a/dirmngr/dns.c
++++ b/dirmngr/dns.c
+@@ -77,6 +77,7 @@ typedef int socket_fd_t;
+ #include <netdb.h>		/* struct addrinfo */
+ #endif
+ 
++#include "gpgrt.h"   /* For GGPRT_GCC_VERSION */
+ #include "dns.h"
+ 
+ 
+@@ -7521,9 +7522,13 @@ static unsigned char *dns_so_tcp_recv_buffer(struct dns_socket *so) {
+ }
+ 
+ 
+-#if defined __clang__
+-#pragma clang diagnostic push
+-#pragma clang diagnostic ignored "-Warray-bounds"
++
++#if GPGRT_GCC_VERSION >= 80000
++# pragma GCC diagnostic push
++# pragma GCC diagnostic ignored "-Warray-bounds"
++#elif defined __clang__
++# pragma clang diagnostic push
++# pragma clang diagnostic ignored "-Warray-bounds"
+ #endif
+ 
+ static int dns_so_tcp_send(struct dns_socket *so) {
+@@ -7589,8 +7594,10 @@ static int dns_so_tcp_recv(struct dns_socket *so) {
+ 	return 0;
+ } /* dns_so_tcp_recv() */
+ 
+-#if __clang__
+-#pragma clang diagnostic pop
++#if GPGRT_GCC_VERSION >= 80000
++# pragma GCC diagnostic pop
++#elif __clang__
++# pragma clang diagnostic pop
+ #endif
+ 
+ 
+diff --git a/tests/gpgscm/scheme.c b/tests/gpgscm/scheme.c
+index 4384841..b188e36 100644
+--- a/tests/gpgscm/scheme.c
++++ b/tests/gpgscm/scheme.c
+@@ -44,6 +44,8 @@
+ # endif
+ #endif
+ 
++#include "gpgrt.h"   /* For GGPRT_GCC_VERSION */
++
+ /* Used for documentation purposes, to signal functions in 'interface' */
+ #define INTERFACE
+ 
+@@ -3438,6 +3440,11 @@ int list_length(scheme *sc, pointer a) {
+ 
+ 
+ 
++#if GPGRT_GCC_VERSION >= 80000
++# pragma GCC diagnostic push
++# pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
++#endif
++
+ #define s_retbool(tf)    s_return(sc,(tf) ? sc->T : sc->F)
+ 
+ /* kernel of this interpreter */
+@@ -5323,6 +5330,11 @@ Eval_Cycle(scheme *sc, enum scheme_opcodes op) {
+   }
+ }
+ 
++#if GPGRT_GCC_VERSION >= 80000
++# pragma GCC diagnostic pop
++#endif
++
++
+ typedef int (*test_predicate)(pointer);
+ 
+ static int is_any(pointer p) {

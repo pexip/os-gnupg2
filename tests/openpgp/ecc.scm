@@ -17,7 +17,7 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "defs.scm"))
+(load (in-srcdir "tests" "openpgp" "defs.scm"))
 (setup-legacy-environment)
 
 (define keygrips '("8E06A180EFFE4C65B812150CAF19BF30C0689A4C"
@@ -48,7 +48,7 @@
 (for-each
  (lambda (n)
    (call-check `(,(tool 'gpg) --import
-		 ,(in-srcdir (string-append
+		 ,(in-srcdir "tests" "openpgp" (string-append
 			      "samplekeys/ecc-sample-"
 			      (number->string n)
 			      "-pub.asc")))))
@@ -101,8 +101,7 @@ Ic1RdzgeCfosMF+l/zVRchcLKzenEQA=
      (lettmp (x y)
        (call-with-output-file
 	   x (lambda (p) (display (eval test (current-environment)) p)))
-       (call-check `(,(tool 'gpg) --verify ,x))
-       (call-check `(,(tool 'gpg) --output ,y ,x))
+       (call-check `(,(tool 'gpg) --output ,y --verify ,x))
        (unless (file=? y z) (fail "mismatch"))))
    '(msg_opaque_signed_256 msg_opaque_signed_384 msg_opaque_signed_521)))
 
@@ -118,7 +117,7 @@ Ic1RdzgeCfosMF+l/zVRchcLKzenEQA=
  (lambda (n)
    (call-check `(,(tool 'gpg) --import
 		 ,@(if (> n 1) '(--allow-non-selfsigned-uid) '())
-		 ,(in-srcdir (string-append
+		 ,(in-srcdir "tests" "openpgp" (string-append
 			      "samplekeys/ecc-sample-"
 			      (number->string n)
 			      "-sec.asc")))))
@@ -181,7 +180,7 @@ Rg==
      (lettmp (x y)
        (call-with-output-file
 	   x (lambda (p) (display (eval test (current-environment)) p)))
-       (call-check `(,@GPG --yes --output ,y ,x))
+       (call-check `(,@GPG --yes --output ,y --decrypt ,x))
        (unless (file=? y z) (fail "mismatch"))))
    '(msg_encrypted_256 msg_encrypted_384 msg_encrypted_521)))
 
@@ -200,7 +199,7 @@ Rg==
       (tr:do
        (tr:open source)
        (tr:gpg "" `(--yes --encrypt --recipient ,keyid))
-       (tr:gpg "" '(--yes))
+       (tr:gpg "" '(--yes --decrypt))
        (tr:assert-identity source)))
     mainkeyids))
  (append plain-files data-files))
@@ -217,7 +216,7 @@ Rg==
       (tr:do
        (tr:open source)
        (tr:gpg "" `(--yes --sign --local-user ,keyid))
-       (tr:gpg "" '(--yes))
+       (tr:gpg "" '(--yes --decrypt))
        (tr:assert-identity source)))
     mainkeyids))
  (append plain-files data-files))
@@ -243,7 +242,7 @@ Rg==
  (lambda (n)
    (call-check `(,(tool 'gpg) --import
 		 ,@(if (> n 1) '(--allow-non-selfsigned-uid) '())
-		 ,(in-srcdir (string-append
+		 ,(in-srcdir "tests" "openpgp" (string-append
 			      "samplekeys/ecc-sample-"
 			      (number->string n)
 			      "-sec.asc")))))

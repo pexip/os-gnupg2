@@ -42,6 +42,11 @@ struct filter
   struct filter *next;
 };
 
+
+/* Hack to ass CTRL to some functions.  */
+static ctrl_t global_ctrl;
+
+
 static struct filter *filters;
 
 static void
@@ -76,7 +81,7 @@ filter_pop (iobuf_t out, int expected_type)
                "but current container is a %s container.\n",
                pkttype_str (f->pkttype), pkttype_str (expected_type));
 
-  if (f->pkttype == PKT_ENCRYPTED || f->pkttype == PKT_ENCRYPTED_MDC)
+  if (f->pkttype == PKT_ENCRYPTED)
     {
       err = iobuf_pop_filter (out, f->func, f->context);
       if (err)
@@ -276,18 +281,18 @@ show_help (struct option options[])
         {
           const char *o = option[0] ? option : "ARG";
           l = strlen (o);
-          fprintf (stderr, "%s", o);
+          fprintf (stdout, "%s", o);
         }
 
       if (! help)
         {
-          fputc ('\n', stderr);
+          fputc ('\n', stdout);
           continue;
         }
 
       if (option)
         for (j = l; j < max_length + 2; j ++)
-          fputc (' ', stderr);
+          fputc (' ', stdout);
 
 #define BOLD_START "\033[1m"
 #define NORMAL_RESTORE "\033[0m"
@@ -300,14 +305,16 @@ show_help (struct option options[])
 
       if (! option)
         space = 72;
-      formatted = format_text (tmp, 0, space, space + 4);
+      formatted = format_text (tmp, space, space + 4);
+      if (!formatted)
+        abort ();
 
       if (tmp != help)
         xfree (tmp);
 
       if (! option)
         {
-          fprintf (stderr, "\n%s\n", formatted);
+          printf ("\n%s\n", formatted);
           break;
         }
 
@@ -323,10 +330,10 @@ show_help (struct option options[])
 
           if (p != formatted)
             for (j = 0; j < max_length + 2; j ++)
-              fputc (' ', stderr);
+              fputc (' ', stdout);
 
-          fwrite (p, l, 1, stderr);
-          fputc ('\n', stderr);
+          fwrite (p, l, 1, stdout);
+          fputc ('\n', stdout);
         }
 
       xfree (formatted);
@@ -505,7 +512,8 @@ static struct option major_options[] = {
   { "--encrypted-mdc", encrypted,
     "Create a symmetrically encrypted and integrity protected data packet." },
   { "--encrypted-pop", encrypted_pop,
-    "Pop an encryption container." },
+    "Pop the most recent encryption container started by either"
+    " --encrypted or --encrypted-mdc." },
   { "--compressed", NULL, "Create a compressed data packet." },
   { "--literal", literal, "Create a literal (plaintext) data packet." },
   { "--signature", signature, "Create a signature packet." },
@@ -1609,7 +1617,7 @@ mksubpkt_callback (PKT_signature *sig, void *cookie)
       if (err)
         {
           u32 keyid[2];
-          keyid_from_fingerprint (revkey->fpr, 20, keyid);
+          keyid_from_fingerprint (global_ctrl, revkey->fpr, 20, keyid);
           log_fatal ("adding revocation key %s: %s\n",
                      keystr (keyid), gpg_strerror (err));
         }
@@ -1793,7 +1801,8 @@ signature (const char *option, int argc, char *argv[], void *cookie)
   /* Changing the issuer's key id is fragile.  Check to make sure
      make_keysig_packet didn't recompute the keyid.  */
   keyid_copy (keyid, si.issuer_pk->keyid);
-  err = make_keysig_packet (&sig, si.pk, si.uid, si.sk, si.issuer_pk,
+  err = make_keysig_packet (global_ctrl,
+                            &sig, si.pk, si.uid, si.sk, si.issuer_pk,
                             si.class, si.digest_algo,
                             si.timestamp, si.expiration,
                             mksubpkt_callback, &si, NULL);
@@ -1826,7 +1835,7 @@ signature (const char *option, int argc, char *argv[], void *cookie)
   debug ("Wrote signature packet:\n");
   dump_component (&pkt);
 
-  xfree (sig);
+  free_seckey_enc (sig);
   release_kbnode (si.issuer_kb);
   xfree (si.revocation_key);
 
@@ -2446,7 +2455,7 @@ pk_esk (const char *option, int argc, char *argv[], void *cookie)
       make_session_key (&session_key);
     }
 
-  err = write_pubkey_enc (&pk, pi.throw_keyid, &session_key, out);
+  err = write_pubkey_enc (global_ctrl, &pk, pi.throw_keyid, &session_key, out);
   if (err)
     log_fatal ("%s: writing pk_esk packet for %s: %s\n",
                option, pi.keyid, gpg_strerror (err));
@@ -2526,7 +2535,9 @@ encrypted (const char *option, int argc, char *argv[], void *cookie)
                                argc, argv);
 
   if (! session_key.algo)
-    log_fatal ("%s: no session key configured.\n", option);
+    log_fatal ("%s: no session key configured\n"
+               "  (use e.g. --sk-esk PASSWORD or --pk-esk KEYID).\n",
+               option);
 
   memset (&e, 0, sizeof (e));
   /* We only need to set E->LEN, E->EXTRALEN (if E->LEN is not
@@ -2572,24 +2583,36 @@ encrypted (const char *option, int argc, char *argv[], void *cookie)
   return processed;
 }
 
+static struct option encrypted_pop_options[] = {
+  { NULL, NULL,
+    "Example:\n\n"
+    "  $ gpgcompose --sk-esk PASSWORD \\\n"
+    "    --encrypted-mdc \\\n"
+    "      --literal --value foo \\\n"
+    "    --encrypted-pop | " GPG_NAME " --list-packets" }
+};
+
 static int
 encrypted_pop (const char *option, int argc, char *argv[], void *cookie)
 {
   iobuf_t out = cookie;
+  int processed;
 
-  (void) argc;
-  (void) argv;
+  processed = process_options (option,
+                               major_options,
+                               encrypted_pop_options,
+                               NULL,
+                               global_options, NULL,
+                               argc, argv);
+  /* We only support a single option, --help, which causes the program
+   * to exit.  */
+  log_assert (processed == 0);
 
-  if (strcmp (option, "--encrypted-pop") == 0)
-    filter_pop (out, PKT_ENCRYPTED);
-  else if (strcmp (option, "--encrypted-mdc-pop") == 0)
-    filter_pop (out, PKT_ENCRYPTED_MDC);
-  else
-    log_fatal ("%s: option not handled by this function!\n", option);
+  filter_pop (out, PKT_ENCRYPTED);
 
   debug ("Popped encryption container.\n");
 
-  return 0;
+  return processed;
 }
 
 struct data
@@ -2967,7 +2990,7 @@ main (int argc, char *argv[])
   /* Allow notations in the IETF space, for instance.  */
   opt.expert = 1;
 
-  ctrl = xcalloc (1, sizeof *ctrl);
+  global_ctrl = ctrl = xcalloc (1, sizeof *ctrl);
 
   keydb_add_resource ("pubring" EXTSEP_S GPGEXT_GPG,
                       KEYDB_RESOURCE_FLAG_DEFAULT);
@@ -3035,7 +3058,28 @@ keyedit_menu (ctrl_t ctrl, const char *username, strlist_t locusr,
 }
 
 void
-show_basic_key_info (KBNODE keyblock)
+show_basic_key_info (ctrl_t ctrl, KBNODE keyblock)
 {
+  (void)ctrl;
   (void) keyblock;
+}
+
+int
+keyedit_print_one_sig (ctrl_t ctrl, estream_t fp,
+                       int rc, kbnode_t keyblock, kbnode_t node,
+		       int *inv_sigs, int *no_key, int *oth_err,
+		       int is_selfsig, int print_without_key, int extended)
+{
+  (void) ctrl;
+  (void) fp;
+  (void) rc;
+  (void) keyblock;
+  (void) node;
+  (void) inv_sigs;
+  (void) no_key;
+  (void) oth_err;
+  (void) is_selfsig;
+  (void) print_without_key;
+  (void) extended;
+  return 0;
 }

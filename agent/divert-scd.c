@@ -28,8 +28,8 @@
 #include <sys/stat.h>
 
 #include "agent.h"
-#include "i18n.h"
-#include "sexp-parse.h"
+#include "../common/i18n.h"
+#include "../common/sexp-parse.h"
 
 
 static int
@@ -39,22 +39,40 @@ ask_for_card (ctrl_t ctrl, const unsigned char *shadow_info, char **r_kid)
   char *serialno;
   int no_card = 0;
   char *desc;
-  char *want_sn, *want_kid;
-  int want_sn_displen;
+  char *want_sn, *want_kid, *want_sn_disp;
+  int len;
 
   *r_kid = NULL;
 
   rc = parse_shadow_info (shadow_info, &want_sn, &want_kid, NULL);
   if (rc)
     return rc;
+  want_sn_disp = xtrystrdup (want_sn);
+  if (!want_sn_disp)
+    {
+      rc = gpg_error_from_syserror ();
+      xfree (want_sn);
+      xfree (want_kid);
+      return rc;
+    }
 
-  /* We assume that a 20 byte serial number is a standard one which
-     has the property to have a zero in the last nibble (Due to BCD
-     representation).  We don't display this '0' because it may
-     confuse the user.  */
-  want_sn_displen = strlen (want_sn);
-  if (want_sn_displen == 20 && want_sn[19] == '0')
-    want_sn_displen--;
+  len = strlen (want_sn_disp);
+  if (len == 32 && !strncmp (want_sn_disp, "D27600012401", 12))
+    {
+      /* This is an OpenPGP card - reformat  */
+      memmove (want_sn_disp, want_sn_disp+16, 4);
+      want_sn_disp[4] = ' ';
+      memmove (want_sn_disp+5, want_sn_disp+20, 8);
+      want_sn_disp[13] = 0;
+    }
+  else if (len == 20 && want_sn_disp[19] == '0')
+    {
+      /* We assume that a 20 byte serial number is a standard one
+       * which has the property to have a zero in the last nibble (Due
+       * to BCD representation).  We don't display this '0' because it
+       * may confuse the user.  */
+      want_sn_disp[19] = 0;
+    }
 
   for (;;)
     {
@@ -67,6 +85,7 @@ ask_for_card (ctrl_t ctrl, const unsigned char *shadow_info, char **r_kid)
           serialno = NULL;
           if (!i)
             {
+              xfree (want_sn_disp);
               xfree (want_sn);
               *r_kid = want_kid;
               return 0; /* yes, we have the correct card */
@@ -93,27 +112,28 @@ ask_for_card (ctrl_t ctrl, const unsigned char *shadow_info, char **r_kid)
         {
           if (asprintf (&desc,
                     "%s:%%0A%%0A"
-                    "  \"%.*s\"",
+                    "  %s",
                         no_card
                         ? L_("Please insert the card with serial number")
                         : L_("Please remove the current card and "
                              "insert the one with serial number"),
-                    want_sn_displen, want_sn) < 0)
+                        want_sn_disp) < 0)
             {
               rc = out_of_core ();
             }
           else
             {
               rc = agent_get_confirmation (ctrl, desc, NULL, NULL, 0);
-	      if (ctrl->pinentry_mode == PINENTRY_MODE_LOOPBACK &&
-		  gpg_err_code (rc) == GPG_ERR_NO_PIN_ENTRY)
-		rc = gpg_error (GPG_ERR_CARD_NOT_PRESENT);
+              if (ctrl->pinentry_mode == PINENTRY_MODE_LOOPBACK &&
+                  gpg_err_code (rc) == GPG_ERR_NO_PIN_ENTRY)
+                rc = gpg_error (GPG_ERR_CARD_NOT_PRESENT);
 
               xfree (desc);
             }
         }
       if (rc)
         {
+          xfree (want_sn_disp);
           xfree (want_sn);
           xfree (want_kid);
           return rc;
@@ -157,11 +177,26 @@ encode_md_for_card (const unsigned char *digest, size_t digestlen, int algo,
 }
 
 
+/* Return true if STRING ends in "%0A". */
+static int
+has_percent0A_suffix (const char *string)
+{
+  size_t n;
+
+  return (string
+          && (n = strlen (string)) >= 3
+          && !strcmp (string + n - 3, "%0A"));
+}
+
+
 /* Callback used to ask for the PIN which should be set into BUF.  The
    buf has been allocated by the caller and is of size MAXBUF which
    includes the terminating null.  The function should return an UTF-8
    string with the passphrase, the buffer may optionally be padded
    with arbitrary characters.
+
+   If DESC_TEXT is not NULL it can be used as further informtion shown
+   atop of the INFO message.
 
    INFO gets displayed as part of a generic string.  However if the
    first character of INFO is a vertical bar all up to the next
@@ -185,7 +220,8 @@ encode_md_for_card (const unsigned char *digest, size_t digestlen, int algo,
    are considered.
  */
 static int
-getpin_cb (void *opaque, const char *info, char *buf, size_t maxbuf)
+getpin_cb (void *opaque, const char *desc_text, const char *info,
+           char *buf, size_t maxbuf)
 {
   struct pin_entry_info_s *pi;
   int rc;
@@ -242,7 +278,7 @@ getpin_cb (void *opaque, const char *info, char *buf, size_t maxbuf)
         {
           if (info)
             {
-              char *desc;
+              char *desc, *desc2;
 
               if ( asprintf (&desc,
                              L_("%s%%0A%%0AUse the reader's pinpad for input."),
@@ -250,12 +286,22 @@ getpin_cb (void *opaque, const char *info, char *buf, size_t maxbuf)
                 rc = gpg_error_from_syserror ();
               else
                 {
-                  rc = agent_popup_message_start (ctrl, desc, NULL);
+                  /* Prepend DESC_TEXT to INFO.  */
+                  if (desc_text)
+                    desc2 = strconcat (desc_text,
+                                       has_percent0A_suffix (desc_text)
+                                       ? "%0A" : "%0A%0A",
+                                       desc, NULL);
+                  else
+                    desc2 = NULL;
+                  rc = agent_popup_message_start (ctrl,
+                                                  desc2? desc2:desc, NULL);
+                  xfree (desc2);
                   xfree (desc);
                 }
             }
           else
-            rc = agent_popup_message_start (ctrl, NULL, NULL);
+            rc = agent_popup_message_start (ctrl, desc_text, NULL);
         }
       else
         rc = gpg_error (GPG_ERR_INV_VALUE);
@@ -276,7 +322,20 @@ getpin_cb (void *opaque, const char *info, char *buf, size_t maxbuf)
 
   if (any_flags)
     {
-      rc = agent_askpin (ctrl, info, prompt, again_text, pi, NULL, 0);
+      {
+        char *desc2;
+
+        if (desc_text)
+          desc2 = strconcat (desc_text,
+                             has_percent0A_suffix (desc_text)
+                             ? "%0A" : "%0A%0A",
+                             info, NULL);
+        else
+          desc2 = NULL;
+        rc = agent_askpin (ctrl, desc2? desc2 : info,
+                           prompt, again_text, pi, NULL, 0);
+        xfree (desc2);
+      }
       again_text = NULL;
       if (!rc && newpin)
         {
@@ -315,14 +374,24 @@ getpin_cb (void *opaque, const char *info, char *buf, size_t maxbuf)
     }
   else
     {
-      char *desc;
+      char *desc, *desc2;
+
       if ( asprintf (&desc,
                      L_("Please enter the PIN%s%s%s to unlock the card"),
                      info? " (":"",
                      info? info:"",
                      info? ")":"") < 0)
         desc = NULL;
-      rc = agent_askpin (ctrl, desc?desc:info, prompt, NULL, pi, NULL, 0);
+      if (desc_text)
+        desc2 = strconcat (desc_text,
+                           has_percent0A_suffix (desc_text)
+                           ? "%0A" : "%0A%0A",
+                           desc, NULL);
+      else
+        desc2 = NULL;
+      rc = agent_askpin (ctrl, desc2? desc2 : desc? desc : info,
+                         prompt, NULL, pi, NULL, 0);
+      xfree (desc2);
       xfree (desc);
     }
 
@@ -337,9 +406,13 @@ getpin_cb (void *opaque, const char *info, char *buf, size_t maxbuf)
 
 
 
-
+/* This function is used when a sign operation has been diverted to a
+ * smartcard.  DESC_TEXT is the original text for a prompt has send by
+ * gpg to gpg-agent.
+ *
+ * FIXME: Explain the other args.  */
 int
-divert_pksign (ctrl_t ctrl,
+divert_pksign (ctrl_t ctrl, const char *desc_text,
                const unsigned char *digest, size_t digestlen, int algo,
                const unsigned char *shadow_info, unsigned char **r_sig,
                size_t *r_siglen)
@@ -349,6 +422,8 @@ divert_pksign (ctrl_t ctrl,
   size_t siglen;
   unsigned char *sigval = NULL;
 
+  (void)desc_text;
+
   rc = ask_for_card (ctrl, shadow_info, &kid);
   if (rc)
     return rc;
@@ -357,7 +432,7 @@ divert_pksign (ctrl_t ctrl,
     {
       int save = ctrl->use_auth_call;
       ctrl->use_auth_call = 1;
-      rc = agent_card_pksign (ctrl, kid, getpin_cb, ctrl,
+      rc = agent_card_pksign (ctrl, kid, getpin_cb, ctrl, NULL,
                               algo, digest, digestlen, &sigval, &siglen);
       ctrl->use_auth_call = save;
     }
@@ -369,7 +444,7 @@ divert_pksign (ctrl_t ctrl,
       rc = encode_md_for_card (digest, digestlen, algo, &data, &ndata);
       if (!rc)
         {
-          rc = agent_card_pksign (ctrl, kid, getpin_cb, ctrl,
+          rc = agent_card_pksign (ctrl, kid, getpin_cb, ctrl, NULL,
                                   algo, data, ndata, &sigval, &siglen);
           xfree (data);
         }
@@ -387,12 +462,12 @@ divert_pksign (ctrl_t ctrl,
 }
 
 
-/* Decrypt the the value given asn an S-expression in CIPHER using the
+/* Decrypt the value given asn an S-expression in CIPHER using the
    key identified by SHADOW_INFO and return the plaintext in an
    allocated buffer in R_BUF.  The padding information is stored at
    R_PADDING with -1 for not known.  */
 int
-divert_pkdecrypt (ctrl_t ctrl,
+divert_pkdecrypt (ctrl_t ctrl, const char *desc_text,
                   const unsigned char *cipher,
                   const unsigned char *shadow_info,
                   char **r_buf, size_t *r_len, int *r_padding)
@@ -405,6 +480,8 @@ divert_pkdecrypt (ctrl_t ctrl,
   size_t ciphertextlen;
   char *plaintext;
   size_t plaintextlen;
+
+  (void)desc_text;
 
   *r_padding = -1;
 
@@ -471,7 +548,7 @@ divert_pkdecrypt (ctrl_t ctrl,
   if (rc)
     return rc;
 
-  rc = agent_card_pkdecrypt (ctrl, kid, getpin_cb, ctrl,
+  rc = agent_card_pkdecrypt (ctrl, kid, getpin_cb, ctrl, NULL,
                              ciphertext, ciphertextlen,
                              &plaintext, &plaintextlen, r_padding);
   if (!rc)

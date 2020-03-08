@@ -28,13 +28,12 @@
 #include "gpg.h"
 #include "options.h"
 #include "packet.h"
-#include "status.h"
+#include "../common/status.h"
 #include "keydb.h"
-#include "util.h"
+#include "../common/util.h"
 #include "main.h"
-#include "ttyio.h"
-#include "status.h"
-#include "i18n.h"
+#include "../common/ttyio.h"
+#include "../common/i18n.h"
 #include "call-agent.h"
 
 struct revocation_reason_info {
@@ -239,7 +238,7 @@ gen_desig_revoke (ctrl_t ctrl, const char *uname, strlist_t locusr)
     }
 
     /* To parse the revkeys */
-    merge_keys_and_selfsig(keyblock);
+    merge_keys_and_selfsig (ctrl, keyblock);
 
     /* get the key from the keyblock */
     node = find_kbnode( keyblock, PKT_PUBLIC_KEY );
@@ -295,7 +294,7 @@ gen_desig_revoke (ctrl_t ctrl, const char *uname, strlist_t locusr)
 	else
 	  {
 	    pk2 = xmalloc_clear (sizeof *pk2);
-	    rc = get_pubkey_byfprint (pk2, NULL,
+	    rc = get_pubkey_byfprint (ctrl, pk2, NULL,
                                       pk->revkey[i].fpr, MAX_FINGERPRINT_LEN);
 	  }
 
@@ -306,11 +305,11 @@ gen_desig_revoke (ctrl_t ctrl, const char *uname, strlist_t locusr)
 
 	    any = 1;
 
-            print_pubkey_info (NULL, pk);
+            print_pubkey_info (ctrl, NULL, pk);
 	    tty_printf ("\n");
 
 	    tty_printf (_("To be revoked by:\n"));
-            print_seckey_info (pk2);
+            print_seckey_info (ctrl, pk2);
 
 	    if(pk->revkey[i].class&0x40)
 	      tty_printf(_("(This is a sensitive revocation key)\n"));
@@ -344,7 +343,7 @@ gen_desig_revoke (ctrl_t ctrl, const char *uname, strlist_t locusr)
 	    push_armor_filter (afx, out);
 
 	    /* create it */
-	    rc = make_keysig_packet( &sig, pk, NULL, NULL, pk2, 0x20, 0,
+	    rc = make_keysig_packet (ctrl, &sig, pk, NULL, NULL, pk2, 0x20, 0,
 				     0, 0,
 				     revocation_reason_build_cb, reason,
                                      NULL);
@@ -442,11 +441,12 @@ gen_desig_revoke (ctrl_t ctrl, const char *uname, strlist_t locusr)
    to stdout or the filename given by --output.  REASON describes the
    revocation reason.  PSK is the public primary key - we expect that
    a corresponding secret key is available.  KEYBLOCK is the entire
-   KEYBLOCK which is used in PGP mode to write a a minimal key and not
+   KEYBLOCK which is used in PGP mode to write a minimal key and not
    just the naked revocation signature; it may be NULL.  If LEADINTEXT
    is not NULL, it is written right before the (armored) output.*/
 static int
-create_revocation (const char *filename,
+create_revocation (ctrl_t ctrl,
+                   const char *filename,
                    struct revocation_reason_info *reason,
                    PKT_public_key *psk,
                    kbnode_t keyblock,
@@ -471,7 +471,7 @@ create_revocation (const char *filename,
   afx->hdrlines = "Comment: This is a revocation certificate\n";
   push_armor_filter (afx, out);
 
-  rc = make_keysig_packet (&sig, psk, NULL, NULL, psk, 0x20, 0,
+  rc = make_keysig_packet (ctrl, &sig, psk, NULL, NULL, psk, 0x20, 0,
                            0, 0,
                            revocation_reason_build_cb, reason, cache_nonce);
   if (rc)
@@ -521,7 +521,7 @@ create_revocation (const char *filename,
    key must be available.  CACHE_NONCE is optional but can be used to
    help gpg-agent to avoid an extra passphrase prompt. */
 int
-gen_standard_revoke (PKT_public_key *psk, const char *cache_nonce)
+gen_standard_revoke (ctrl_t ctrl, PKT_public_key *psk, const char *cache_nonce)
 {
   int rc;
   estream_t memfp;
@@ -532,10 +532,24 @@ gen_standard_revoke (PKT_public_key *psk, const char *cache_nonce)
   u32 keyid[2];
   int kl;
   char *orig_codeset;
+  char *old_outfile;
 
   dir = get_openpgp_revocdir (gnupg_homedir ());
   tmpstr = hexfingerprint (psk, NULL, 0);
-  fname = xstrconcat (dir, DIRSEP_S, tmpstr, NULL);
+  if (!tmpstr)
+    {
+      rc = gpg_error_from_syserror ();
+      xfree (dir);
+      return rc;
+    }
+  fname = strconcat (dir, DIRSEP_S, tmpstr, NULL);
+  if (!fname)
+    {
+      rc = gpg_error_from_syserror ();
+      xfree (tmpstr);
+      xfree (dir);
+      return rc;
+    }
   xfree (tmpstr);
   xfree (dir);
 
@@ -550,14 +564,14 @@ gen_standard_revoke (PKT_public_key *psk, const char *cache_nonce)
   es_fprintf (memfp, "%s\n\n",
               _("This is a revocation certificate for the OpenPGP key:"));
 
-  print_key_line (memfp, psk, 0);
+  print_key_line (ctrl, memfp, psk, 0);
 
   if (opt.keyid_format != KF_NONE)
-    print_fingerprint (memfp, psk, 3);
+    print_fingerprint (ctrl, memfp, psk, 3);
 
   kl = opt.keyid_format == KF_NONE? 0 : keystrlen ();
 
-  tmpstr = get_user_id (keyid, &len);
+  tmpstr = get_user_id (ctrl, keyid, &len, NULL);
   es_fprintf (memfp, "uid%*s%.*s\n\n",
               kl + 10, "",
               (int)len, tmpstr);
@@ -586,7 +600,11 @@ gen_standard_revoke (PKT_public_key *psk, const char *cache_nonce)
 
   reason.code = 0x00; /* No particular reason.  */
   reason.desc = NULL;
-  rc = create_revocation (fname, &reason, psk, NULL, leadin, 3, cache_nonce);
+  old_outfile = opt.outfile;
+  opt.outfile = NULL;
+  rc = create_revocation (ctrl,
+                          fname, &reason, psk, NULL, leadin, 3, cache_nonce);
+  opt.outfile = old_outfile;
   if (!rc && !opt.quiet)
     log_info (_("revocation certificate stored as '%s.rev'\n"), fname);
 
@@ -602,7 +620,7 @@ gen_standard_revoke (PKT_public_key *psk, const char *cache_nonce)
  * Generate a revocation certificate for UNAME
  */
 int
-gen_revoke (const char *uname)
+gen_revoke (ctrl_t ctrl, const char *uname)
 {
   int rc = 0;
   PKT_public_key *psk;
@@ -661,7 +679,7 @@ gen_revoke (const char *uname)
          lines with secret key infos are printed after this message.  */
       log_error (_("'%s' matches multiple secret keys:\n"), uname);
 
-      info = format_seckey_info (keyblock->pkt->pkt.public_key);
+      info = format_seckey_info (ctrl, keyblock->pkt->pkt.public_key);
       log_error ("  %s\n", info);
       xfree (info);
       release_kbnode (keyblock);
@@ -669,7 +687,7 @@ gen_revoke (const char *uname)
       rc = keydb_get_keyblock (kdbhd, &keyblock);
       while (! rc)
         {
-          info = format_seckey_info (keyblock->pkt->pkt.public_key);
+          info = format_seckey_info (ctrl, keyblock->pkt->pkt.public_key);
           log_info ("  %s\n", info);
           xfree (info);
           release_kbnode (keyblock);
@@ -705,7 +723,7 @@ gen_revoke (const char *uname)
     }
 
   keyid_from_pk (psk, keyid );
-  print_seckey_info (psk);
+  print_seckey_info (ctrl, psk);
 
   tty_printf("\n");
   if (!cpr_get_answer_is_yes ("gen_revoke.okay",
@@ -727,7 +745,7 @@ gen_revoke (const char *uname)
   if (!opt.armor)
     tty_printf (_("ASCII armored output forced.\n"));
 
-  rc = create_revocation (NULL, reason, psk, keyblock, NULL, 0, NULL);
+  rc = create_revocation (ctrl, NULL, reason, psk, keyblock, NULL, 0, NULL);
   if (rc)
     goto leave;
 

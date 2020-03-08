@@ -9,7 +9,7 @@
 # WITHOUT ANY WARRANTY, to the extent permitted by law; without even the
 # implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
-# FIXME: Use only valid email addreses, extract only given keys
+# FIXME: Use only valid email addresses, extract only given keys
 
 dryrun=0
 if [ "$1" = "--dry-run" ]; then
@@ -41,7 +41,7 @@ if [ -z "$signedby" ]; then
 fi
 
 if [ "$dryrun" = "0" ]; then
-  echo "About to send the the keys signed by $signedby" >&2
+  echo "About to send the keys signed by $signedby" >&2
   echo -n "to their owners.  Do you really want to do this? (y/N)" >&2
   read
   [ "$REPLY" != "y" -a "$REPLY" != "Y" ] && exit 0

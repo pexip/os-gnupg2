@@ -44,7 +44,7 @@
         Field 1: Constant "v"
         Field 2: Version number of this file.  Must be 1.
 
-        This record must be the first non-comment record record and
+        This record must be the first non-comment record and
         there shall only exist one record of this type.
 
    1.3. CRL cache record
@@ -125,6 +125,9 @@
    idea anyway to limit the number of opened cache files. */
 #define MAX_OPEN_DB_FILES 5
 
+#ifndef O_BINARY
+# define O_BINARY 0
+#endif
 
 static const char oidstr_crlNumber[] = "2.5.29.20";
 /* static const char oidstr_issuingDistributionPoint[] = "2.5.29.28"; */
@@ -1139,7 +1142,7 @@ lock_db_file (crl_cache_t cache, crl_cache_entry_t entry)
       xfree (fname);
       return NULL;
     }
-  fd = open (fname, O_RDONLY);
+  fd = open (fname, O_RDONLY | O_BINARY);
   if (fd == -1)
     {
       log_error (_("error opening cache file '%s': %s\n"),
@@ -1247,13 +1250,15 @@ crl_cache_deinit (void)
 }
 
 
-/* Delete the cache from disk. Return 0 on success.*/
+/* Delete the cache from disk and memory. Return 0 on success.*/
 int
 crl_cache_flush (void)
 {
   int rc;
 
+  crl_cache_deinit ();
   rc = cleanup_cache_dir (0)? -1 : 0;
+  crl_cache_init ();
 
   return rc;
 }
@@ -1562,7 +1567,7 @@ start_sig_check (ksba_crl_t crl, gcry_md_hd_t *md, int *algo)
    should return 0 on a good signature, GPG_ERR_BAD_SIGNATURE if the
    signature does not verify or any other error code. CRL is the CRL
    object we are working on, MD the hash context and ISSUER_CERT the
-   certificate of the CRL issuer.  This function closes MD.  */
+   certificate of the CRL issuer.  This function takes ownership of MD.  */
 static gpg_error_t
 finish_sig_check (ksba_crl_t crl, gcry_md_hd_t md, int algo,
                   ksba_cert_t issuer_cert)
@@ -1646,12 +1651,13 @@ finish_sig_check (ksba_crl_t crl, gcry_md_hd_t md, int algo,
 
 
 /* Call this to match a start_sig_check that can not be completed
-   normally.  */
+   normally.  Takes ownership of MD if MD is not NULL.  */
 static void
 abort_sig_check (ksba_crl_t crl, gcry_md_hd_t md)
 {
   (void)crl;
-  gcry_md_close (md);
+  if (md)
+    gcry_md_close (md);
 }
 
 
@@ -1842,16 +1848,18 @@ crl_parse_insert (ctrl_t ctrl, ksba_crl_t crl,
               }
 
             err = finish_sig_check (crl, md, algo, crlissuer_cert);
+            md = NULL; /* Closed.  */
             if (err)
               {
                 log_error (_("CRL signature verification failed: %s\n"),
                            gpg_strerror (err));
                 goto failure;
               }
-	    md = NULL;
 
             err = validate_cert_chain (ctrl, crlissuer_cert, NULL,
-                                       VALIDATE_MODE_CRL_RECURSIVE,
+                                       (VALIDATE_FLAG_TRUST_CONFIG
+                                        | VALIDATE_FLAG_CRL
+                                        | VALIDATE_FLAG_RECURSIVE),
                                        r_trust_anchor);
             if (err)
               {
@@ -1875,8 +1883,7 @@ crl_parse_insert (ctrl_t ctrl, ksba_crl_t crl,
 
 
  failure:
-  if (md)
-    abort_sig_check (crl, md);
+  abort_sig_check (crl, md);
   ksba_cert_release (crlissuer_cert);
   return err;
 }
@@ -2049,7 +2056,7 @@ crl_cache_insert (ctrl_t ctrl, const char *url, ksba_reader_t reader)
       }
   }
 
-  fd_cdb = open (fname, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  fd_cdb = open (fname, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
   if (fd_cdb == -1)
     {
       err = gpg_error_from_errno (errno);

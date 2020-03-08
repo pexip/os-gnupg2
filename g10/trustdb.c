@@ -29,18 +29,19 @@
 #endif /* !DISABLE_REGEX */
 
 #include "gpg.h"
-#include "status.h"
-#include "iobuf.h"
+#include "../common/status.h"
+#include "../common/iobuf.h"
 #include "keydb.h"
-#include "util.h"
+#include "../common/util.h"
 #include "options.h"
 #include "packet.h"
 #include "main.h"
-#include "mbox-util.h"
-#include "i18n.h"
+#include "../common/mbox-util.h"
+#include "../common/i18n.h"
 #include "tdbio.h"
 #include "trustdb.h"
 #include "tofu.h"
+#include "key-clean.h"
 
 
 typedef struct key_item **KeyHashTable; /* see new_key_hash_table() */
@@ -222,7 +223,7 @@ tdb_register_trusted_key( const char *string )
 
 /*
  * Helper to add a key to the global list of ultimately trusted keys.
- * Retruns: true = inserted, false = already in in list.
+ * Returns: true = inserted, false = already in list.
  */
 static int
 add_utk (u32 *kid)
@@ -248,7 +249,7 @@ add_utk (u32 *kid)
  * Verify that all our secret keys are usable and put them into the utk_list.
  */
 static void
-verify_own_keys(void)
+verify_own_keys (ctrl_t ctrl)
 {
   TRUSTREC rec;
   ulong recnum;
@@ -275,7 +276,7 @@ verify_own_keys(void)
              * the whole validation code to only work with
              * fingerprints */
             fprlen = (!fpr[16] && !fpr[17] && !fpr[18] && !fpr[19])? 16:20;
-            keyid_from_fingerprint (fpr, fprlen, kid);
+            keyid_from_fingerprint (ctrl, fpr, fprlen, kid);
             if (!add_utk (kid))
 	      log_info(_("key %s occurs more than once in the trustdb\n"),
 		       keystr(kid));
@@ -290,15 +291,15 @@ verify_own_keys(void)
           PKT_public_key pk;
 
           memset (&pk, 0, sizeof pk);
-          rc = get_pubkey (&pk, k->kid);
+          rc = get_pubkey (ctrl, &pk, k->kid);
           if (rc)
 	    log_info(_("key %s: no public key for trusted key - skipped\n"),
 		     keystr(k->kid));
           else
 	    {
-	      tdb_update_ownertrust (&pk,
-                                     ((tdb_get_ownertrust (&pk) & ~TRUST_MASK)
-                                      | TRUST_ULTIMATE ));
+	      tdb_update_ownertrust
+                (ctrl, &pk, ((tdb_get_ownertrust (ctrl, &pk, 0) & ~TRUST_MASK)
+                             | TRUST_ULTIMATE ));
 	      release_public_key_parts (&pk);
 	    }
 
@@ -361,9 +362,9 @@ read_record (ulong recno, TRUSTREC *rec, int rectype )
  * Write a record and die on error
  */
 static void
-write_record (TRUSTREC *rec)
+write_record (ctrl_t ctrl, TRUSTREC *rec)
 {
-  int rc = tdbio_write_record (rec);
+  int rc = tdbio_write_record (ctrl, rec);
   if (rc)
     {
       log_error(_("trust record %lu, type %d: write failed: %s\n"),
@@ -439,21 +440,34 @@ how_to_fix_the_trustdb ()
 }
 
 
-void
-init_trustdb ()
+/* Initialize the trustdb.  With NO_CREATE set a missing trustdb is
+ * not an error and the function won't terminate the process on error;
+ * in that case 0 is returned if there is a trustdb or an error code
+ * if no trustdb is available.  */
+gpg_error_t
+init_trustdb (ctrl_t ctrl, int no_create)
 {
   int level = trustdb_args.level;
   const char* dbname = trustdb_args.dbname;
 
   if( trustdb_args.init )
-    return;
+    return 0;
 
   trustdb_args.init = 1;
 
   if(level==0 || level==1)
     {
-      int rc = tdbio_set_dbname( dbname, !!level, &trustdb_args.no_trustdb);
-      if( rc )
+      int rc = tdbio_set_dbname (ctrl, dbname, (!no_create && level),
+                                 &trustdb_args.no_trustdb);
+      if (no_create && trustdb_args.no_trustdb)
+        {
+          /* No trustdb found and the caller asked us not to create
+           * it.  Return an error and set the initialization state
+           * back so that we always test for an existing trustdb.  */
+          trustdb_args.init = 0;
+          return gpg_error (GPG_ERR_ENOENT);
+        }
+      if (rc)
 	log_fatal("can't init trustdb: %s\n", gpg_strerror (rc) );
     }
   else
@@ -488,11 +502,23 @@ init_trustdb ()
       /* Verify the list of ultimately trusted keys and move the
 	 --trusted-keys list there as well. */
       if(level==1)
-	verify_own_keys();
+	verify_own_keys (ctrl);
 
       if(!tdbio_db_matches_options())
 	pending_check_trustdb=1;
     }
+
+  return 0;
+}
+
+
+/* Check whether we have a trust database, initializing it if
+   necessary if the trust model is not 'always trust'.  Returns true
+   if we do have a usable trust database.  */
+int
+have_trustdb (ctrl_t ctrl)
+{
+  return !init_trustdb (ctrl, opt.trust_model == TM_ALWAYS);
 }
 
 
@@ -504,7 +530,7 @@ init_trustdb ()
 void
 check_trustdb (ctrl_t ctrl)
 {
-  init_trustdb();
+  init_trustdb (ctrl, 0);
   if (opt.trust_model == TM_PGP || opt.trust_model == TM_CLASSIC
       || opt.trust_model == TM_TOFU_PGP || opt.trust_model == TM_TOFU)
     {
@@ -541,7 +567,7 @@ check_trustdb (ctrl_t ctrl)
 void
 update_trustdb (ctrl_t ctrl)
 {
-  init_trustdb ();
+  init_trustdb (ctrl, 0);
   if (opt.trust_model == TM_PGP || opt.trust_model == TM_CLASSIC
       || opt.trust_model == TM_TOFU_PGP || opt.trust_model == TM_TOFU)
     validate_keys (ctrl, 1);
@@ -551,15 +577,15 @@ update_trustdb (ctrl_t ctrl)
 }
 
 void
-tdb_revalidation_mark (void)
+tdb_revalidation_mark (ctrl_t ctrl)
 {
-  init_trustdb();
+  init_trustdb (ctrl, 0);
   if (trustdb_args.no_trustdb && opt.trust_model == TM_ALWAYS)
     return;
 
   /* We simply set the time for the next check to 1 (far back in 1970)
      so that a --update-trustdb will be scheduled.  */
-  if (tdbio_write_nextcheck (1))
+  if (tdbio_write_nextcheck (ctrl, 1))
     do_sync ();
   pending_check_trustdb = 1;
 }
@@ -585,13 +611,14 @@ tdb_check_or_update (ctrl_t ctrl)
 }
 
 void
-read_trust_options(byte *trust_model,ulong *created,ulong *nextcheck,
-		   byte *marginals,byte *completes,byte *cert_depth,
-		   byte *min_cert_level)
+read_trust_options (ctrl_t ctrl,
+                    byte *trust_model, ulong *created, ulong *nextcheck,
+		    byte *marginals, byte *completes, byte *cert_depth,
+		    byte *min_cert_level)
 {
   TRUSTREC opts;
 
-  init_trustdb();
+  init_trustdb (ctrl, 0);
   if (trustdb_args.no_trustdb && opt.trust_model == TM_ALWAYS)
     memset (&opts, 0, sizeof opts);
   else
@@ -618,12 +645,12 @@ read_trust_options(byte *trust_model,ulong *created,ulong *nextcheck,
  ***********************************************/
 
 static int
-read_trust_record (PKT_public_key *pk, TRUSTREC *rec)
+read_trust_record (ctrl_t ctrl, PKT_public_key *pk, TRUSTREC *rec)
 {
   int rc;
 
-  init_trustdb();
-  rc = tdbio_search_trust_bypk (pk, rec);
+  init_trustdb (ctrl, 0);
+  rc = tdbio_search_trust_bypk (ctrl, pk, rec);
   if (rc)
     {
       if (gpg_err_code (rc) != GPG_ERR_NOT_FOUND)
@@ -642,12 +669,16 @@ read_trust_record (PKT_public_key *pk, TRUSTREC *rec)
   return 0;
 }
 
-/****************
- * Return the assigned ownertrust value for the given public key.
- * The key should be the primary key.
+
+/*
+ * Return the assigned ownertrust value for the given public key.  The
+ * key should be the primary key.  If NO_CREATE is set a missing
+ * trustdb will not be created.  This comes for example handy when we
+ * want to print status lines (DECRYPTION_KEY) which carry ownertrust
+ * values but we usually use --always-trust.
  */
 unsigned int
-tdb_get_ownertrust ( PKT_public_key *pk)
+tdb_get_ownertrust (ctrl_t ctrl, PKT_public_key *pk, int no_create)
 {
   TRUSTREC rec;
   gpg_error_t err;
@@ -655,7 +686,13 @@ tdb_get_ownertrust ( PKT_public_key *pk)
   if (trustdb_args.no_trustdb && opt.trust_model == TM_ALWAYS)
     return TRUST_UNKNOWN;
 
-  err = read_trust_record (pk, &rec);
+  /* If the caller asked not to create a trustdb we call init_trustdb
+   * directly and allow it to fail with an error code for a
+   * non-existing trustdb.  */
+  if (no_create && init_trustdb (ctrl, 1))
+    return TRUST_UNKNOWN;
+
+  err = read_trust_record (ctrl, pk, &rec);
   if (gpg_err_code (err) == GPG_ERR_NOT_FOUND)
     return TRUST_UNKNOWN; /* no record yet */
   if (err)
@@ -669,7 +706,7 @@ tdb_get_ownertrust ( PKT_public_key *pk)
 
 
 unsigned int
-tdb_get_min_ownertrust (PKT_public_key *pk)
+tdb_get_min_ownertrust (ctrl_t ctrl, PKT_public_key *pk, int no_create)
 {
   TRUSTREC rec;
   gpg_error_t err;
@@ -677,7 +714,13 @@ tdb_get_min_ownertrust (PKT_public_key *pk)
   if (trustdb_args.no_trustdb && opt.trust_model == TM_ALWAYS)
     return TRUST_UNKNOWN;
 
-  err = read_trust_record (pk, &rec);
+  /* If the caller asked not to create a trustdb we call init_trustdb
+   * directly and allow it to fail with an error code for a
+   * non-existing trustdb.  */
+  if (no_create && init_trustdb (ctrl, 1))
+    return TRUST_UNKNOWN;
+
+  err = read_trust_record (ctrl, pk, &rec);
   if (gpg_err_code (err) == GPG_ERR_NOT_FOUND)
     return TRUST_UNKNOWN; /* no record yet */
   if (err)
@@ -695,7 +738,7 @@ tdb_get_min_ownertrust (PKT_public_key *pk)
  * The key should be a primary one.
  */
 void
-tdb_update_ownertrust (PKT_public_key *pk, unsigned int new_trust )
+tdb_update_ownertrust (ctrl_t ctrl, PKT_public_key *pk, unsigned int new_trust )
 {
   TRUSTREC rec;
   gpg_error_t err;
@@ -703,7 +746,7 @@ tdb_update_ownertrust (PKT_public_key *pk, unsigned int new_trust )
   if (trustdb_args.no_trustdb && opt.trust_model == TM_ALWAYS)
     return;
 
-  err = read_trust_record (pk, &rec);
+  err = read_trust_record (ctrl, pk, &rec);
   if (!err)
     {
       if (DBG_TRUST)
@@ -712,8 +755,8 @@ tdb_update_ownertrust (PKT_public_key *pk, unsigned int new_trust )
       if (rec.r.trust.ownertrust != new_trust)
         {
           rec.r.trust.ownertrust = new_trust;
-          write_record( &rec );
-          tdb_revalidation_mark ();
+          write_record (ctrl, &rec);
+          tdb_revalidation_mark (ctrl);
           do_sync ();
         }
     }
@@ -725,12 +768,12 @@ tdb_update_ownertrust (PKT_public_key *pk, unsigned int new_trust )
         log_debug ("insert ownertrust %u\n", new_trust );
 
       memset (&rec, 0, sizeof rec);
-      rec.recnum = tdbio_new_recnum ();
+      rec.recnum = tdbio_new_recnum (ctrl);
       rec.rectype = RECTYPE_TRUST;
       fingerprint_from_pk (pk, rec.r.trust.fingerprint, &dummy);
       rec.r.trust.ownertrust = new_trust;
-      write_record (&rec);
-      tdb_revalidation_mark ();
+      write_record (ctrl, &rec);
+      tdb_revalidation_mark (ctrl);
       do_sync ();
     }
   else
@@ -740,7 +783,7 @@ tdb_update_ownertrust (PKT_public_key *pk, unsigned int new_trust )
 }
 
 static void
-update_min_ownertrust (u32 *kid, unsigned int new_trust )
+update_min_ownertrust (ctrl_t ctrl, u32 *kid, unsigned int new_trust)
 {
   PKT_public_key *pk;
   TRUSTREC rec;
@@ -750,15 +793,16 @@ update_min_ownertrust (u32 *kid, unsigned int new_trust )
     return;
 
   pk = xmalloc_clear (sizeof *pk);
-  err = get_pubkey (pk, kid);
+  err = get_pubkey (ctrl, pk, kid);
   if (err)
     {
       log_error (_("public key %s not found: %s\n"),
                  keystr (kid), gpg_strerror (err));
+      xfree (pk);
       return;
     }
 
-  err = read_trust_record (pk, &rec);
+  err = read_trust_record (ctrl, pk, &rec);
   if (!err)
     {
       if (DBG_TRUST)
@@ -769,8 +813,8 @@ update_min_ownertrust (u32 *kid, unsigned int new_trust )
       if (rec.r.trust.min_ownertrust != new_trust)
         {
           rec.r.trust.min_ownertrust = new_trust;
-          write_record( &rec );
-          tdb_revalidation_mark ();
+          write_record (ctrl, &rec);
+          tdb_revalidation_mark (ctrl);
           do_sync ();
         }
     }
@@ -782,18 +826,20 @@ update_min_ownertrust (u32 *kid, unsigned int new_trust )
         log_debug ("insert min_ownertrust %u\n", new_trust );
 
       memset (&rec, 0, sizeof rec);
-      rec.recnum = tdbio_new_recnum ();
+      rec.recnum = tdbio_new_recnum (ctrl);
       rec.rectype = RECTYPE_TRUST;
       fingerprint_from_pk (pk, rec.r.trust.fingerprint, &dummy);
       rec.r.trust.min_ownertrust = new_trust;
-      write_record (&rec);
-      tdb_revalidation_mark ();
+      write_record (ctrl, &rec);
+      tdb_revalidation_mark (ctrl);
       do_sync ();
     }
   else
     {
       tdbio_invalid ();
     }
+
+  free_public_key (pk);
 }
 
 
@@ -803,17 +849,17 @@ update_min_ownertrust (u32 *kid, unsigned int new_trust )
  * Return: True if a change actually happened.
  */
 int
-tdb_clear_ownertrusts (PKT_public_key *pk)
+tdb_clear_ownertrusts (ctrl_t ctrl, PKT_public_key *pk)
 {
   TRUSTREC rec;
   gpg_error_t err;
 
-  init_trustdb ();
+  init_trustdb (ctrl, 0);
 
   if (trustdb_args.no_trustdb && opt.trust_model == TM_ALWAYS)
     return 0;
 
-  err = read_trust_record (pk, &rec);
+  err = read_trust_record (ctrl, pk, &rec);
   if (!err)
     {
       if (DBG_TRUST)
@@ -827,8 +873,8 @@ tdb_clear_ownertrusts (PKT_public_key *pk)
         {
           rec.r.trust.ownertrust = 0;
           rec.r.trust.min_ownertrust = 0;
-          write_record( &rec );
-          tdb_revalidation_mark ();
+          write_record (ctrl, &rec);
+          tdb_revalidation_mark (ctrl);
           do_sync ();
           return 1;
         }
@@ -844,7 +890,7 @@ tdb_clear_ownertrusts (PKT_public_key *pk)
  * Note: Caller has to do a sync
  */
 static void
-update_validity (PKT_public_key *pk, PKT_user_id *uid,
+update_validity (ctrl_t ctrl, PKT_public_key *pk, PKT_user_id *uid,
                  int depth, int validity)
 {
   TRUSTREC trec, vrec;
@@ -853,7 +899,7 @@ update_validity (PKT_public_key *pk, PKT_user_id *uid,
 
   namehash_from_uid(uid);
 
-  err = read_trust_record (pk, &trec);
+  err = read_trust_record (ctrl, pk, &trec);
   if (err && gpg_err_code (err) != GPG_ERR_NOT_FOUND)
     {
       tdbio_invalid ();
@@ -865,7 +911,7 @@ update_validity (PKT_public_key *pk, PKT_user_id *uid,
       size_t dummy;
 
       memset (&trec, 0, sizeof trec);
-      trec.recnum = tdbio_new_recnum ();
+      trec.recnum = tdbio_new_recnum (ctrl);
       trec.rectype = RECTYPE_TRUST;
       fingerprint_from_pk (pk, trec.r.trust.fingerprint, &dummy);
       trec.r.trust.ownertrust = 0;
@@ -884,7 +930,7 @@ update_validity (PKT_public_key *pk, PKT_user_id *uid,
   if (!recno) /* insert a new validity record */
     {
       memset (&vrec, 0, sizeof vrec);
-      vrec.recnum = tdbio_new_recnum ();
+      vrec.recnum = tdbio_new_recnum (ctrl);
       vrec.rectype = RECTYPE_VALID;
       memcpy (vrec.r.valid.namehash, uid->namehash, 20);
       vrec.r.valid.next = trec.r.trust.validlist;
@@ -893,9 +939,9 @@ update_validity (PKT_public_key *pk, PKT_user_id *uid,
   vrec.r.valid.validity = validity;
   vrec.r.valid.full_count = uid->help_full_count;
   vrec.r.valid.marginal_count = uid->help_marginal_count;
-  write_record (&vrec);
+  write_record (ctrl, &vrec);
   trec.r.trust.depth = depth;
-  write_record (&trec);
+  write_record (ctrl, &trec);
 }
 
 
@@ -906,7 +952,7 @@ update_validity (PKT_public_key *pk, PKT_user_id *uid,
 /* Return true if key is disabled.  Note that this is usually used via
    the pk_is_disabled macro.  */
 int
-tdb_cache_disabled_value (PKT_public_key *pk)
+tdb_cache_disabled_value (ctrl_t ctrl, PKT_public_key *pk)
 {
   gpg_error_t err;
   TRUSTREC trec;
@@ -915,12 +961,12 @@ tdb_cache_disabled_value (PKT_public_key *pk)
   if (pk->flags.disabled_valid)
     return pk->flags.disabled;
 
-  init_trustdb();
+  init_trustdb (ctrl, 0);
 
   if (trustdb_args.no_trustdb)
     return 0;  /* No trustdb => not disabled.  */
 
-  err = read_trust_record (pk, &trec);
+  err = read_trust_record (ctrl, pk, &trec);
   if (err && gpg_err_code (err) != GPG_ERR_NOT_FOUND)
     {
       tdbio_invalid ();
@@ -950,7 +996,7 @@ tdb_check_trustdb_stale (ctrl_t ctrl)
 {
   static int did_nextcheck=0;
 
-  init_trustdb ();
+  init_trustdb (ctrl, 0);
 
   if (trustdb_args.no_trustdb)
     return;  /* No trustdb => can't be stale.  */
@@ -1021,7 +1067,7 @@ tdb_get_validity_core (ctrl_t ctrl,
   (void)may_ask;
 #endif
 
-  init_trustdb ();
+  init_trustdb (ctrl, 0);
 
   /* If we have no trustdb (which also means it has not been created)
      and the trust-model is always, we don't know the validity -
@@ -1036,7 +1082,7 @@ tdb_get_validity_core (ctrl_t ctrl,
     {
       /* Note that this happens BEFORE any user ID stuff is checked.
 	 The direct trust model applies to keys as a whole. */
-      validity = tdb_get_ownertrust (main_pk);
+      validity = tdb_get_ownertrust (ctrl, main_pk, 0);
       goto leave;
     }
 
@@ -1052,7 +1098,7 @@ tdb_get_validity_core (ctrl_t ctrl,
         {
           if (! kb)
             {
-              kb = get_pubkeyblock (main_pk->keyid);
+              kb = get_pubkeyblock (ctrl, main_pk->keyid);
               free_kb = 1;
             }
           n = kb;
@@ -1099,14 +1145,14 @@ tdb_get_validity_core (ctrl_t ctrl,
             }
 
           /* If the user id is revoked or expired, then skip it.  */
-          if (user_id->is_revoked || user_id->is_expired)
+          if (user_id->flags.revoked || user_id->flags.expired)
             {
               if (DBG_TRUST)
                 {
                   char *s;
-                  if (user_id->is_revoked && user_id->is_expired)
+                  if (user_id->flags.revoked && user_id->flags.expired)
                     s = "revoked and expired";
-                  else if (user_id->is_revoked)
+                  else if (user_id->flags.revoked)
                     s = "revoked";
                   else
                     s = "expire";
@@ -1115,7 +1161,7 @@ tdb_get_validity_core (ctrl_t ctrl,
                              s, user_id->name);
                 }
 
-              if (user_id->is_revoked)
+              if (user_id->flags.revoked)
                 continue;
 
               expired = 1;
@@ -1160,7 +1206,7 @@ tdb_get_validity_core (ctrl_t ctrl,
       || opt.trust_model == TM_CLASSIC
       || opt.trust_model == TM_PGP)
     {
-      err = read_trust_record (main_pk, &trec);
+      err = read_trust_record (ctrl, main_pk, &trec);
       if (err && gpg_err_code (err) != GPG_ERR_NOT_FOUND)
 	{
 	  tdbio_invalid ();
@@ -1236,7 +1282,7 @@ tdb_get_validity_core (ctrl_t ctrl,
 
 
 static void
-get_validity_counts (PKT_public_key *pk, PKT_user_id *uid)
+get_validity_counts (ctrl_t ctrl, PKT_public_key *pk, PKT_user_id *uid)
 {
   TRUSTREC trec, vrec;
   ulong recno;
@@ -1248,9 +1294,9 @@ get_validity_counts (PKT_public_key *pk, PKT_user_id *uid)
 
   uid->help_marginal_count=uid->help_full_count=0;
 
-  init_trustdb ();
+  init_trustdb (ctrl, 0);
 
-  if(read_trust_record (pk, &trec))
+  if(read_trust_record (ctrl, pk, &trec))
     return;
 
   /* loop over all user IDs */
@@ -1334,7 +1380,7 @@ ask_ownertrust (ctrl_t ctrl, u32 *kid, int minimum)
   int ot;
 
   pk = xmalloc_clear (sizeof *pk);
-  rc = get_pubkey (pk, kid);
+  rc = get_pubkey (ctrl, pk, kid);
   if (rc)
     {
       log_error (_("public key %s not found: %s\n"),
@@ -1346,14 +1392,14 @@ ask_ownertrust (ctrl_t ctrl, u32 *kid, int minimum)
     {
       log_info("force trust for key %s to %s\n",
 	       keystr(kid),trust_value_to_string(opt.force_ownertrust));
-      tdb_update_ownertrust (pk, opt.force_ownertrust);
+      tdb_update_ownertrust (ctrl, pk, opt.force_ownertrust);
       ot=opt.force_ownertrust;
     }
   else
     {
       ot=edit_ownertrust (ctrl, pk, 0);
       if(ot>0)
-	ot = tdb_get_ownertrust (pk);
+	ot = tdb_get_ownertrust (ctrl, pk, 0);
       else if(ot==0)
 	ot = minimum?minimum:TRUST_UNDEFINED;
       else
@@ -1419,7 +1465,8 @@ dump_key_array (int depth, struct key_array *keys)
 
 
 static void
-store_validation_status (int depth, KBNODE keyblock, KeyHashTable stored)
+store_validation_status (ctrl_t ctrl, int depth,
+                         kbnode_t keyblock, KeyHashTable stored)
 {
   KBNODE node;
   int status;
@@ -1441,7 +1488,7 @@ store_validation_status (int depth, KBNODE keyblock, KeyHashTable stored)
 
           if (status)
             {
-              update_validity (keyblock->pkt->pkt.public_key,
+              update_validity (ctrl, keyblock->pkt->pkt.public_key,
 			       uid, depth, status);
 
 	      mark_keyblock_seen(stored,keyblock);
@@ -1459,6 +1506,10 @@ store_validation_status (int depth, KBNODE keyblock, KeyHashTable stored)
 /* Returns a sanitized copy of the regexp (which might be "", but not
    NULL). */
 #ifndef DISABLE_REGEX
+/* Operator charactors except '.' and backslash.
+   See regex(7) on BSD.  */
+#define REGEXP_OPERATOR_CHARS "^[$()|*+?{"
+
 static char *
 sanitize_regexp(const char *old)
 {
@@ -1469,7 +1520,7 @@ sanitize_regexp(const char *old)
 
   /* There are basically two commonly-used regexps here.  GPG and most
      versions of PGP use "<[^>]+[@.]example\.com>$" and PGP (9)
-     command line uses "example.com" (i.e. whatever the user specfies,
+     command line uses "example.com" (i.e. whatever the user specifies,
      and we can't expect users know to use "\." instead of ".").  So
      here are the rules: we're allowed to start with "<[^>]+[@.]" and
      end with ">$" or start and end with nothing.  In between, the
@@ -1498,7 +1549,7 @@ sanitize_regexp(const char *old)
     {
       if(!escaped && old[start]=='\\')
 	escaped=1;
-      else if(!escaped && old[start]!='.')
+      else if (!escaped && strchr (REGEXP_OPERATOR_CHARS, old[start]))
 	new[idx++]='\\';
       else
 	escaped=0;
@@ -1578,7 +1629,7 @@ check_regexp(const char *expr,const char *string)
  * This function assumes that all kbnode flags are cleared on entry.
  */
 static int
-validate_one_keyblock (KBNODE kb, struct key_item *klist,
+validate_one_keyblock (ctrl_t ctrl, kbnode_t kb, struct key_item *klist,
                        u32 curtime, u32 *next_expire)
 {
   struct key_item *kr;
@@ -1604,8 +1655,8 @@ validate_one_keyblock (KBNODE kb, struct key_item *klist,
 	 resigned.  -dshaw */
 
       if (node->pkt->pkttype == PKT_USER_ID
-	  && !node->pkt->pkt.user_id->is_revoked
-	  && !node->pkt->pkt.user_id->is_expired)
+	  && !node->pkt->pkt.user_id->flags.revoked
+	  && !node->pkt->pkt.user_id->flags.expired)
         {
           if (uidnode && issigned)
             {
@@ -1625,8 +1676,8 @@ validate_one_keyblock (KBNODE kb, struct key_item *klist,
 	    *next_expire = uid->expiredate;
 
           issigned = 0;
-	  get_validity_counts(pk,uid);
-          mark_usable_uid_certs (kb, uidnode, main_kid, klist,
+	  get_validity_counts (ctrl, pk, uid);
+          mark_usable_uid_certs (ctrl, kb, uidnode, main_kid, klist,
                                  curtime, next_expire);
         }
       else if (node->pkt->pkttype == PKT_SIGNATURE
@@ -1758,7 +1809,7 @@ search_skipfnc (void *opaque, u32 *kid, int dummy_uid_no)
  * Caller hast to release the returned array.
  */
 static struct key_array *
-validate_key_list (KEYDB_HANDLE hd, KeyHashTable full_trust,
+validate_key_list (ctrl_t ctrl, KEYDB_HANDLE hd, KeyHashTable full_trust,
                    struct key_item *klist, u32 curtime, u32 *next_expire)
 {
   KBNODE keyblock = NULL;
@@ -1817,7 +1868,7 @@ validate_key_list (KEYDB_HANDLE hd, KeyHashTable full_trust,
         }
 
       /* prepare the keyblock for further processing */
-      merge_keys_and_selfsig (keyblock);
+      merge_keys_and_selfsig (ctrl, keyblock);
       clear_kbnode_flags (keyblock);
       pk = keyblock->pkt->pkt.public_key;
       if (pk->has_expired || pk->flags.revoked)
@@ -1825,7 +1876,8 @@ validate_key_list (KEYDB_HANDLE hd, KeyHashTable full_trust,
           /* it does not make sense to look further at those keys */
           mark_keyblock_seen (full_trust, keyblock);
         }
-      else if (validate_one_keyblock (keyblock, klist, curtime, next_expire))
+      else if (validate_one_keyblock (ctrl, keyblock, klist,
+                                      curtime, next_expire))
         {
 	  KBNODE node;
 
@@ -1874,7 +1926,7 @@ validate_key_list (KEYDB_HANDLE hd, KeyHashTable full_trust,
 
 /* Caller must sync */
 static void
-reset_trust_records(void)
+reset_trust_records (ctrl_t ctrl)
 {
   TRUSTREC rec;
   ulong recnum;
@@ -1888,7 +1940,7 @@ reset_trust_records(void)
 	  if(rec.r.trust.min_ownertrust)
 	    {
 	      rec.r.trust.min_ownertrust=0;
-	      write_record(&rec);
+	      write_record (ctrl, &rec);
 	    }
 
 	}
@@ -1900,7 +1952,7 @@ reset_trust_records(void)
 	  rec.r.valid.validity &= ~TRUST_MASK;
 	  rec.r.valid.marginal_count=rec.r.valid.full_count=0;
 	  nreset++;
-	  write_record(&rec);
+	  write_record (ctrl, &rec);
 	}
 
     }
@@ -1961,7 +2013,7 @@ validate_keys (ctrl_t ctrl, int interactive)
      Perhaps combine this with reset_trust_records(), or only check
      the caches on keys that are actually involved in the web of
      trust. */
-  keydb_rebuild_caches(0);
+  keydb_rebuild_caches (ctrl, 0);
 
   kdb = keydb_new ();
   if (!kdb)
@@ -1973,7 +2025,7 @@ validate_keys (ctrl_t ctrl, int interactive)
   used = new_key_hash_table ();
   full_trust = new_key_hash_table ();
 
-  reset_trust_records();
+  reset_trust_records (ctrl);
 
   /* Fixme: Instead of always building a UTK list, we could just build it
    * here when needed */
@@ -1991,7 +2043,7 @@ validate_keys (ctrl_t ctrl, int interactive)
       KBNODE keyblock;
       PKT_public_key *pk;
 
-      keyblock = get_pubkeyblock (k->kid);
+      keyblock = get_pubkeyblock (ctrl, k->kid);
       if (!keyblock)
         {
           log_error (_("public key of ultimately"
@@ -2005,7 +2057,8 @@ validate_keys (ctrl_t ctrl, int interactive)
       for (node=keyblock; node; node = node->next)
         {
           if (node->pkt->pkttype == PKT_USER_ID)
-	    update_validity (pk, node->pkt->pkt.user_id, 0, TRUST_ULTIMATE);
+	    update_validity (ctrl, pk, node->pkt->pkt.user_id,
+                             0, TRUST_ULTIMATE);
         }
       if ( pk->expiredate && pk->expiredate >= start_time
            && pk->expiredate < next_expire)
@@ -2045,7 +2098,7 @@ validate_keys (ctrl_t ctrl, int interactive)
 	    min=TRUST_MARGINAL;
 
 	  if(min!=k->min_ownertrust)
-	    update_min_ownertrust(k->kid,min);
+	    update_min_ownertrust (ctrl, k->kid,min);
 
           if (interactive && k->ownertrust == TRUST_UNKNOWN)
 	    {
@@ -2091,7 +2144,7 @@ validate_keys (ctrl_t ctrl, int interactive)
         }
 
       /* Find all keys which are signed by a key in kdlist */
-      keys = validate_key_list (kdb, full_trust, klist,
+      keys = validate_key_list (ctrl, kdb, full_trust, klist,
 				start_time, &next_expire);
       if (!keys)
         {
@@ -2108,7 +2161,7 @@ validate_keys (ctrl_t ctrl, int interactive)
         dump_key_array (depth, keys);
 
       for (kar=keys; kar->keyblock; kar++)
-          store_validation_status (depth, kar->keyblock, stored);
+        store_validation_status (ctrl, depth, kar->keyblock, stored);
 
       if (!opt.quiet)
         log_info (_("depth: %d  valid: %3d  signed: %3d"
@@ -2142,9 +2195,10 @@ validate_keys (ctrl_t ctrl, int interactive)
 		      k->kid[1]=kid[1];
 		      k->ownertrust =
 			(tdb_get_ownertrust
-                         (kar->keyblock->pkt->pkt.public_key) & TRUST_MASK);
+                           (ctrl, kar->keyblock->pkt->pkt.public_key, 0)
+                         & TRUST_MASK);
 		      k->min_ownertrust = tdb_get_min_ownertrust
-                        (kar->keyblock->pkt->pkt.public_key);
+                        (ctrl, kar->keyblock->pkt->pkt.public_key, 0);
 		      k->trust_depth=
 			kar->keyblock->pkt->pkt.public_key->trust_depth;
 		      k->trust_value=
@@ -2179,16 +2233,16 @@ validate_keys (ctrl_t ctrl, int interactive)
       int rc2;
 
       if (next_expire == 0xffffffff || next_expire < start_time )
-        tdbio_write_nextcheck (0);
+        tdbio_write_nextcheck (ctrl, 0);
       else
         {
-          tdbio_write_nextcheck (next_expire);
+          tdbio_write_nextcheck (ctrl, next_expire);
           if (!opt.quiet)
             log_info (_("next trustdb check due at %s\n"),
                       strtimestamp (next_expire));
         }
 
-      rc2 = tdbio_update_version_record ();
+      rc2 = tdbio_update_version_record (ctrl);
       if (rc2)
 	{
 	  log_error (_("unable to update trustdb version record: "

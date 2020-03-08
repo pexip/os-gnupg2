@@ -1,5 +1,6 @@
 # inst.nsi - Installer for GnuPG on Windows.      -*- coding: latin-1; -*-
 # Copyright (C) 2005, 2014 g10 Code GmbH
+#               2017 Intevation GmbH
 #
 # This file is part of GnuPG.
 #
@@ -42,7 +43,7 @@
 !define PRETTY_PACKAGE "GNU Privacy Guard"
 !define PRETTY_PACKAGE_SHORT "GnuPG"
 !define COMPANY "The GnuPG Project"
-!define COPYRIGHT "Copyright (C) 2015 The GnuPG Project"
+!define COPYRIGHT "Copyright (C) 2017 The GnuPG Project"
 !define DESCRIPTION "GnuPG: The GNU Privacy Guard for Windows"
 
 !define INSTALL_DIR "GnuPG"
@@ -80,15 +81,23 @@ SetCompressor lzma
 # SetCompressorDictSize 8
 !endif
 
-# Include the generic parts.
-!define HAVE_STARTMENU
-
 # We use the modern UI.
 !include "MUI.nsh"
 
 # Some helper some
 !include "LogicLib.nsh"
 !include "x64.nsh"
+
+# We support user mode installation but prefer system wide
+!define MULTIUSER_EXECUTIONLEVEL Highest
+!define MULTIUSER_MUI
+!define MULTIUSER_INSTALLMODE_COMMANDLINE
+!define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_KEY "Software\${PACKAGE_SHORT}"
+!define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_VALUENAME ""
+!define MULTIUSER_INSTALLMODE_INSTDIR_REGISTRY_KEY "Software\${PACKAGE_SHORT}"
+!define MULTIUSER_INSTALLMODE_INSTDIR_REGISTRY_VALUENAME "Install Directory"
+!define MULTIUSER_INSTALLMODE_INSTDIR "${PACKAGE_SHORT}"
+!include "MultiUser.nsh"
 
 # Set the package name.  Note that this name should not be suffixed
 # with the version because this would get displayed in the start menu.
@@ -108,9 +117,6 @@ OutFile "${NAME}-${VERSION}_${BUILD_DATESTR}.exe"
 !define INSTALL_DIR "GnuPG"
 !endif
 InstallDir "$PROGRAMFILES\${INSTALL_DIR}"
-
-InstallDirRegKey HKLM "Software\${PACKAGE_SHORT}" "Install Directory"
-
 
 # Add version information to the file properties.
 VIProductVersion "${PROD_VERSION}"
@@ -161,7 +167,7 @@ VIAddVersionKey "FileVersion" "${PROD_VERSION}"
 
 # We don't have MUI_PAGE_DIRECTORY
 
-!ifdef HAVE_STARTMENU
+!ifdef WITH_GUI
 
 Page custom CustomPageOptions
 
@@ -169,7 +175,7 @@ Var STARTMENU_FOLDER
 
 !define MUI_PAGE_CUSTOMFUNCTION_PRE CheckIfStartMenuWanted
 !define MUI_STARTMENUPAGE_NODISABLE
-!define MUI_STARTMENUPAGE_REGISTRY_ROOT "HKCU"
+!define MUI_STARTMENUPAGE_REGISTRY_ROOT "SHCTX"
 !define MUI_STARTMENUPAGE_REGISTRY_KEY "Software\GnuPG"
 !define MUI_STARTMENUPAGE_REGISTRY_VALUENAME "Start Menu Folder"
 # We need to set the Startmenu name explicitly because a slash in the
@@ -361,9 +367,10 @@ Function PrintNonAdminWarning
   UserInfo::GetAccountType
   Pop $1
   StrCmp $1 "Admin" leave +1
-  MessageBox MB_OK "$(T_AdminNeeded)"
-  Quit
-
+  MessageBox MB_YESNO "$(T_AdminWanted)" IDNO exit
+  goto leave
+ exit:
+    Quit
  leave:
 FunctionEnd
 
@@ -446,24 +453,30 @@ LangString T_FoundExistingVersion ${LANG_GERMAN} \
        eine neuere oder dieselbe Version handelt.)"
 LangString T_FoundExistingVersionB ${LANG_ENGLISH} \
      "A version of GnuPG has already been installed on the system. \
-      There will be no problem installing and thus overwriting this \
-      Version. $\r$\n\
+       $\r$\n\
        $\r$\n\
       Do you want to continue installing GnuPG?"
 LangString T_FoundExistingVersionB ${LANG_GERMAN} \
      "Eine Version von GnuPG ist hier bereits installiert. \
-      Es ist problemlos möglich, die Installation fortzuführen.  $\r$\n\
+        $\r$\n\
         $\r$\n\
       Möchten die die Installation von GnuPG fortführen?"
 
 
 
 # From Function PrintNonAdminWarning
-LangString T_AdminNeeded ${LANG_ENGLISH} \
-   "Warning: Administrator permissions required for a successful installation"
-LangString T_AdminNeeded ${LANG_GERMAN} \
-   "Achtung: Für eine erfolgreiche Installation werden \
-    Administratorrechte benötigt."
+LangString T_AdminWanted ${LANG_ENGLISH} \
+   "Warning: It is recommended to install GnuPG system-wide with \
+    administrator rights. \
+      $\r$\n\
+      $\r$\n\
+    Do you want to continue installing GnuPG without administrator rights?"
+LangString T_AdminWanted ${LANG_GERMAN} \
+   "Achtung: Es wird empfohlen GnuPG systemweit mit \
+    Administratorrechten zu installieren. \
+      $\r$\n\
+      $\r$\n\
+    Möchten die die Installation von GnuPG ohne Administratorrechte fortführen?"
 
 # From Function PrintCloseOtherApps
 LangString T_CloseOtherApps ${LANG_ENGLISH} \
@@ -504,8 +517,24 @@ FunctionEnd
 # AddToPath - Adds the given dir to the search path.
 #        Input - head of the stack
 Function AddToPath
+  ClearErrors
+  UserInfo::GetName
+  IfErrors add_admin
+  Pop $0
+  UserInfo::GetAccountType
+  Pop $1
+  StrCmp $1 "Admin" add_admin add_user
+
+add_admin:
   Exch $0
-  g4wihelp::path_add "$0"
+  g4wihelp::path_add "$0" "0"
+  goto add_done
+add_user:
+  Exch $0
+  g4wihelp::path_add "$0" "1"
+  goto add_done
+
+add_done:
   StrCmp $R5 "0" add_to_path_done
   SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
   add_to_path_done:
@@ -516,8 +545,24 @@ FunctionEnd
 # RemoveFromPath - Remove a given dir from the path
 #     Input: head of the stack
 Function un.RemoveFromPath
+  ClearErrors
+  UserInfo::GetName
+  IfErrors remove_admin
+  Pop $0
+  UserInfo::GetAccountType
+  Pop $1
+  StrCmp $1 "Admin" remove_admin remove_user
+
+remove_admin:
   Exch $0
-  g4wihelp::path_remove "$0"
+  g4wihelp::path_remove "$0" "0"
+  goto remove_done
+remove_user:
+  Exch $0
+  g4wihelp::path_remove "$0" "1"
+  goto remove_done
+
+remove_done:
   StrCmp $R5 "0" remove_from_path_done
   SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
   remove_from_path_done:
@@ -540,7 +585,7 @@ Section "-gnupginst"
   FileWrite $0 "${VERSION}$\r$\n"
   FileClose $0
 
-  WriteRegStr HKLM "Software\GnuPG" "Install Directory" $INSTDIR
+  WriteRegStr SHCTX "Software\GnuPG" "Install Directory" $INSTDIR
 
   # If we are reinstalling, try to kill a possible running gpa using
   # an already installed gpa.
@@ -580,7 +625,9 @@ Section "GnuPG" SEC_gnupg
   File "bin/gpgconf.exe"
   File "bin/gpg-connect-agent.exe"
   File "bin/gpgtar.exe"
+  File "libexec/dirmngr_ldap.exe"
   File "libexec/gpg-preset-passphrase.exe"
+  File "libexec/gpg-wks-client.exe"
 
   ClearErrors
   SetOverwrite try
@@ -607,9 +654,8 @@ Section "GnuPG" SEC_gnupg
       Rename /REBOOTOK scdaemon.exe.tmp scdaemon.exe
 
   SetOutPath "$INSTDIR\share\gnupg"
-  File "share/gnupg/gpg-conf.skel"
-  File "share/gnupg/dirmngr-conf.skel"
   File "share/gnupg/distsigkey.gpg"
+  File "share/gnupg/sks-keyservers.netCA.pem"
 
   SetOutPath "$INSTDIR\share\locale\ca\LC_MESSAGES"
   File share/locale/ca/LC_MESSAGES/gnupg2.mo
@@ -698,6 +744,8 @@ Section "-libgpg-error" SEC_libgpg_error
   File share/locale/de/LC_MESSAGES/libgpg-error.mo
   SetOutPath "$INSTDIR\share\locale\eo\LC_MESSAGES"
   File share/locale/eo/LC_MESSAGES/libgpg-error.mo
+  SetOutPath "$INSTDIR\share\locale\es\LC_MESSAGES"
+  File share/locale/es/LC_MESSAGES/libgpg-error.mo
   SetOutPath "$INSTDIR\share\locale\fr\LC_MESSAGES"
   File share/locale/fr/LC_MESSAGES/libgpg-error.mo
   SetOutPath "$INSTDIR\share\locale\hu\LC_MESSAGES"
@@ -733,15 +781,6 @@ SectionEnd
 Section "-zlib" SEC_zlib
   SetOutPath "$INSTDIR\bin"
   File bin/zlib1.dll
-SectionEnd
-
-Section "-adns" SEC_adns
-  SetOutPath "$INSTDIR\bin"
-  File bin/libadns-1.dll
-  SetOutPath "$INSTDIR\lib"
-  File /oname=libadns.imp lib/libadns.dll.a
-  SetOutPath "$INSTDIR\include"
-  File include/adns.h
 SectionEnd
 
 Section "-npth" SEC_npth
@@ -1193,12 +1232,6 @@ Section "-un.npth"
   Delete "$INSTDIR\include\npth.h"
 SectionEnd
 
-Section "-un.adns"
-  Delete "$INSTDIR\bin\libadns-1.dll"
-  Delete "$INSTDIR\lib\libadns.imp"
-  Delete "$INSTDIR\include\adns.h"
-SectionEnd
-
 Section "-un.zlib"
   Delete "$INSTDIR\bin\zlib1.dll"
 SectionEnd
@@ -1219,6 +1252,9 @@ Section "-un.libgpg-error"
   Delete "$INSTDIR\share\locale\eo\LC_MESSAGES\libgpg-error.mo"
   RMDir "$INSTDIR\share\locale\eo\LC_MESSAGES"
   RMDir "$INSTDIR\share\locale\eo"
+  Delete "$INSTDIR\share\locale\es\LC_MESSAGES\libgpg-error.mo"
+  RMDir "$INSTDIR\share\locale\es\LC_MESSAGES"
+  RMDir "$INSTDIR\share\locale\es"
   Delete "$INSTDIR\share\locale\fr\LC_MESSAGES\libgpg-error.mo"
   RMDir "$INSTDIR\share\locale\fr\LC_MESSAGES"
   RMDir "$INSTDIR\share\locale\fr"
@@ -1277,8 +1313,11 @@ Section "-un.gnupg"
   Delete "$INSTDIR\bin\gpgconf.exe"
   Delete "$INSTDIR\bin\gpg-connect-agent.exe"
   Delete "$INSTDIR\bin\gpgtar.exe"
+  Delete "$INSTDIR\bin\dirmngr_ldap.exe"
   Delete "$INSTDIR\bin\gpg-preset-passphrase.exe"
+  Delete "$INSTDIR\bin\gpg-wks-client.exe"
 
+  Delete "$INSTDIR\share\gnupg\sks-keyservers.netCA.pem"
   Delete "$INSTDIR\share\gnupg\dirmngr-conf.skel"
   Delete "$INSTDIR\share\gnupg\distsigkey.gpg"
   Delete "$INSTDIR\share\gnupg\gpg-conf.skel"
@@ -1394,7 +1433,7 @@ Section "-un.gnupginst"
   RMDir "$INSTDIR"
 
   # Clean the registry.
-  DeleteRegValue HKLM "Software\GNU\GnuPG" "Install Directory"
+  DeleteRegValue SHCTX "Software\GNU\GnuPG" "Install Directory"
 SectionEnd
 
 
@@ -1422,8 +1461,25 @@ Function .onInit
   !insertmacro MUI_INSTALLOPTIONS_EXTRACT "${W32_SRCDIR}/inst-options.ini"
 
   #Call CalcDepends
+
+  Var /GLOBAL changed_dir
+  # Check if the install directory was modified on the command line
+  StrCmp "$INSTDIR" "$PROGRAMFILES\${INSTALL_DIR}" unmodified 0
+  # It is modified. Save that value.
+  StrCpy $changed_dir "$INSTDIR"
+
+  # MULITUSER_INIT overwrites directory setting from command line
+  !insertmacro MULTIUSER_INIT
+  StrCpy $INSTDIR "$changed_dir"
+  goto initDone
+unmodified:
+  !insertmacro MULTIUSER_INIT
+initDone:
 FunctionEnd
 
+Function "un.onInit"
+  !insertmacro MULTIUSER_UNINIT
+FunctionEnd
 
 #Function .onInstFailed
 #  Delete $TEMP\gpgspltmp.wav
@@ -1451,13 +1507,6 @@ FunctionEnd
 
 !ifdef WITH_GUI
 Section "-startmenu"
-
-!ifdef HAVE_STARTMENU
-  # Make sure that the context of the automatic variables has been set to
-  # the "all users" shell folder.  This guarantees that the menu gets written
-  # for all users.  We have already checked that we are running as Admin; or
-  # we printed a warning that installation will not succeed.
-  SetShellVarContext all
 
   # Check if the start menu entries where requested.
   !insertmacro MUI_INSTALLOPTIONS_READ $R0 "${W32_SRCDIR}/inst-options.ini" \
@@ -1530,7 +1579,6 @@ no_gpa_quicklaunch:
 no_quick_launch:
 
 
-!endif
 SectionEnd
 !endif
 
@@ -1546,30 +1594,23 @@ Section
 
   # Windows Add/Remove Programs support
   StrCpy $MYTMP "Software\Microsoft\Windows\CurrentVersion\Uninstall\GnuPG"
-  WriteRegExpandStr HKLM $MYTMP "UninstallString" '"$INSTDIR\gnupg-uninstall.exe"'
-  WriteRegExpandStr HKLM $MYTMP "InstallLocation" "$INSTDIR"
-  WriteRegStr       HKLM $MYTMP "DisplayName"     "${PRETTY_PACKAGE}"
+  WriteRegExpandStr SHCTX $MYTMP "UninstallString" '"$INSTDIR\gnupg-uninstall.exe"'
+  WriteRegExpandStr SHCTX $MYTMP "InstallLocation" "$INSTDIR"
+  WriteRegStr       SHCTX $MYTMP "DisplayName"     "${PRETTY_PACKAGE}"
 !ifdef WITH_GUI
-  WriteRegStr       HKLM $MYTMP "DisplayIcon"     "$INSTDIR\bin\gpa.exe,0"
+  WriteRegStr       SHCTX $MYTMP "DisplayIcon"     "$INSTDIR\bin\gpa.exe,0"
+!else
+  WriteRegStr       SHCTX $MYTMP "DisplayIcon"     "$INSTDIR\bin\gpg.exe,0"
 !endif
-  WriteRegStr       HKLM $MYTMP "DisplayVersion"  "${VERSION}"
-  WriteRegStr       HKLM $MYTMP "Publisher"       "The GnuPG Project"
-  WriteRegStr       HKLM $MYTMP "URLInfoAbout"    "https://gnupg.org"
-  WriteRegDWORD     HKLM $MYTMP "NoModify"        "1"
-  WriteRegDWORD     HKLM $MYTMP "NoRepair"        "1"
+  WriteRegStr       SHCTX $MYTMP "DisplayVersion"  "${VERSION}"
+  WriteRegStr       SHCTX $MYTMP "Publisher"       "The GnuPG Project"
+  WriteRegStr       SHCTX $MYTMP "URLInfoAbout"    "https://gnupg.org"
+  WriteRegDWORD     SHCTX $MYTMP "NoModify"        "1"
+  WriteRegDWORD     SHCTX $MYTMP "NoRepair"        "1"
 SectionEnd
 
-
 Section Uninstall
-
 !ifdef WITH_GUI
-!ifdef HAVE_STARTMENU
-  # Make sure that the context of the automatic variables has been set to
-  # the "all users" shell folder.  This guarantees that the menu gets written
-  # for all users.  We have already checked that we are running as Admin; or
-  # we printed a warning that installation will not succeed.
-  SetShellVarContext all
-
   #---------------------------------------------------
   # Delete the menu entries and any empty parent menus
   #---------------------------------------------------
@@ -1587,7 +1628,7 @@ Section Uninstall
     StrCmp $MYTMP $SMPROGRAMS startMenuDeleteLoopDone startMenuDeleteLoop
   startMenuDeleteLoopDone:
 
-  DeleteRegValue HKLM "Software\GNU\GnuPG" "Start Menu Folder"
+  DeleteRegValue SHCTX "Software\GNU\GnuPG" "Start Menu Folder"
 
   # Delete Desktop links.
   Delete "$DESKTOP\GPA.lnk"
@@ -1600,14 +1641,13 @@ Section Uninstall
 no_quick_launch_uninstall:
 
 !endif
-!endif
 
   Delete "$INSTDIR\gnupg-uninstall.exe"
   RMDir "$INSTDIR"
 
   # Clean the registry.
-  DeleteRegValue HKLM "Software\GnuPG" "Install Directory"
-  DeleteRegKey /ifempty HKLM "Software\GnuPG"
+  DeleteRegValue SHCTX "Software\GnuPG" "Install Directory"
+  DeleteRegKey /ifempty SHCTX "Software\GnuPG"
   # Remove Windows Add/Remove Programs support.
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GnuPG"
+  DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\GnuPG"
 SectionEnd

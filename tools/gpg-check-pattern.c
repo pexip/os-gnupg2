@@ -40,9 +40,9 @@
 #include <regex.h>
 #include <ctype.h>
 
-#include "util.h"
-#include "i18n.h"
-#include "sysutils.h"
+#include "../common/util.h"
+#include "../common/i18n.h"
+#include "../common/sysutils.h"
 #include "../common/init.h"
 
 
@@ -74,7 +74,7 @@ static ARGPARSE_OPTS opts[] = {
   { oCheck,   "check", 0,  "run only a syntax check on the patternfile" },
   { oNull,    "null", 0,   "input is expected to be null delimited" },
 
-  {0}
+  ARGPARSE_end ()
 };
 
 

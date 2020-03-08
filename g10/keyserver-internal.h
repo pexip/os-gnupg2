@@ -23,7 +23,7 @@
 #include <time.h>
 #include "../common/keyserver.h"
 #include "../common/iobuf.h"
-#include "types.h"
+#include "../common/types.h"
 
 int parse_keyserver_options(char *options);
 void free_keyserver_spec(struct keyserver_spec *keyserver);
@@ -40,7 +40,7 @@ int keyserver_import_keyid (ctrl_t ctrl, u32 *keyid,
                             struct keyserver_spec *keyserver, int quick);
 gpg_error_t keyserver_refresh (ctrl_t ctrl, strlist_t users);
 gpg_error_t keyserver_search (ctrl_t ctrl, strlist_t tokens);
-int keyserver_fetch (ctrl_t ctrl, strlist_t urilist);
+int keyserver_fetch (ctrl_t ctrl, strlist_t urilist, int origin);
 int keyserver_import_cert (ctrl_t ctrl, const char *name, int dane_mode,
                            unsigned char **fpr,size_t *fpr_len);
 gpg_error_t keyserver_import_pka (ctrl_t ctrl, const char *name,

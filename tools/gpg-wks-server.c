@@ -1,25 +1,26 @@
 /* gpg-wks-server.c - A server for the Web Key Service protocols.
- * Copyright (C) 2016 Werner Koch
+ * Copyright (C) 2016, 2018 Werner Koch
+ * Copyright (C) 2016 Bundesamt für Sicherheit in der Informationstechnik
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
+ * This file is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation; either version 2.1 of
+ * the License, or (at your option) any later version.
  *
- * GnuPG is distributed in the hope that it will be useful,
+ * This file is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 /* The Web Key Service I-D defines an update protocol to store a
  * public key in the Web Key Directory.  The current specification is
- * draft-koch-openpgp-webkey-service-01.txt.
+ * draft-koch-openpgp-webkey-service-05.txt.
  */
 
 #include <config.h>
@@ -31,14 +32,15 @@
 #include <sys/stat.h>
 #include <dirent.h>
 
-#include "util.h"
-#include "init.h"
-#include "sysutils.h"
-#include "ccparray.h"
-#include "exectool.h"
-#include "zb32.h"
-#include "mbox-util.h"
-#include "name-value.h"
+#include "../common/util.h"
+#include "../common/init.h"
+#include "../common/sysutils.h"
+#include "../common/userids.h"
+#include "../common/ccparray.h"
+#include "../common/exectool.h"
+#include "../common/zb32.h"
+#include "../common/mbox-util.h"
+#include "../common/name-value.h"
 #include "mime-maker.h"
 #include "send-mail.h"
 #include "gpg-wks.h"
@@ -56,17 +58,24 @@ enum cmd_and_opt_values
     oQuiet      = 'q',
     oVerbose	= 'v',
     oOutput     = 'o',
+    oDirectory  = 'C',
 
     oDebug      = 500,
 
     aReceive,
     aCron,
     aListDomains,
+    aInstallKey,
+    aRevokeKey,
+    aRemoveKey,
+    aCheck,
 
     oGpgProgram,
     oSend,
     oFrom,
     oHeader,
+    oWithDir,
+    oWithFile,
 
     oDummy
   };
@@ -82,6 +91,15 @@ static ARGPARSE_OPTS opts[] = {
               ("run regular jobs")),
   ARGPARSE_c (aListDomains, "list-domains",
               ("list configured domains")),
+  ARGPARSE_c (aCheck, "check",
+              ("check whether a key is installed")),
+  ARGPARSE_c (aCheck, "check-key", "@"),
+  ARGPARSE_c (aInstallKey, "install-key",
+              "install a key from FILE into the WKD"),
+  ARGPARSE_c (aRemoveKey, "remove-key",
+              "remove a key from the WKD"),
+  ARGPARSE_c (aRevokeKey, "revoke-key",
+              "mark a key as revoked"),
 
   ARGPARSE_group (301, ("@\nOptions:\n ")),
 
@@ -91,9 +109,12 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_s (oGpgProgram, "gpg", "@"),
   ARGPARSE_s_n (oSend, "send", "send the mail using sendmail"),
   ARGPARSE_s_s (oOutput, "output", "|FILE|write the mail to FILE"),
+  ARGPARSE_s_s (oDirectory, "directory", "|DIR|use DIR as top directory"),
   ARGPARSE_s_s (oFrom, "from", "|ADDR|use ADDR as the default sender"),
   ARGPARSE_s_s (oHeader, "header" ,
                 "|NAME=VALUE|add \"NAME: VALUE\" as header to all mails"),
+  ARGPARSE_s_n (oWithDir, "with-dir", "@"),
+  ARGPARSE_s_n (oWithFile, "with-file", "@"),
 
   ARGPARSE_end ()
 };
@@ -117,10 +138,17 @@ static struct debug_flags_s debug_flags [] =
 struct server_ctx_s
 {
   char *fpr;
-  strlist_t mboxes;  /* List of addr-specs taken from the UIDs.  */
+  uidinfo_list_t mboxes;  /* List with addr-specs taken from the UIDs.  */
   unsigned int draft_version_2:1; /* Client supports the draft 2.  */
 };
 typedef struct server_ctx_s *server_ctx_t;
+
+
+/* Flag for --with-dir.  */
+static int opt_with_dir;
+/* Flag for --with-file.  */
+static int opt_with_file;
+
 
 /* Prototypes.  */
 static gpg_error_t get_domain_list (strlist_t *r_list);
@@ -129,11 +157,13 @@ static gpg_error_t command_receive_cb (void *opaque,
                                        const char *mediatype, estream_t fp,
                                        unsigned int flags);
 static gpg_error_t command_list_domains (void);
+static gpg_error_t command_revoke_key (const char *mailaddr);
+static gpg_error_t command_check_key (const char *mailaddr);
 static gpg_error_t command_cron (void);
 
 
 
-/* Print usage information and and provide strings for help. */
+/* Print usage information and provide strings for help. */
 static const char *
 my_strusage( int level )
 {
@@ -141,8 +171,8 @@ my_strusage( int level )
 
   switch (level)
     {
-    case 11: p = "gpg-wks-server (@GNUPG@)";
-      break;
+    case 11: p = "gpg-wks-server"; break;
+    case 12: p = "@GNUPG@"; break;
     case 13: p = VERSION; break;
     case 17: p = PRINTABLE_OS_NAME; break;
     case 19: p = ("Please report bugs to <@EMAIL@>.\n"); break;
@@ -195,6 +225,9 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
         case oGpgProgram:
           opt.gpg_program = pargs->r.ret_str;
           break;
+        case oDirectory:
+          opt.directory = pargs->r.ret_str;
+          break;
         case oFrom:
           opt.default_from = pargs->r.ret_str;
           break;
@@ -207,10 +240,20 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
         case oOutput:
           opt.output = pargs->r.ret_str;
           break;
+        case oWithDir:
+          opt_with_dir = 1;
+          break;
+        case oWithFile:
+          opt_with_file = 1;
+          break;
 
 	case aReceive:
         case aCron:
         case aListDomains:
+        case aCheck:
+        case aInstallKey:
+        case aRemoveKey:
+        case aRevokeKey:
           cmd = pargs->r_opt;
           break;
 
@@ -227,7 +270,7 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
 int
 main (int argc, char **argv)
 {
-  gpg_error_t err;
+  gpg_error_t err, firsterr;
   ARGPARSE_ARGS pargs;
   enum cmd_and_opt_values cmd;
 
@@ -310,6 +353,7 @@ main (int argc, char **argv)
       {
         log_error ("directory '%s' has too relaxed permissions\n",
                    opt.directory);
+        log_info ("Fix by running: chmod o-rw '%s'\n", opt.directory);
         exit (2);
       }
   }
@@ -334,6 +378,40 @@ main (int argc, char **argv)
 
     case aListDomains:
       err = command_list_domains ();
+      break;
+
+    case aInstallKey:
+      if (!argc)
+        err = wks_cmd_install_key (NULL, NULL);
+      else if (argc == 2)
+        err = wks_cmd_install_key (*argv, argv[1]);
+      else
+        wrong_args ("--install-key [FILE|FINGERPRINT USER-ID]");
+      break;
+
+    case aRemoveKey:
+      if (argc != 1)
+        wrong_args ("--remove-key USER-ID");
+      err = wks_cmd_remove_key (*argv);
+      break;
+
+    case aRevokeKey:
+      if (argc != 1)
+        wrong_args ("--revoke-key USER-ID");
+      err = command_revoke_key (*argv);
+      break;
+
+    case aCheck:
+      if (!argc)
+        wrong_args ("--check USER-IDs");
+      firsterr = 0;
+      for (; argc; argc--, argv++)
+        {
+          err = command_check_key (*argv);
+          if (!firsterr)
+            firsterr = err;
+        }
+      err = firsterr;
       break;
 
     default:
@@ -915,6 +993,18 @@ send_confirmation_request (server_ctx_t ctx,
   err = mime_maker_add_header (mime, "Subject", "Confirm your key publication");
   if (err)
     goto leave;
+
+  err = mime_maker_add_header (mime, "Wks-Draft-Version",
+                               STR2(WKS_DRAFT_VERSION));
+  if (err)
+    goto leave;
+
+  /* Help Enigmail to identify messages.  Note that this is in no way
+   * secured.  */
+  err = mime_maker_add_header (mime, "WKS-Phase", "confirm");
+  if (err)
+    goto leave;
+
   for (sl = opt.extra_headers; sl; sl = sl->next)
     {
       err = mime_maker_add_header (mime, sl->d, NULL);
@@ -1008,7 +1098,7 @@ send_confirmation_request (server_ctx_t ctx,
       if (err)
         goto leave;
 
-      mime_maker_dump_tree (mime);
+      /* mime_maker_dump_tree (mime); */
       err = mime_maker_get_part (mime, partid, &signeddata);
       if (err)
         goto leave;
@@ -1046,36 +1136,36 @@ static gpg_error_t
 process_new_key (server_ctx_t ctx, estream_t key)
 {
   gpg_error_t err;
-  strlist_t sl;
+  uidinfo_list_t sl;
   const char *s;
   char *dname = NULL;
   char *nonce = NULL;
   char *fname = NULL;
   struct policy_flags_s policybuf;
 
+  memset (&policybuf, 0, sizeof policybuf);
+
   /* First figure out the user id from the key.  */
   xfree (ctx->fpr);
-  free_strlist (ctx->mboxes);
+  free_uidinfo_list (ctx->mboxes);
   err = wks_list_key (key, &ctx->fpr, &ctx->mboxes);
   if (err)
     goto leave;
-  if (!ctx->fpr)
-    {
-      log_error ("error parsing key (no fingerprint)\n");
-      err = gpg_error (GPG_ERR_NO_PUBKEY);
-      goto leave;
-    }
+  log_assert (ctx->fpr);
   log_info ("fingerprint: %s\n", ctx->fpr);
   for (sl = ctx->mboxes; sl; sl = sl->next)
     {
-      log_info ("  addr-spec: %s\n", sl->d);
+      if (sl->mbox)
+        log_info ("  addr-spec: %s\n", sl->mbox);
     }
 
   /* Walk over all user ids and send confirmation requests for those
    * we support.  */
   for (sl = ctx->mboxes; sl; sl = sl->next)
     {
-      s = strchr (sl->d, '@');
+      if (!sl->mbox)
+        continue;
+      s = strchr (sl->mbox, '@');
       log_assert (s && s[1]);
       xfree (dname);
       dname = make_filename_try (opt.directory, s+1, NULL);
@@ -1087,26 +1177,26 @@ process_new_key (server_ctx_t ctx, estream_t key)
 
       if (access (dname, W_OK))
         {
-          log_info ("skipping address '%s': Domain not configured\n", sl->d);
+          log_info ("skipping address '%s': Domain not configured\n", sl->mbox);
           continue;
         }
-      if (get_policy_flags (&policybuf, sl->d))
+      if (get_policy_flags (&policybuf, sl->mbox))
         {
-          log_info ("skipping address '%s': Bad policy flags\n", sl->d);
+          log_info ("skipping address '%s': Bad policy flags\n", sl->mbox);
           continue;
         }
 
       if (policybuf.auth_submit)
         {
-          /* Bypass the confirmation stuff and publish the the key as is.  */
-          log_info ("publishing address '%s'\n", sl->d);
+          /* Bypass the confirmation stuff and publish the key as is.  */
+          log_info ("publishing address '%s'\n", sl->mbox);
           /* FIXME: We need to make sure that we do this only for the
            * address in the mail.  */
           log_debug ("auth-submit not yet working!\n");
         }
       else
         {
-          log_info ("storing address '%s'\n", sl->d);
+          log_info ("storing address '%s'\n", sl->mbox);
 
           xfree (nonce);
           xfree (fname);
@@ -1114,7 +1204,7 @@ process_new_key (server_ctx_t ctx, estream_t key)
           if (err)
             goto leave;
 
-          err = send_confirmation_request (ctx, sl->d, nonce, fname);
+          err = send_confirmation_request (ctx, sl->mbox, nonce, fname);
           if (err)
             goto leave;
         }
@@ -1126,6 +1216,7 @@ process_new_key (server_ctx_t ctx, estream_t key)
   xfree (nonce);
   xfree (fname);
   xfree (dname);
+  wks_free_policy (&policybuf);
   return err;
 }
 
@@ -1206,6 +1297,13 @@ send_congratulation_message (const char *mbox, const char *keyfile)
   err = mime_maker_add_header (mime, "Subject", "Your key has been published");
   if (err)
     goto leave;
+  err = mime_maker_add_header (mime, "Wks-Draft-Version",
+                               STR2(WKS_DRAFT_VERSION));
+  if (err)
+    goto leave;
+  err = mime_maker_add_header (mime, "WKS-Phase", "done");
+  if (err)
+    goto leave;
   for (sl = opt.extra_headers; sl; sl = sl->next)
     {
       err = mime_maker_add_header (mime, sl->d, NULL);
@@ -1260,7 +1358,7 @@ check_and_publish (server_ctx_t ctx, const char *address, const char *nonce)
   char *hash = NULL;
   const char *domain;
   const char *s;
-  strlist_t sl;
+  uidinfo_list_t sl;
   char shaxbuf[32]; /* Used for SHA-1 and SHA-256 */
 
   /* FIXME: There is a bug in name-value.c which adds white space for
@@ -1298,25 +1396,21 @@ check_and_publish (server_ctx_t ctx, const char *address, const char *nonce)
 
   /* We need to get the fingerprint from the key.  */
   xfree (ctx->fpr);
-  free_strlist (ctx->mboxes);
+  free_uidinfo_list (ctx->mboxes);
   err = wks_list_key (key, &ctx->fpr, &ctx->mboxes);
   if (err)
     goto leave;
-  if (!ctx->fpr)
-    {
-      log_error ("error parsing key (no fingerprint)\n");
-      err = gpg_error (GPG_ERR_NO_PUBKEY);
-      goto leave;
-    }
+  log_assert (ctx->fpr);
   log_info ("fingerprint: %s\n", ctx->fpr);
   for (sl = ctx->mboxes; sl; sl = sl->next)
-    log_info ("  addr-spec: %s\n", sl->d);
+    if (sl->mbox)
+      log_info ("  addr-spec: %s\n", sl->mbox);
 
   /* Check that the key has 'address' as a user id.  We use
    * case-insensitive matching because the client is expected to
    * return the address verbatim.  */
   for (sl = ctx->mboxes; sl; sl = sl->next)
-    if (!strcmp (sl->d, address))
+    if (sl->mbox && !strcmp (sl->mbox, address))
       break;
   if (!sl)
     {
@@ -1326,24 +1420,10 @@ check_and_publish (server_ctx_t ctx, const char *address, const char *nonce)
       goto leave;
     }
 
-
   /* Hash user ID and create filename.  */
-  s = strchr (address, '@');
-  log_assert (s);
-  gcry_md_hash_buffer (GCRY_MD_SHA1, shaxbuf, address, s - address);
-  hash = zb32_encode (shaxbuf, 8*20);
-  if (!hash)
-    {
-      err = gpg_error_from_syserror ();
-      goto leave;
-    }
-
-  fnewname = make_filename_try (opt.directory, domain, "hu", hash, NULL);
-  if (!fnewname)
-    {
-      err = gpg_error_from_syserror ();
-      goto leave;
-    }
+  err = wks_compute_hu_fname (&fnewname, address);
+  if (err)
+    goto leave;
 
   /* Publish.  */
   err = copy_key_as_binary (fname, fnewname, address);
@@ -1354,6 +1434,11 @@ check_and_publish (server_ctx_t ctx, const char *address, const char *nonce)
                  fname, fnewname, gpg_strerror (err));
       goto leave;
     }
+
+  /* Make sure it is world readable.  */
+  if (gnupg_chmod (fnewname, "-rwxr--r--"))
+    log_error ("can't set permissions of '%s': %s\n",
+               fnewname, gpg_strerror (gpg_err_code_from_syserror()));
 
   log_info ("key %s published for '%s'\n", ctx->fpr, address);
   send_congratulation_message (address, fnewname);
@@ -1507,15 +1592,15 @@ command_receive_cb (void *opaque, const char *mediatype,
     }
 
   xfree (ctx.fpr);
-  free_strlist (ctx.mboxes);
+  free_uidinfo_list (ctx.mboxes);
 
   return err;
 }
 
 
 
-/* Return a list of all configured domains.  ECh list element is the
- * top directory for for the domain.  To figure out the actual domain
+/* Return a list of all configured domains.  Each list element is the
+ * top directory for the domain.  To figure out the actual domain
  * name strrchr(name, '/') can be used.  */
 static gpg_error_t
 get_domain_list (strlist_t *r_list)
@@ -1724,7 +1809,11 @@ command_list_domains (void)
       domain = strrchr (sl->d, '/');
       log_assert (domain);
       domain++;
-      es_printf ("%s\n", domain);
+      if (opt_with_dir)
+        es_printf ("%s %s\n", domain, sl->d);
+      else
+        es_printf ("%s\n", domain);
+
 
       /* Check that the required directories are there.  */
       for (i=0; i < DIM (requireddirs); i++)
@@ -1789,7 +1878,17 @@ command_list_domains (void)
       if (!fp)
         {
           err = gpg_error_from_syserror ();
-          if (gpg_err_code (err) != GPG_ERR_ENOENT)
+          if (gpg_err_code (err) == GPG_ERR_ENOENT)
+            {
+              fp = es_fopen (fname, "w");
+              if (!fp)
+                log_error ("domain %s: can't create policy file: %s\n",
+                           domain, gpg_strerror (err));
+              else
+                es_fclose (fp);
+              fp = NULL;
+            }
+          else
             log_error ("domain %s: error in policy file: %s\n",
                        domain, gpg_strerror (err));
         }
@@ -1798,16 +1897,8 @@ command_list_domains (void)
           struct policy_flags_s policy;
           err = wks_parse_policy (&policy, fp, 0);
           es_fclose (fp);
-          if (!err)
-            {
-              struct policy_flags_s empty_policy;
-              memset (&empty_policy, 0, sizeof empty_policy);
-              if (!memcmp (&empty_policy, &policy, sizeof policy))
-                log_error ("domain %s: empty policy file\n", domain);
-            }
+          wks_free_policy (&policy);
         }
-
-
     }
   err = 0;
 
@@ -1836,4 +1927,57 @@ command_cron (void)
 
   free_strlist (domaindirs);
   return err;
+}
+
+
+/* Check whether the key with USER_ID is installed.  */
+static gpg_error_t
+command_check_key (const char *userid)
+{
+  gpg_error_t err;
+  char *addrspec = NULL;
+  char *fname = NULL;
+
+  err = wks_fname_from_userid (userid, &fname, &addrspec);
+  if (err)
+    goto leave;
+
+  if (access (fname, R_OK))
+    {
+      err = gpg_error_from_syserror ();
+      if (opt_with_file)
+        es_printf ("%s n %s\n", addrspec, fname);
+      if (gpg_err_code (err) == GPG_ERR_ENOENT)
+        {
+          if (!opt.quiet)
+            log_info ("key for '%s' is NOT installed\n", addrspec);
+          log_inc_errorcount ();
+          err = 0;
+        }
+      else
+        log_error ("error stating '%s': %s\n", fname, gpg_strerror (err));
+      goto leave;
+    }
+
+  if (opt_with_file)
+    es_printf ("%s i %s\n", addrspec, fname);
+
+  if (opt.verbose)
+    log_info ("key for '%s' is installed\n", addrspec);
+  err = 0;
+
+ leave:
+  xfree (fname);
+  xfree (addrspec);
+  return err;
+}
+
+
+/* Revoke the key with mail address MAILADDR.  */
+static gpg_error_t
+command_revoke_key (const char *mailaddr)
+{
+  /* Remove should be different from removing but we have not yet
+   * defined a suitable way to do this.  */
+  return wks_cmd_remove_key (mailaddr);
 }

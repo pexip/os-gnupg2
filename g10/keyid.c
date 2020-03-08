@@ -28,14 +28,14 @@
 #include <time.h>
 
 #include "gpg.h"
-#include "util.h"
+#include "../common/util.h"
 #include "main.h"
 #include "packet.h"
 #include "options.h"
 #include "keydb.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 #include "rmd160.h"
-#include "host2net.h"
+#include "../common/host2net.h"
 
 
 #define KEYID_STR_SIZE 19
@@ -202,7 +202,7 @@ hash_public_key (gcry_md_hd_t md, PKT_public_key *pk)
     }
 
   gcry_md_putc ( md, 0x99 );     /* ctb */
-  /* What does it mean if n is greater than than 0xFFFF ? */
+  /* What does it mean if n is greater than 0xFFFF ? */
   gcry_md_putc ( md, n >> 8 );   /* 2 byte length header */
   gcry_md_putc ( md, n );
   gcry_md_putc ( md, pk->version );
@@ -538,7 +538,8 @@ keyid_from_pk (PKT_public_key *pk, u32 *keyid)
  * keys, but has to do a keylookup for old stayle keys.
  */
 u32
-keyid_from_fingerprint( const byte *fprint, size_t fprint_len, u32 *keyid )
+keyid_from_fingerprint (ctrl_t ctrl, const byte *fprint,
+                        size_t fprint_len, u32 *keyid)
 {
   u32 dummy_keyid[2];
 
@@ -552,7 +553,7 @@ keyid_from_fingerprint( const byte *fprint, size_t fprint_len, u32 *keyid )
       int rc;
 
       memset (&pk, 0, sizeof pk);
-      rc = get_pubkey_byfprint (&pk, NULL, fprint, fprint_len);
+      rc = get_pubkey_byfprint (ctrl, &pk, NULL, fprint, fprint_len);
       if( rc )
         {
           log_error("Oops: keyid_from_fingerprint: no pubkey\n");
@@ -612,9 +613,13 @@ nbits_from_pk (PKT_public_key *pk)
 }
 
 
-static const char *
-mk_datestr (char *buffer, time_t atime)
+/* Convert an UTC TIMESTAMP into an UTC yyyy-mm-dd string.  Return
+ * that string.  The caller should pass a buffer with at least a size
+ * of MK_DATESTR_SIZE.  */
+char *
+mk_datestr (char *buffer, size_t bufsize, u32 timestamp)
 {
+  time_t atime = timestamp;
   struct tm *tp;
 
   if (IS_INVALID_TIME_T (atime))
@@ -622,8 +627,8 @@ mk_datestr (char *buffer, time_t atime)
   else
     {
       tp = gmtime (&atime);
-      sprintf (buffer,"%04d-%02d-%02d",
-               1900+tp->tm_year, tp->tm_mon+1, tp->tm_mday );
+      snprintf (buffer, bufsize, "%04d-%02d-%02d",
+                1900+tp->tm_year, tp->tm_mon+1, tp->tm_mday );
     }
   return buffer;
 }
@@ -637,59 +642,51 @@ mk_datestr (char *buffer, time_t atime)
 const char *
 datestr_from_pk (PKT_public_key *pk)
 {
-  static char buffer[11+5];
-  time_t atime = pk->timestamp;
+  static char buffer[MK_DATESTR_SIZE];
 
-  return mk_datestr (buffer, atime);
+  return mk_datestr (buffer, sizeof buffer, pk->timestamp);
 }
 
 
 const char *
 datestr_from_sig (PKT_signature *sig )
 {
-  static char buffer[11+5];
-  time_t atime = sig->timestamp;
+  static char buffer[MK_DATESTR_SIZE];
 
-  return mk_datestr (buffer, atime);
+  return mk_datestr (buffer, sizeof buffer, sig->timestamp);
 }
 
 
 const char *
 expirestr_from_pk (PKT_public_key *pk)
 {
-  static char buffer[11+5];
-  time_t atime;
+  static char buffer[MK_DATESTR_SIZE];
 
   if (!pk->expiredate)
     return _("never     ");
-  atime = pk->expiredate;
-  return mk_datestr (buffer, atime);
+  return mk_datestr (buffer, sizeof buffer, pk->expiredate);
 }
 
 
 const char *
 expirestr_from_sig (PKT_signature *sig)
 {
-  static char buffer[11+5];
-  time_t atime;
+  static char buffer[MK_DATESTR_SIZE];
 
   if (!sig->expiredate)
     return _("never     ");
-  atime=sig->expiredate;
-  return mk_datestr (buffer, atime);
+  return mk_datestr (buffer, sizeof buffer, sig->expiredate);
 }
 
 
 const char *
 revokestr_from_pk( PKT_public_key *pk )
 {
-  static char buffer[11+5];
-  time_t atime;
+  static char buffer[MK_DATESTR_SIZE];
 
   if(!pk->revoked.date)
     return _("never     ");
-  atime=pk->revoked.date;
-  return mk_datestr (buffer, atime);
+  return mk_datestr (buffer, sizeof buffer, pk->revoked.date);
 }
 
 
@@ -793,12 +790,12 @@ fingerprint_from_pk (PKT_public_key *pk, byte *array, size_t *ret_len)
 
 
 /* Return an allocated buffer with the fingerprint of PK formatted as
-   a plain hexstring.  If BUFFER is NULL the result is a malloc'd
-   string.  If BUFFER is not NULL the result will be copied into this
-   buffer.  In the latter case BUFLEN describes the length of the
-   buffer; if this is too short the function terminates the process.
-   Returns a malloc'ed string or BUFFER.  A suitable length for BUFFER
-   is (2*MAX_FINGERPRINT_LEN + 1). */
+ * a plain hexstring.  If BUFFER is NULL the result is a malloc'd
+ * string.  If BUFFER is not NULL the result will be copied into this
+ * buffer.  In the latter case BUFLEN describes the length of the
+ * buffer; if this is too short the function terminates the process.
+ * Returns a malloc'ed string or BUFFER.  A suitable length for BUFFER
+ * is (2*MAX_FINGERPRINT_LEN + 1). */
 char *
 hexfingerprint (PKT_public_key *pk, char *buffer, size_t buflen)
 {
@@ -807,7 +804,11 @@ hexfingerprint (PKT_public_key *pk, char *buffer, size_t buflen)
 
   fingerprint_from_pk (pk, fpr, &len);
   if (!buffer)
-    buffer = xmalloc (2 * len + 1);
+    {
+      buffer = xtrymalloc (2 * len + 1);
+      if (!buffer)
+        return NULL;
+    }
   else if (buflen < 2*len+1)
     log_fatal ("%s: buffer too short (%zu)\n", __func__, buflen);
   bin2hex (fpr, len, buffer);
@@ -940,7 +941,12 @@ keygrip_from_pk (PKT_public_key *pk, unsigned char *array)
 
   if (!gcry_pk_get_keygrip (s_pkey, array))
     {
-      log_info ("error computing keygrip\n");
+      char *hexfpr;
+
+      hexfpr = hexfingerprint (pk, NULL, 0);
+      log_info ("error computing keygrip (fpr=%s)\n", hexfpr);
+      xfree (hexfpr);
+
       memset (array, 0, 20);
       err = gpg_error (GPG_ERR_GENERAL);
     }

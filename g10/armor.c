@@ -26,15 +26,14 @@
 #include <ctype.h>
 
 #include "gpg.h"
-#include "status.h"
-#include "iobuf.h"
-#include "util.h"
+#include "../common/status.h"
+#include "../common/iobuf.h"
+#include "../common/util.h"
 #include "filter.h"
 #include "packet.h"
 #include "options.h"
 #include "main.h"
-#include "status.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 
 #define MAX_LINELEN 20000
 
@@ -1294,7 +1293,7 @@ armor_filter( void *opaque, int control,
 	    c = bintoasc[radbuf[2]&077];
 	    iobuf_put(a, c);
 	    iobuf_writestr(a,afx->eol);
-	    /* and the the trailer */
+	    /* and the trailer */
 	    if( afx->what >= DIM(tail_strings) )
 		log_bug("afx->what=%d", afx->what);
 	    iobuf_writestr(a, "-----");
@@ -1441,7 +1440,7 @@ unarmor_pump (UnarmorPump x, int c)
         break;
       case STA_first_dash: /* just need for initialization */
         x->pos = 0;
-        x->state = STA_compare_header;
+        x->state = STA_compare_header; /* fall through */
       case STA_compare_header:
         if ( "-----BEGIN PGP SIGNATURE-----"[++x->pos] == c ) {
             if ( x->pos == 28 )
@@ -1522,7 +1521,7 @@ unarmor_pump (UnarmorPump x, int c)
         /* assume that we are at the next line */
         x->state = STA_read_crc;
         x->pos = 0;
-        x->mycrc = 0;
+        x->mycrc = 0; /* fall through */
       case STA_read_crc:
         if( (c = asctobin[c]) == 255 ) {
             rval = -1; /* ready */

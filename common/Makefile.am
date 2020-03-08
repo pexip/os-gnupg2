@@ -20,7 +20,8 @@
 
 EXTRA_DIST = mkstrtable.awk exaudit.awk exstatus.awk ChangeLog-2011 \
              audit-events.h status-codes.h ChangeLog.jnlib \
-	     ChangeLog-2011.include w32info-rc.h.in gnupg.ico
+	     ChangeLog-2011.include w32info-rc.h.in gnupg.ico \
+	     all-tests.scm
 
 noinst_LIBRARIES = libcommon.a libcommonpth.a libgpgrl.a
 if !HAVE_W32CE_SYSTEM
@@ -91,7 +92,10 @@ common_sources = \
 	exectool.c exectool.h \
 	server-help.c server-help.h \
 	name-value.c name-value.h \
-	recsel.c recsel.h
+	recsel.c recsel.h \
+	ksba-io-support.c ksba-io-support.h \
+	compliance.c compliance.h
+
 
 if HAVE_W32_SYSTEM
 common_sources += w32-reg.c

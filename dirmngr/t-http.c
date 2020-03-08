@@ -38,11 +38,12 @@
 #include <unistd.h>
 #include <assuan.h>
 
-#include "util.h"
-#include "logging.h"
+#include "../common/util.h"
+#include "../common/logging.h"
+#include "dns-stuff.h"
 #include "http.h"
 
-
+#include <ksba.h>
 #if HTTP_USE_NTBTLS
 # include <ntbtls.h>
 #elif HTTP_USE_GNUTLS
@@ -118,6 +119,57 @@ my_gnutls_log (int level, const char *text)
 }
 #endif
 
+#if HTTP_USE_NTBTLS
+static gpg_error_t
+my_http_tls_verify_cb (void *opaque,
+                       http_t http,
+                       http_session_t session,
+                       unsigned int http_flags,
+                       void *tls_context)
+{
+  gpg_error_t err;
+  int idx;
+  ksba_cert_t cert;
+  ksba_cert_t hostcert = NULL;
+
+  (void)opaque;
+  (void)http;
+  (void)session;
+  (void)http_flags;
+
+  /* Get the peer's certs fron ntbtls.  */
+  for (idx = 0;
+       (cert = ntbtls_x509_get_peer_cert (tls_context, idx)); idx++)
+    {
+      if (!idx)
+        {
+          log_info ("Received host certificate\n");
+          hostcert = cert;
+        }
+      else
+        {
+
+          log_info ("Received additional certificate\n");
+          ksba_cert_release (cert);
+        }
+    }
+  if (!idx)
+    {
+      err  = gpg_error (GPG_ERR_MISSING_CERT);
+      goto leave;
+    }
+
+  err = 0;
+
+ leave:
+  ksba_cert_release (hostcert);
+  log_info ("my_http_tls_verify_cb returns: %s\n", gpg_strerror (err));
+  return err;
+}
+#endif /*HTTP_USE_NTBTLS*/
+
+
+
 /* Prepend FNAME with the srcdir environment variable's value and
    return an allocated filename. */
 static char *
@@ -142,16 +194,17 @@ main (int argc, char **argv)
 {
   int last_argc = -1;
   gpg_error_t err;
-  int rc;
-  parsed_uri_t uri;
+  int rc;  parsed_uri_t uri;
   uri_tuple_t r;
   http_t hd;
   int c;
   unsigned int my_http_flags = 0;
   int no_out = 0;
   int tls_dbg = 0;
+  int no_crl = 0;
   const char *cafile = NULL;
   http_session_t session = NULL;
+  unsigned int timeout = 0;
 
   gpgrt_init ();
   log_set_prefix (PGM, GPGRT_LOG_WITH_PREFIX | GPGRT_LOG_WITH_PID);
@@ -171,12 +224,14 @@ main (int argc, char **argv)
                  "Options:\n"
                  "  --verbose         print timings etc.\n"
                  "  --debug           flyswatter\n"
-                 "  --gnutls-debug N  use GNUTLS debug level N\n"
+                 "  --tls-debug N     use TLS debug level N\n"
                  "  --cacert FNAME    expect CA certificate in file FNAME\n"
+                 "  --timeout MS      timeout for connect in MS\n"
                  "  --no-verify       do not verify the certificate\n"
                  "  --force-tls       use HTTP_FLAG_FORCE_TLS\n"
                  "  --force-tor       use HTTP_FLAG_FORCE_TOR\n"
-                 "  --no-out          do not print the content\n",
+                 "  --no-out          do not print the content\n"
+                 "  --no-crl          do not consuilt a CRL\n",
                  stdout);
           exit (0);
         }
@@ -191,7 +246,7 @@ main (int argc, char **argv)
           debug++;
           argc--; argv++;
         }
-      else if (!strcmp (*argv, "--gnutls-debug"))
+      else if (!strcmp (*argv, "--tls-debug"))
         {
           argc--; argv++;
           if (argc)
@@ -206,6 +261,15 @@ main (int argc, char **argv)
           if (argc)
             {
               cafile = *argv;
+              argc--; argv++;
+            }
+        }
+      else if (!strcmp (*argv, "--timeout"))
+        {
+          argc--; argv++;
+          if (argc)
+            {
+              timeout = strtoul (*argv, NULL, 10);
               argc--; argv++;
             }
         }
@@ -229,6 +293,11 @@ main (int argc, char **argv)
           no_out = 1;
           argc--; argv++;
         }
+      else if (!strcmp (*argv, "--no-crl"))
+        {
+          no_crl = 1;
+          argc--; argv++;
+        }
       else if (!strncmp (*argv, "--", 2))
         {
           fprintf (stderr, PGM ": unknown option '%s'\n", *argv);
@@ -244,13 +313,33 @@ main (int argc, char **argv)
   if (!cafile)
     cafile = prepend_srcdir ("tls-ca.pem");
 
+  if (verbose)
+    my_http_flags |= HTTP_FLAG_LOG_RESP;
+
+  if (verbose || debug)
+    http_set_verbose (verbose, debug);
+
   /* http.c makes use of the assuan socket wrapper.  */
   assuan_sock_init ();
 
+  if ((my_http_flags & HTTP_FLAG_FORCE_TOR))
+    {
+      enable_dns_tormode (1);
+      if (assuan_sock_set_flag (ASSUAN_INVALID_FD, "tor-mode", 1))
+        {
+          log_error ("error enabling Tor mode: %s\n", strerror (errno));
+          log_info ("(is your Libassuan recent enough?)\n");
+        }
+    }
+
 #if HTTP_USE_NTBTLS
-
-  (void)err;
-
+  log_info ("new session.\n");
+  err = http_session_new (&session, NULL,
+                          ((no_crl? HTTP_FLAG_NO_CRL : 0)
+                           | HTTP_FLAG_TRUST_DEF),
+                          my_http_tls_verify_cb, NULL);
+  if (err)
+    log_error ("http_session_new failed: %s\n", gpg_strerror (err));
   ntbtls_set_debug (tls_dbg, NULL, NULL);
 
 #elif HTTP_USE_GNUTLS
@@ -262,7 +351,10 @@ main (int argc, char **argv)
   http_register_tls_callback (verify_callback);
   http_register_tls_ca (cafile);
 
-  err = http_session_new (&session, NULL, NULL, HTTP_FLAG_TRUST_DEF);
+  err = http_session_new (&session, NULL,
+                          ((no_crl? HTTP_FLAG_NO_CRL : 0)
+                           | HTTP_FLAG_TRUST_DEF),
+                          NULL, NULL);
   if (err)
     log_error ("http_session_new failed: %s\n", gpg_strerror (err));
 
@@ -283,6 +375,10 @@ main (int argc, char **argv)
   if (tls_dbg)
     gnutls_global_set_log_level (tls_dbg);
 
+#else
+  (void)err;
+  (void)tls_dbg;
+  (void)no_crl;
 #endif /*HTTP_USE_GNUTLS*/
 
   rc = http_parse_uri (&uri, *argv, 1);
@@ -298,9 +394,9 @@ main (int argc, char **argv)
   else
     {
       printf ("Auth  : %s\n", uri->auth? uri->auth:"[none]");
-      printf ("Host  : %s\n", uri->host);
+      printf ("Host  : %s (off=%hu)\n", uri->host, uri->off_host);
       printf ("Port  : %u\n", uri->port);
-      printf ("Path  : %s\n", uri->path);
+      printf ("Path  : %s (off=%hu)\n", uri->path, uri->off_path);
       for (r = uri->params; r; r = r->next)
         {
           printf ("Params: %s", r->name);
@@ -338,6 +434,9 @@ main (int argc, char **argv)
   fflush (stdout);
   http_release_parsed_uri (uri);
   uri = NULL;
+
+  if (session)
+    http_session_set_timeout (session, timeout);
 
   rc = http_open_document (&hd, *argv, NULL, my_http_flags,
                            NULL, session, NULL, NULL);

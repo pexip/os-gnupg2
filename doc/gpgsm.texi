@@ -256,11 +256,11 @@ fingerprints or keygrips.
 
 @item --export-secret-key-p12 @var{key-id}
 @opindex export-secret-key-p12
-Export the private key and the certificate identified by @var{key-id} in
-a PKCS#12 format. When used with the @code{--armor} option a few
+Export the private key and the certificate identified by @var{key-id}
+using the PKCS#12 format.  When used with the @code{--armor} option a few
 informational lines are prepended to the output.  Note, that the PKCS#12
-format is not very secure and this command is only provided if there is
-no other way to exchange the private key. (@xref{option --p12-charset}.)
+format is not very secure and proper transport security should be used
+to convey the exported key.  (@xref{option --p12-charset}.)
 
 @item --export-secret-key-p8 @var{key-id}
 @itemx --export-secret-key-raw @var{key-id}
@@ -365,10 +365,7 @@ default value is @file{@value{BINDIR}/dirmngr}.
 
 @item --prefer-system-dirmngr
 @opindex prefer-system-dirmngr
-If a system wide @command{dirmngr} is running in daemon mode, first try
-to connect to this one.  Fallback to a pipe based server if this does
-not work.  Under Windows this option is ignored because the system dirmngr is
-always used.
+This option is obsolete and ignored.
 
 @item --disable-dirmngr
 Entirely disable the use of the Dirmngr.
@@ -564,7 +561,7 @@ Write output to @var{file}.  The default is to write it to stdout.
 Displays extra information with the @code{--list-keys} commands.  Especially
 a line tagged @code{grp} is printed which tells you the keygrip of a
 key.  This string is for example used as the file name of the
-secret key.
+secret key.  Implies @code{--with-colons}.
 
 @anchor{gpgsm-option --with-validation}
 @item --with-validation
@@ -768,6 +765,15 @@ are:
   Pinentry the user is not prompted again if he enters a bad password.
 @end table
 
+@item --request-origin @var{origin}
+@opindex request-origin
+Tell gpgsm to assume that the operation ultimately originated at
+@var{origin}.  Depending on the origin certain restrictions are applied
+and the Pinentry may include an extra note on the origin.  Supported
+values for @var{origin} are: @code{local} which is the default,
+@code{remote} to indicate a remote origin or @code{browser} for an
+operation requested by a web browser.
+
 @item --no-common-certs-import
 @opindex no-common-certs-import
 Suppress the import of common certificates on keybox creation.
@@ -898,7 +904,7 @@ start up with a working configuration.  For existing users a small
 helper script is provided to create these files (@pxref{addgnupghome}).
 
 For internal purposes @command{gpgsm} creates and maintains a few other files;
-they all live in in the current home directory (@pxref{option
+they all live in the current home directory (@pxref{option
 --homedir}).  Only @command{gpgsm} may modify these files.
 
 
@@ -1564,8 +1570,8 @@ to @var{value}.
 This option overrides the command line option
 @option{--include-certs}.  A @var{value} of -2 includes all
 certificates except for the root certificate, -1 includes all
-certicates, 0 does not include any certicates, 1 includes only the
-signers certicate and all other positive values include up to
+certificates, 0 does not include any certificates, 1 includes only the
+signers certificate and all other positive values include up to
 @var{value} certificates starting with the signer cert.
 
 @item list-mode

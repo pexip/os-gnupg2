@@ -1,7 +1,7 @@
 /* gpg.c - The GnuPG utility (main for gpg)
  * Copyright (C) 1998-2011 Free Software Foundation, Inc.
- * Copyright (C) 1997-2016 Werner Koch
- * Copyright (C) 2015-2016 g10 Code GmbH
+ * Copyright (C) 1997-2017 Werner Koch
+ * Copyright (C) 2015-2017 g10 Code GmbH
  *
  * This file is part of GnuPG.
  *
@@ -41,27 +41,28 @@
 #include "gpg.h"
 #include <assuan.h>
 #include "../common/iobuf.h"
-#include "util.h"
+#include "../common/util.h"
 #include "packet.h"
-#include "membuf.h"
+#include "../common/membuf.h"
 #include "main.h"
 #include "options.h"
 #include "keydb.h"
 #include "trustdb.h"
 #include "filter.h"
-#include "ttyio.h"
-#include "i18n.h"
-#include "sysutils.h"
-#include "status.h"
+#include "../common/ttyio.h"
+#include "../common/i18n.h"
+#include "../common/sysutils.h"
+#include "../common/status.h"
 #include "keyserver-internal.h"
 #include "exec.h"
-#include "gc-opt-flags.h"
-#include "asshelp.h"
+#include "../common/gc-opt-flags.h"
+#include "../common/asshelp.h"
 #include "call-dirmngr.h"
 #include "tofu.h"
 #include "../common/init.h"
 #include "../common/mbox-util.h"
 #include "../common/shareddefs.h"
+#include "../common/compliance.h"
 
 #if defined(HAVE_DOSISH_SYSTEM) || defined(__CYGWIN__)
 #define MY_O_BINARY  O_BINARY
@@ -73,6 +74,9 @@
 #define MY_O_BINARY  0
 #endif
 
+#ifdef __MINGW32__
+int _dowildcard = -1;
+#endif
 
 enum cmd_and_opt_values
   {
@@ -105,6 +109,7 @@ enum cmd_and_opt_values
     oCertNotation,
     oShowNotation,
     oNoShowNotation,
+    oKnownNotation,
     aEncrFiles,
     aEncrSym,
     aDecryptFiles,
@@ -124,6 +129,7 @@ enum cmd_and_opt_values
     aQuickAddKey,
     aQuickRevUid,
     aQuickSetExpire,
+    aQuickSetPrimaryUid,
     aListConfig,
     aListGcryptConfig,
     aGPGConfList,
@@ -144,6 +150,7 @@ enum cmd_and_opt_values
     aSearchKeys,
     aRefreshKeys,
     aFetchKeys,
+    aShowKeys,
     aExport,
     aExportSecret,
     aExportSecretSub,
@@ -196,6 +203,7 @@ enum cmd_and_opt_values
     oWithWKDHash,
     oWithColons,
     oWithKeyData,
+    oWithKeyOrigin,
     oWithTofuInfo,
     oWithSigList,
     oWithSigCheck,
@@ -258,7 +266,6 @@ enum cmd_and_opt_values
     oRequireSecmem,
     oNoRequireSecmem,
     oNoPermissionWarn,
-    oNoMDCWarn,
     oNoArmor,
     oNoDefKeyring,
     oNoKeyring,
@@ -292,10 +299,6 @@ enum cmd_and_opt_values
     oShowPhotos,
     oNoShowPhotos,
     oPhotoViewer,
-    oForceMDC,
-    oNoForceMDC,
-    oDisableMDC,
-    oNoDisableMDC,
     oS2KMode,
     oS2KDigest,
     oS2KCipher,
@@ -368,6 +371,7 @@ enum cmd_and_opt_values
     oPersonalCompressPreferences,
     oAgentProgram,
     oDirmngrProgram,
+    oDisableDirmngr,
     oDisplay,
     oTTYname,
     oTTYtype,
@@ -414,6 +418,9 @@ enum cmd_and_opt_values
     oOnlySignTextIDs,
     oDisableSignerUID,
     oSender,
+    oKeyOrigin,
+    oRequestOrigin,
+    oNoSymkeyCache,
 
     oNoop
   };
@@ -460,6 +467,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_c (aQuickRevUid,  "quick-revuid", "@"),
   ARGPARSE_c (aQuickSetExpire,  "quick-set-expire",
               N_("quickly set a new expiration date")),
+  ARGPARSE_c (aQuickSetPrimaryUid,  "quick-set-primary-uid", "@"),
   ARGPARSE_c (aFullKeygen,  "full-generate-key" ,
               N_("full featured key pair generation")),
   ARGPARSE_c (aFullKeygen,  "full-gen-key", "@"),
@@ -492,6 +500,7 @@ static ARGPARSE_OPTS opts[] = {
               N_("update all keys from a keyserver")),
   ARGPARSE_c (aLocateKeys, "locate-keys", "@"),
   ARGPARSE_c (aFetchKeys, "fetch-keys" , "@" ),
+  ARGPARSE_c (aShowKeys, "show-keys" , "@" ),
   ARGPARSE_c (aExportSecret, "export-secret-keys" , "@" ),
   ARGPARSE_c (aExportSecretSub, "export-secret-subkeys" , "@" ),
   ARGPARSE_c (aExportSshKey, "export-ssh-key", "@" ),
@@ -588,11 +597,6 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oQuiet,	  "quiet",   "@"),
   ARGPARSE_s_n (oNoTTY,   "no-tty",  "@"),
 
-  ARGPARSE_s_n (oForceMDC, "force-mdc", "@"),
-  ARGPARSE_s_n (oNoForceMDC, "no-force-mdc", "@"),
-  ARGPARSE_s_n (oDisableMDC, "disable-mdc", "@"),
-  ARGPARSE_s_n (oNoDisableMDC, "no-disable-mdc", "@"),
-
   ARGPARSE_s_n (oDisableSignerUID, "disable-signer-uid", "@"),
 
   ARGPARSE_s_n (oDryRun, "dry-run", N_("do not make any changes")),
@@ -609,6 +613,7 @@ static ARGPARSE_OPTS opts[] = {
 
   ARGPARSE_s_s (oKeyServer, "keyserver", "@"),
   ARGPARSE_s_s (oKeyServerOptions, "keyserver-options", "@"),
+  ARGPARSE_s_s (oKeyOrigin, "key-origin", "@"),
   ARGPARSE_s_s (oImportOptions, "import-options", "@"),
   ARGPARSE_s_s (oImportFilter,  "import-filter", "@"),
   ARGPARSE_s_s (oExportOptions, "export-options", "@"),
@@ -669,6 +674,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_s (oSetNotation,  "set-notation", "@"),
   ARGPARSE_s_s (oSigNotation,  "sig-notation", "@"),
   ARGPARSE_s_s (oCertNotation, "cert-notation", "@"),
+  ARGPARSE_s_s (oKnownNotation, "known-notation", "@"),
 
   ARGPARSE_group (302, N_(
   "@\n(See the man page for a complete listing of all commands and options)\n"
@@ -698,6 +704,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_s (oPassphraseFile,  "passphrase-file", "@"),
   ARGPARSE_s_i (oPassphraseRepeat,"passphrase-repeat", "@"),
   ARGPARSE_s_s (oPinentryMode,    "pinentry-mode", "@"),
+  ARGPARSE_s_s (oRequestOrigin,   "request-origin", "@"),
   ARGPARSE_s_i (oCommandFD, "command-fd", "@"),
   ARGPARSE_s_s (oCommandFile, "command-file", "@"),
   ARGPARSE_s_n (oQuickRandom, "debug-quick-random", "@"),
@@ -714,7 +721,6 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oRequireSecmem, "require-secmem", "@"),
   ARGPARSE_s_n (oNoRequireSecmem, "no-require-secmem", "@"),
   ARGPARSE_s_n (oNoPermissionWarn, "no-permission-warning", "@"),
-  ARGPARSE_s_n (oNoMDCWarn, "no-mdc-warning", "@"),
   ARGPARSE_s_n (oNoArmor, "no-armor", "@"),
   ARGPARSE_s_n (oNoArmor, "no-armour", "@"),
   ARGPARSE_s_n (oNoDefKeyring, "no-default-keyring", "@"),
@@ -728,9 +734,10 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oWithKeyData,"with-key-data", "@"),
   ARGPARSE_s_n (oWithSigList,"with-sig-list", "@"),
   ARGPARSE_s_n (oWithSigCheck,"with-sig-check", "@"),
-  ARGPARSE_s_n (aListKeys, "list-key", "@"),   /* alias */
-  ARGPARSE_s_n (aListSigs, "list-sig", "@"),   /* alias */
-  ARGPARSE_s_n (aCheckKeys, "check-sig", "@"), /* alias */
+  ARGPARSE_c (aListKeys, "list-key", "@"),   /* alias */
+  ARGPARSE_c (aListSigs, "list-sig", "@"),   /* alias */
+  ARGPARSE_c (aCheckKeys, "check-sig", "@"), /* alias */
+  ARGPARSE_c (aShowKeys,  "show-key", "@"), /* alias */
   ARGPARSE_s_n (oSkipVerify, "skip-verify", "@"),
   ARGPARSE_s_n (oSkipHiddenRecipients, "skip-hidden-recipients", "@"),
   ARGPARSE_s_n (oNoSkipHiddenRecipients, "no-skip-hidden-recipients", "@"),
@@ -777,6 +784,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oWithKeygrip,     "with-keygrip", "@"),
   ARGPARSE_s_n (oWithSecret,      "with-secret", "@"),
   ARGPARSE_s_n (oWithWKDHash,     "with-wkd-hash", "@"),
+  ARGPARSE_s_n (oWithKeyOrigin,   "with-key-origin", "@"),
   ARGPARSE_s_s (oDisableCipherAlgo,  "disable-cipher-algo", "@"),
   ARGPARSE_s_s (oDisablePubkeyAlgo,  "disable-pubkey-algo", "@"),
   ARGPARSE_s_n (oAllowNonSelfsignedUID,      "allow-non-selfsigned-uid", "@"),
@@ -827,6 +835,7 @@ static ARGPARSE_OPTS opts[] = {
 
   ARGPARSE_s_s (oAgentProgram, "agent-program", "@"),
   ARGPARSE_s_s (oDirmngrProgram, "dirmngr-program", "@"),
+  ARGPARSE_s_n (oDisableDirmngr, "disable-dirmngr", "@"),
   ARGPARSE_s_s (oDisplay,    "display",    "@"),
   ARGPARSE_s_s (oTTYname,    "ttyname",    "@"),
   ARGPARSE_s_s (oTTYtype,    "ttytype",    "@"),
@@ -874,6 +883,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_s (oAutoKeyLocate, "auto-key-locate", "@"),
   ARGPARSE_s_n (oNoAutoKeyLocate, "no-auto-key-locate", "@"),
   ARGPARSE_s_n (oNoAutostart, "no-autostart", "@"),
+  ARGPARSE_s_n (oNoSymkeyCache, "no-symkey-cache", "@"),
 
   /* Dummy options with warnings.  */
   ARGPARSE_s_n (oUseAgent,      "use-agent", "@"),
@@ -895,6 +905,12 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oNoop, "no-force-v3-sigs", "@"),
   ARGPARSE_s_n (oNoop, "force-v4-certs", "@"),
   ARGPARSE_s_n (oNoop, "no-force-v4-certs", "@"),
+  ARGPARSE_s_n (oNoop, "no-mdc-warning", "@"),
+  ARGPARSE_s_n (oNoop, "force-mdc", "@"),
+  ARGPARSE_s_n (oNoop, "no-force-mdc", "@"),
+  ARGPARSE_s_n (oNoop, "disable-mdc", "@"),
+  ARGPARSE_s_n (oNoop, "no-disable-mdc", "@"),
+
 
   ARGPARSE_end ()
 };
@@ -1152,6 +1168,7 @@ static void
 wrong_args( const char *text)
 {
   es_fprintf (es_stderr, _("usage: %s [options] %s\n"), GPG_NAME, text);
+  log_inc_errorcount ();
   g10_exit(2);
 }
 
@@ -1840,11 +1857,17 @@ gpgconf_list (const char *configfile)
   es_printf ("encrypt-to:%lu:\n", GC_OPT_FLAG_NONE);
   es_printf ("try-secret-key:%lu:\n", GC_OPT_FLAG_NONE);
   es_printf ("auto-key-locate:%lu:\n", GC_OPT_FLAG_NONE);
+  es_printf ("auto-key-retrieve:%lu:\n", GC_OPT_FLAG_NONE);
   es_printf ("log-file:%lu:\n", GC_OPT_FLAG_NONE);
   es_printf ("debug-level:%lu:\"none:\n", GC_OPT_FLAG_DEFAULT);
   es_printf ("group:%lu:\n", GC_OPT_FLAG_NONE);
   es_printf ("compliance:%lu:\"%s:\n", GC_OPT_FLAG_DEFAULT, "gnupg");
   es_printf ("default-new-key-algo:%lu:\n", GC_OPT_FLAG_NONE);
+  es_printf ("trust-model:%lu:\n", GC_OPT_FLAG_NONE);
+  es_printf ("disable-dirmngr:%lu:\n", GC_OPT_FLAG_NONE);
+  es_printf ("max-cert-depth:%lu:\n", GC_OPT_FLAG_NONE);
+  es_printf ("completes-needed:%lu:\n", GC_OPT_FLAG_NONE);
+  es_printf ("marginals-needed:%lu:\n", GC_OPT_FLAG_NONE);
 
   /* The next one is an info only item and should match the macros at
      the top of keygen.c  */
@@ -1948,6 +1971,8 @@ parse_list_options(char *str)
       {"show-sig-expire",LIST_SHOW_SIG_EXPIRE,NULL,
        N_("show expiration dates during signature listings")},
       {"show-sig-subpackets",LIST_SHOW_SIG_SUBPACKETS,NULL,
+       NULL},
+      {"show-only-fpr-mbox",LIST_SHOW_ONLY_FPR_MBOX, NULL,
        NULL},
       {NULL,0,NULL,NULL}
     };
@@ -2066,11 +2091,8 @@ parse_tofu_policy (const char *policystr)
 }
 
 
-/* Parse the value of --compliance.  */
-static int
-parse_compliance_option (const char *string)
-{
-  struct { const char *keyword; enum cmd_and_opt_values option; } list[] = {
+static struct gnupg_compliance_option compliance_options[] =
+  {
     { "gnupg",      oGnuPG },
     { "openpgp",    oOpenPGP },
     { "rfc4880bis", oRFC4880bis },
@@ -2081,29 +2103,9 @@ parse_compliance_option (const char *string)
     { "pgp8",       oPGP8 },
     { "de-vs",      oDE_VS }
   };
-  int i;
-
-  if (!ascii_strcasecmp (string, "help"))
-    {
-      log_info (_("valid values for option '%s':\n"), "--compliance");
-      for (i=0; i < DIM (list); i++)
-        log_info ("  %s\n", list[i].keyword);
-      g10_exit (1);
-    }
-
-  for (i=0; i < DIM (list); i++)
-    if (!ascii_strcasecmp (string, list[i].keyword))
-      return list[i].option;
-
-  log_error (_("invalid value for option '%s'\n"), "--compliance");
-  if (!opt.quiet)
-    log_info (_("(use \"help\" to list choices)\n"));
-  g10_exit (1);
-}
 
 
-
-/* Helper to set compliance related options.  This is a separte
+/* Helper to set compliance related options.  This is a separate
  * function so that it can also be used by the --compliance option
  * parser.  */
 static void
@@ -2178,7 +2180,7 @@ set_compliance_option (enum cmd_and_opt_values option)
 static void
 gpg_init_default_ctrl (ctrl_t ctrl)
 {
-  (void)ctrl;
+  ctrl->magic = SERVER_CONTROL_MAGIC;
 }
 
 
@@ -2191,6 +2193,8 @@ gpg_deinit_default_ctrl (ctrl_t ctrl)
   tofu_closedbs (ctrl);
 #endif
   gpg_dirmngr_deinit_session_data (ctrl);
+
+  keydb_release (ctrl->cached_getkey_kdb);
 }
 
 
@@ -2300,6 +2304,7 @@ main (int argc, char **argv)
     int ovrseskeyfd = -1;
     int fpr_maybe_cmd = 0; /* --fingerprint maybe a command.  */
     int any_explicit_recipient = 0;
+    int default_akl = 1;
     int require_secmem = 0;
     int got_secmem = 0;
     struct assuan_malloc_hooks malloc_hooks;
@@ -2340,6 +2345,9 @@ main (int argc, char **argv)
 
     dotlock_create (NULL, 0); /* Register lock file cleanup. */
 
+    /* Tell the compliance module who we are.  */
+    gnupg_initialize_compliance (GNUPG_MODULE_NAME_GPG);
+
     opt.autostart = 1;
     opt.session_env = session_env_new ();
     if (!opt.session_env)
@@ -2362,9 +2370,10 @@ main (int argc, char **argv)
     opt.max_cert_depth = 5;
     opt.escape_from = 1;
     opt.flags.require_cross_cert = 1;
-    opt.import_options = 0;
+    opt.import_options = IMPORT_REPAIR_KEYS;
     opt.export_options = EXPORT_ATTRIBUTES;
-    opt.keyserver_options.import_options = IMPORT_REPAIR_PKS_SUBKEY_BUG;
+    opt.keyserver_options.import_options = (IMPORT_REPAIR_KEYS
+					    | IMPORT_REPAIR_PKS_SUBKEY_BUG);
     opt.keyserver_options.export_options = EXPORT_ATTRIBUTES;
     opt.keyserver_options.options = KEYSERVER_HONOR_PKA_RECORD;
     opt.verify_options = (LIST_SHOW_UID_VALIDITY
@@ -2389,7 +2398,6 @@ main (int argc, char **argv)
     opt.passphrase_repeat = 1;
     opt.emit_version = 0;
     opt.weak_digests = NULL;
-    additional_weak_digest("MD5");
 
     /* Check whether we have a config file on the command line.  */
     orig_argc = argc;
@@ -2464,6 +2472,10 @@ main (int argc, char **argv)
     assuan_set_malloc_hooks (&malloc_hooks);
     assuan_set_gpg_err_source (GPG_ERR_SOURCE_DEFAULT);
     setup_libassuan_logging (&opt.debug, NULL);
+
+    /* Set default options which require that malloc stuff is ready.  */
+    additional_weak_digest ("MD5");
+    parse_auto_key_locate ("local,wkd");
 
     /* Try for a version specific config file first */
     default_configname = get_default_configname ();
@@ -2579,6 +2591,7 @@ main (int argc, char **argv)
 	  case aQuickAddKey:
 	  case aQuickRevUid:
 	  case aQuickSetExpire:
+	  case aQuickSetPrimaryUid:
 	  case aExportOwnerTrust:
 	  case aImportOwnerTrust:
           case aRebuildKeydbCaches:
@@ -2594,6 +2607,17 @@ main (int argc, char **argv)
           case aPasswd:
             set_cmd (&cmd, pargs.r_opt);
             greeting=1;
+            break;
+
+	  case aShowKeys:
+            set_cmd (&cmd, pargs.r_opt);
+            opt.import_options |= IMPORT_SHOW;
+            opt.import_options |= IMPORT_DRY_RUN;
+            opt.import_options &= ~IMPORT_REPAIR_KEYS;
+            opt.list_options |= LIST_SHOW_UNUSABLE_UIDS;
+            opt.list_options |= LIST_SHOW_UNUSABLE_SUBKEYS;
+            opt.list_options |= LIST_SHOW_NOTATIONS;
+            opt.list_options |= LIST_SHOW_POLICY_URLS;
             break;
 
 	  case aDetachedSign: detached_sig = 1; set_cmd( &cmd, aSign ); break;
@@ -2738,6 +2762,10 @@ main (int argc, char **argv)
             opt.with_wkd_hash = 1;
             break;
 
+	  case oWithKeyOrigin:
+            opt.with_key_origin = 1;
+            break;
+
 	  case oSecretKeyring:
             /* Ignore this old option.  */
             break;
@@ -2851,7 +2879,15 @@ main (int argc, char **argv)
 	    break;
 
           case oCompliance:
-            set_compliance_option (parse_compliance_option (pargs.r.ret_str));
+	    {
+	      int compliance = gnupg_parse_compliance_option
+                (pargs.r.ret_str,
+                 compliance_options, DIM (compliance_options),
+                 opt.quiet);
+	      if (compliance < 0)
+		g10_exit (1);
+	      set_compliance_option (compliance);
+	    }
             break;
           case oOpenPGP:
           case oRFC2440:
@@ -2935,11 +2971,6 @@ main (int argc, char **argv)
 	    opt.verify_options&=~VERIFY_SHOW_PHOTOS;
 	    break;
 	  case oPhotoViewer: opt.photo_viewer = pargs.r.ret_str; break;
-
-	  case oForceMDC: opt.force_mdc = 1; break;
-	  case oNoForceMDC: opt.force_mdc = 0; break;
-	  case oDisableMDC: opt.disable_mdc = 1; break;
-	  case oNoDisableMDC: opt.disable_mdc = 0; break;
 
           case oDisableSignerUID: opt.flags.disable_signer_uid = 1; break;
 
@@ -3077,8 +3108,16 @@ main (int argc, char **argv)
               log_error (_("invalid pinentry mode '%s'\n"), pargs.r.ret_str);
 	    break;
 
+          case oRequestOrigin:
+	    opt.request_origin = parse_request_origin (pargs.r.ret_str);
+	    if (opt.request_origin == -1)
+              log_error (_("invalid request origin '%s'\n"), pargs.r.ret_str);
+	    break;
+
 	  case oCommandFD:
             opt.command_fd = translate_sys2libc_fd_int (pargs.r.ret_int, 0);
+	    if (! gnupg_fd_valid (opt.command_fd))
+	      log_error ("command-fd is invalid: %s\n", strerror (errno));
             break;
 	  case oCommandFile:
             opt.command_fd = open_info_file (pargs.r.ret_str, 0, 1);
@@ -3124,7 +3163,6 @@ main (int argc, char **argv)
 	  case oRequireSecmem: require_secmem=1; break;
 	  case oNoRequireSecmem: require_secmem=0; break;
 	  case oNoPermissionWarn: opt.no_perm_warn=1; break;
-	  case oNoMDCWarn: opt.no_mdc_warn=1; break;
           case oDisplayCharset:
 	    if( set_native_charset( pargs.r.ret_str ) )
 		log_error(_("'%s' is not a valid character set\n"),
@@ -3267,6 +3305,7 @@ main (int argc, char **argv)
 	    break;
 	  case oSigNotation: add_notation_data( pargs.r.ret_str, 0 ); break;
 	  case oCertNotation: add_notation_data( pargs.r.ret_str, 1 ); break;
+          case oKnownNotation: register_known_notation (pargs.r.ret_str); break;
 	  case oShowNotation:
 	    deprecated_warning(configname,configlineno,"--show-notation",
 			       "--list-options ","show-notations");
@@ -3315,13 +3354,14 @@ main (int argc, char **argv)
 	  case oIgnoreCrcError: opt.ignore_crc_error = 1; break;
 	  case oIgnoreMDCError: opt.ignore_mdc_error = 1; break;
 	  case oNoRandomSeedFile: use_random_seed = 0; break;
+
 	  case oAutoKeyRetrieve:
+            opt.keyserver_options.options |= KEYSERVER_AUTO_KEY_RETRIEVE;
+            break;
 	  case oNoAutoKeyRetrieve:
-	        if(pargs.r_opt==oAutoKeyRetrieve)
-		  opt.keyserver_options.options|=KEYSERVER_AUTO_KEY_RETRIEVE;
-		else
-		  opt.keyserver_options.options&=~KEYSERVER_AUTO_KEY_RETRIEVE;
-		break;
+            opt.keyserver_options.options &= ~KEYSERVER_AUTO_KEY_RETRIEVE;
+            break;
+
 	  case oShowSessionKey: opt.show_session_key = 1; break;
 	  case oOverrideSessionKey:
 		opt.override_session_key = pargs.r.ret_str;
@@ -3372,6 +3412,7 @@ main (int argc, char **argv)
 	    break;
           case oAgentProgram: opt.agent_program = pargs.r.ret_str;  break;
           case oDirmngrProgram: opt.dirmngr_program = pargs.r.ret_str; break;
+	  case oDisableDirmngr: opt.disable_dirmngr = 1;  break;
           case oWeakDigest:
 	    additional_weak_digest(pargs.r.ret_str);
 	    break;
@@ -3446,6 +3487,13 @@ main (int argc, char **argv)
 	  case oNoRequireCrossCert: opt.flags.require_cross_cert=0; break;
 
 	  case oAutoKeyLocate:
+            if (default_akl)
+              {
+                /* This is the first time --auto-key-locate is seen.
+                 * We need to reset the default akl.  */
+                default_akl = 0;
+                release_akl();
+              }
 	    if(!parse_auto_key_locate(pargs.r.ret_str))
 	      {
 		if(configname)
@@ -3457,6 +3505,12 @@ main (int argc, char **argv)
 	    break;
 	  case oNoAutoKeyLocate:
 	    release_akl();
+	    break;
+
+	  case oKeyOrigin:
+	    if(!parse_key_origin (pargs.r.ret_str))
+              log_error (_("invalid argument for option \"%.50s\"\n"),
+                         "--key-origin");
 	    break;
 
 	  case oEnableLargeRSA:
@@ -3511,6 +3565,7 @@ main (int argc, char **argv)
             break;
 
           case oNoAutostart: opt.autostart = 0; break;
+          case oNoSymkeyCache: opt.no_symkey_cache = 1; break;
 
 	  case oDefaultNewKeyAlgo:
             opt.def_new_key_algo = pargs.r.ret_str;
@@ -3519,7 +3574,16 @@ main (int argc, char **argv)
 	  case oNoop: break;
 
 	  default:
-            pargs.err = configfp? ARGPARSE_PRINT_WARNING:ARGPARSE_PRINT_ERROR;
+            if (configfp)
+              pargs.err = ARGPARSE_PRINT_WARNING;
+            else
+              {
+                pargs.err = ARGPARSE_PRINT_ERROR;
+                /* The argparse fucntion calls a plain exit and thus
+                 * we need to print a status here.  */
+                write_status_failure ("option-parser",
+                                      gpg_error(GPG_ERR_GENERAL));
+              }
             break;
 	  }
       }
@@ -3538,7 +3602,10 @@ main (int argc, char **argv)
       }
     xfree(configname); configname = NULL;
     if (log_get_errorcount (0))
-      g10_exit(2);
+      {
+        write_status_failure ("option-parser", gpg_error(GPG_ERR_GENERAL));
+        g10_exit(2);
+      }
 
     /* The command --gpgconf-list is pretty simple and may be called
        directly after the option parsing. */
@@ -3559,7 +3626,10 @@ main (int argc, char **argv)
                  "--print-pks-records",
                  "--export-options export-pka");
     if (log_get_errorcount (0))
-      g10_exit(2);
+      {
+        write_status_failure ("option-checking", gpg_error(GPG_ERR_GENERAL));
+        g10_exit(2);
+      }
 
 
     if( nogreeting )
@@ -3660,6 +3730,7 @@ main (int argc, char **argv)
       {
 	log_info(_("will not run with insecure memory due to %s\n"),
 		 "--require-secmem");
+        write_status_failure ("option-checking", gpg_error(GPG_ERR_GENERAL));
 	g10_exit(2);
       }
 
@@ -3672,7 +3743,6 @@ main (int argc, char **argv)
       {
         /* That does not anymore work because we have no more support
            for v3 signatures.  */
-	opt.disable_mdc=1;
 	opt.escape_from=1;
 	opt.ask_sig_expire=0;
       }
@@ -3800,7 +3870,11 @@ main (int argc, char **argv)
       }
 
     if( log_get_errorcount(0) )
-	g10_exit(2);
+      {
+        write_status_failure ("option-postprocessing",
+                              gpg_error(GPG_ERR_GENERAL));
+	g10_exit (2);
+      }
 
     if(opt.compress_level==0)
       opt.compress_algo=COMPRESS_ALGO_NONE;
@@ -3843,19 +3917,22 @@ main (int argc, char **argv)
 	    switch(badtype)
 	      {
 	      case PREFTYPE_SYM:
-		log_info(_("you may not use cipher algorithm '%s'"
-			   " while in %s mode\n"),
-			 badalg,compliance_option_string());
+		log_info (_("cipher algorithm '%s'"
+                            " may not be used in %s mode\n"),
+			 badalg,
+                          gnupg_compliance_option_string (opt.compliance));
 		break;
 	      case PREFTYPE_HASH:
-		log_info(_("you may not use digest algorithm '%s'"
-			   " while in %s mode\n"),
-			 badalg,compliance_option_string());
+		log_info (_("digest algorithm '%s'"
+                            " may not be used in %s mode\n"),
+                          badalg,
+                          gnupg_compliance_option_string (opt.compliance));
 		break;
 	      case PREFTYPE_ZIP:
-		log_info(_("you may not use compression algorithm '%s'"
-			   " while in %s mode\n"),
-			 badalg,compliance_option_string());
+		log_info (_("compression algorithm '%s'"
+                            " may not be used in %s mode\n"),
+                          badalg,
+                          gnupg_compliance_option_string (opt.compliance));
 		break;
 	      default:
 		BUG();
@@ -3863,6 +3940,44 @@ main (int argc, char **argv)
 
 	    compliance_failure();
 	  }
+      }
+
+    /* Check our chosen algorithms against the list of allowed
+     * algorithms in the current compliance mode, and fail hard if it
+     * is not.  This is us being nice to the user informing her early
+     * that the chosen algorithms are not available.  We also check
+     * and enforce this right before the actual operation.  */
+    if (opt.def_cipher_algo
+	&& ! gnupg_cipher_is_allowed (opt.compliance,
+				      cmd == aEncr
+				      || cmd == aSignEncr
+				      || cmd == aEncrSym
+				      || cmd == aSym
+				      || cmd == aSignSym
+				      || cmd == aSignEncrSym,
+				      opt.def_cipher_algo,
+				      GCRY_CIPHER_MODE_NONE))
+      log_error (_("cipher algorithm '%s' may not be used in %s mode\n"),
+		 openpgp_cipher_algo_name (opt.def_cipher_algo),
+		 gnupg_compliance_option_string (opt.compliance));
+
+    if (opt.def_digest_algo
+	&& ! gnupg_digest_is_allowed (opt.compliance,
+				      cmd == aSign
+				      || cmd == aSignEncr
+				      || cmd == aSignEncrSym
+				      || cmd == aSignSym
+				      || cmd == aClearsign,
+				      opt.def_digest_algo))
+      log_error (_("digest algorithm '%s' may not be used in %s mode\n"),
+		 gcry_md_algo_name (opt.def_digest_algo),
+		 gnupg_compliance_option_string (opt.compliance));
+
+    /* Fail hard.  */
+    if (log_get_errorcount (0))
+      {
+        write_status_failure ("option-checking", gpg_error(GPG_ERR_GENERAL));
+	g10_exit (2);
       }
 
     /* Set the random seed file. */
@@ -3945,6 +4060,11 @@ main (int argc, char **argv)
       case aListTrustDB:
         rc = setup_trustdb (argc? 1:0, trustdb_name);
         break;
+      case aKeygen:
+      case aFullKeygen:
+      case aQuickKeygen:
+        rc = setup_trustdb (1, trustdb_name);
+        break;
       default:
         /* If we are using TM_ALWAYS, we do not need to create the
            trustdb.  */
@@ -3993,6 +4113,7 @@ main (int argc, char **argv)
       case aQuickAddUid:
       case aQuickAddKey:
       case aQuickRevUid:
+      case aQuickSetPrimaryUid:
       case aFullKeygen:
       case aKeygen:
       case aImport:
@@ -4068,7 +4189,8 @@ main (int argc, char **argv)
 		      " with --s2k-mode 0\n"));
 	else if(PGP6 || PGP7)
 	  log_error(_("you cannot use --symmetric --encrypt"
-		      " while in %s mode\n"),compliance_option_string());
+		      " in %s mode\n"),
+		    gnupg_compliance_option_string (opt.compliance));
 	else
 	  {
 	    if( (rc = encrypt_crypt (ctrl, -1, fname, remusr, 1, NULL, -1)) )
@@ -4128,7 +4250,8 @@ main (int argc, char **argv)
 		      " with --s2k-mode 0\n"));
 	else if(PGP6 || PGP7)
 	  log_error(_("you cannot use --symmetric --sign --encrypt"
-		      " while in %s mode\n"),compliance_option_string());
+		      " in %s mode\n"),
+		    gnupg_compliance_option_string (opt.compliance));
 	else
 	  {
 	    if( argc )
@@ -4279,14 +4402,15 @@ main (int argc, char **argv)
            proper order :) */
 	for( ; argc; argc-- )
 	  add_to_strlist2( &sl, argv[argc-1], utf8_strings );
-	delete_keys(sl,cmd==aDeleteSecretKeys,cmd==aDeleteSecretAndPublicKeys);
+	delete_keys (ctrl, sl,
+                     cmd==aDeleteSecretKeys, cmd==aDeleteSecretAndPublicKeys);
 	free_strlist(sl);
 	break;
 
       case aCheckKeys:
-	opt.check_sigs = 1;
+	opt.check_sigs = 1; /* fall through */
       case aListSigs:
-	opt.list_sigs = 1;
+	opt.list_sigs = 1; /* fall through */
       case aListKeys:
 	sl = NULL;
 	for( ; argc; argc--, argv++ )
@@ -4428,18 +4552,32 @@ main (int argc, char **argv)
         {
           const char *x_fpr, *x_expire;
 
-          if (argc != 2)
-            wrong_args ("--quick-set-exipre FINGERPRINT EXPIRE");
+          if (argc < 2)
+            wrong_args ("--quick-set-exipre FINGERPRINT EXPIRE [SUBKEY-FPRS]");
           x_fpr = *argv++; argc--;
           x_expire = *argv++; argc--;
-          keyedit_quick_set_expire (ctrl, x_fpr, x_expire);
+          keyedit_quick_set_expire (ctrl, x_fpr, x_expire, argv);
+        }
+	break;
+
+      case aQuickSetPrimaryUid:
+        {
+          const char *uid, *primaryuid;
+
+          if (argc != 2)
+            wrong_args ("--quick-set-primary-uid USER-ID PRIMARY-USER-ID");
+          uid = *argv++; argc--;
+          primaryuid = *argv++; argc--;
+          keyedit_quick_set_primary (ctrl, uid, primaryuid);
         }
 	break;
 
       case aFastImport:
-        opt.import_options |= IMPORT_FAST;
+        opt.import_options |= IMPORT_FAST; /* fall through */
       case aImport:
-	import_keys (ctrl, argc? argv:NULL, argc, NULL, opt.import_options);
+      case aShowKeys:
+	import_keys (ctrl, argc? argv:NULL, argc, NULL,
+                     opt.import_options, opt.key_origin, opt.key_origin_url);
 	break;
 
 	/* TODO: There are a number of command that use this same
@@ -4527,7 +4665,7 @@ main (int argc, char **argv)
 	sl = NULL;
 	for( ; argc; argc--, argv++ )
 	    append_to_strlist2( &sl, *argv, utf8_strings );
-	rc = keyserver_fetch (ctrl, sl);
+	rc = keyserver_fetch (ctrl, sl, opt.key_origin);
 	if(rc)
           {
             write_status_failure ("fetch-keys", rc);
@@ -4542,7 +4680,7 @@ main (int argc, char **argv)
 	    add_to_strlist2( &sl, *argv, utf8_strings );
         {
           export_stats_t stats = export_new_stats ();
-          export_seckeys (ctrl, sl, stats);
+          export_seckeys (ctrl, sl, opt.export_options, stats);
           export_print_stats (stats);
           export_release_stats (stats);
         }
@@ -4555,7 +4693,7 @@ main (int argc, char **argv)
 	    add_to_strlist2( &sl, *argv, utf8_strings );
         {
           export_stats_t stats = export_new_stats ();
-          export_secsubkeys (ctrl, sl, stats);
+          export_secsubkeys (ctrl, sl, opt.export_options, stats);
           export_print_stats (stats);
           export_release_stats (stats);
         }
@@ -4566,7 +4704,7 @@ main (int argc, char **argv)
 	if( argc != 1 )
 	    wrong_args("--generate-revocation user-id");
 	username =  make_username(*argv);
-	gen_revoke( username );
+	gen_revoke (ctrl, username );
 	xfree( username );
 	break;
 
@@ -4713,10 +4851,10 @@ main (int argc, char **argv)
 #ifndef NO_TRUST_MODELS
       case aListTrustDB:
 	if( !argc )
-          list_trustdb (es_stdout, NULL);
+          list_trustdb (ctrl, es_stdout, NULL);
 	else {
 	    for( ; argc; argc--, argv++ )
-              list_trustdb (es_stdout, *argv );
+              list_trustdb (ctrl, es_stdout, *argv );
 	}
 	break;
 
@@ -4748,27 +4886,30 @@ main (int argc, char **argv)
       case aExportOwnerTrust:
 	if( argc )
 	    wrong_args("--export-ownertrust");
-	export_ownertrust();
+	export_ownertrust (ctrl);
 	break;
 
       case aImportOwnerTrust:
 	if( argc > 1 )
 	    wrong_args("--import-ownertrust [file]");
-	import_ownertrust( argc? *argv:NULL );
+	import_ownertrust (ctrl, argc? *argv:NULL );
 	break;
 #endif /*!NO_TRUST_MODELS*/
 
       case aRebuildKeydbCaches:
         if (argc)
             wrong_args ("--rebuild-keydb-caches");
-        keydb_rebuild_caches (1);
+        keydb_rebuild_caches (ctrl, 1);
         break;
 
 #ifdef ENABLE_CARD_SUPPORT
       case aCardStatus:
-        if (argc)
-            wrong_args ("--card-status");
-        card_status (es_stdout, NULL, 0);
+        if (argc == 0)
+            card_status (ctrl, es_stdout, NULL);
+        else if (argc == 1)
+            card_status (ctrl, es_stdout, *argv);
+        else
+            wrong_args ("--card-status [serialno]");
         break;
 
       case aCardEdit:
@@ -4822,7 +4963,10 @@ main (int argc, char **argv)
 
 	  hd = keydb_new ();
 	  if (! hd)
-            g10_exit (1);
+            {
+              write_status_failure ("tofu-driver", gpg_error(GPG_ERR_GENERAL));
+              g10_exit (1);
+            }
 
           tofu_begin_batch_update (ctrl);
 
@@ -4836,6 +4980,7 @@ main (int argc, char **argv)
 		{
 		  log_error (_("error parsing key specification '%s': %s\n"),
                              argv[i], gpg_strerror (rc));
+                  write_status_failure ("tofu-driver", rc);
 		  g10_exit (1);
 		}
 
@@ -4849,6 +4994,8 @@ main (int argc, char **argv)
 		  log_error (_("'%s' does not appear to be a valid"
 			       " key ID, fingerprint or keygrip\n"),
 			     argv[i]);
+                  write_status_failure ("tofu-driver",
+                                        gpg_error(GPG_ERR_GENERAL));
 		  g10_exit (1);
 		}
 
@@ -4859,6 +5006,7 @@ main (int argc, char **argv)
                      the string.  */
                   log_error ("keydb_search_reset failed: %s\n",
                              gpg_strerror (rc));
+                  write_status_failure ("tofu-driver", rc);
 		  g10_exit (1);
 		}
 
@@ -4867,6 +5015,7 @@ main (int argc, char **argv)
 		{
 		  log_error (_("key \"%s\" not found: %s\n"), argv[i],
                              gpg_strerror (rc));
+                  write_status_failure ("tofu-driver", rc);
 		  g10_exit (1);
 		}
 
@@ -4875,12 +5024,16 @@ main (int argc, char **argv)
 		{
 		  log_error (_("error reading keyblock: %s\n"),
                              gpg_strerror (rc));
+                  write_status_failure ("tofu-driver", rc);
 		  g10_exit (1);
 		}
 
-	      merge_keys_and_selfsig (kb);
+	      merge_keys_and_selfsig (ctrl, kb);
 	      if (tofu_set_policy (ctrl, kb, policy))
-		g10_exit (1);
+                {
+                  write_status_failure ("tofu-driver", rc);
+                  g10_exit (1);
+                }
 
               release_kbnode (kb);
 	    }
@@ -4892,8 +5045,12 @@ main (int argc, char **argv)
 #endif /*USE_TOFU*/
 	break;
 
-      case aListPackets:
       default:
+        if (!opt.quiet)
+          log_info (_("WARNING: no command supplied."
+                      "  Trying to guess what you mean ...\n"));
+        /*FALLTHRU*/
+      case aListPackets:
 	if( argc > 1 )
 	    wrong_args("[filename]");
 	/* Issue some output for the unix newbie */
@@ -4958,6 +5115,12 @@ emergency_cleanup (void)
 void
 g10_exit( int rc )
 {
+  /* If we had an error but not printed an error message, do it now.
+   * Note that write_status_failure will never print a second failure
+   * status line. */
+  if (rc)
+    write_status_failure ("gpg-exit", gpg_error (GPG_ERR_GENERAL));
+
   gcry_control (GCRYCTL_UPDATE_RANDOM_SEED_FILE);
   if (DBG_CLOCK)
     log_clock ("stop");
@@ -4965,6 +5128,7 @@ g10_exit( int rc )
   if ( (opt.debug & DBG_MEMSTAT_VALUE) )
     {
       keydb_dump_stats ();
+      sig_check_dump_stats ();
       gcry_control (GCRYCTL_DUMP_MEMORY_STATS);
       gcry_control (GCRYCTL_DUMP_RANDOM_STATS);
     }
@@ -5292,6 +5456,9 @@ read_sessionkey_from_fd (int fd)
 {
   int i, len;
   char *line;
+
+  if (! gnupg_fd_valid (fd))
+    log_fatal ("override-session-key-fd is invalid: %s\n", strerror (errno));
 
   for (line = NULL, i = len = 100; ; i++ )
     {

@@ -1,0 +1,24 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Fri, 22 Mar 2019 23:49:03 +0100
+Subject: doc: fix formatting error
+
+Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+(cherry picked from commit 93782de23fe45e7f7f86140fda6de39395c3a9d8)
+---
+ doc/gpg.texi | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/doc/gpg.texi b/doc/gpg.texi
+index 1597f9e..b6eda9d 100644
+--- a/doc/gpg.texi
++++ b/doc/gpg.texi
+@@ -2320,7 +2320,8 @@ opposite meaning. The options are:
+   on the keyring. This option is the same as running the @option{--edit-key}
+   command "clean" after import. Defaults to no.
+ 
+-  @item repair-keys.  After import, fix various problems with the
++  @item repair-keys
++  After import, fix various problems with the
+   keys.  For example, this reorders signatures, and strips duplicate
+   signatures.  Defaults to yes.
+ 

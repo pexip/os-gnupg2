@@ -1,0 +1,46 @@
+From: NIIBE Yutaka <gniibe@fsij.org>
+Date: Wed, 13 Mar 2019 09:12:14 +0900
+Subject: g10: Fix symmetric cipher algo constant for ECDH.
+
+* g10/ecdh.c (kek_params_table): Use CIPHER_ALGO_AES192 for
+ECC strength 384, according to RFC-6637.
+
+--
+
+Reported-by: Trevor Bentley
+Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
+(cherry picked from commit af3efd149f555d36a455cb2ea311ff81caf5124c)
+(cherry picked from commit 38c2a9a644e0bc1e2594ea437a5930982f7b8c4e)
+---
+ g10/ecdh.c        | 2 +-
+ scd/app-openpgp.c | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/g10/ecdh.c b/g10/ecdh.c
+index 6c2a56b..dcb3cde 100644
+--- a/g10/ecdh.c
++++ b/g10/ecdh.c
+@@ -39,7 +39,7 @@ static const struct
+   /* Note: Must be sorted by ascending values for QBITS.  */
+   {
+     { 256, DIGEST_ALGO_SHA256, CIPHER_ALGO_AES    },
+-    { 384, DIGEST_ALGO_SHA384, CIPHER_ALGO_AES256 },
++    { 384, DIGEST_ALGO_SHA384, CIPHER_ALGO_AES192 },
+ 
+     /* Note: 528 is 521 rounded to the 8 bit boundary */
+     { 528, DIGEST_ALGO_SHA512, CIPHER_ALGO_AES256 }
+diff --git a/scd/app-openpgp.c b/scd/app-openpgp.c
+index fa23fbe..e4a1fba 100644
+--- a/scd/app-openpgp.c
++++ b/scd/app-openpgp.c
+@@ -1442,8 +1442,8 @@ ecdh_params (const char *curve)
+   /* See RFC-6637 for those constants.
+          0x03: Number of bytes
+          0x01: Version for this parameter format
+-         KDF algo
+-        KEK algo
++         KDF hash algo
++         KEK symmetric cipher algo
+   */
+   if (nbits <= 256)
+     return (const unsigned char*)"\x03\x01\x08\x07";

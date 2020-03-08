@@ -63,6 +63,7 @@ help:
 	@echo 'You may append INSTALL_PREFIX=<dir> for native builds.'
 	@echo 'Prepend TARGET with "git-" to build from GIT repos.'
 	@echo 'Prepend TARGET with "this-" to build from the source tarball.'
+	@echo 'Use STATIC=1 to build with statically linked libraries.'
 	@echo 'Use SELFCHECK=0 for a non-released version.'
 	@echo 'Use CUSTOM_SWDB=1 for an already downloaded swdb.lst.'
 
@@ -140,6 +141,9 @@ UPD_SWDB=0
 # Set to 0 to skip the GnuPG version self-check
 SELFCHECK=1
 
+# Set to 1 to build with statically linked libraries.
+STATIC=0
+
 # Set to the location of the directory with tarballs of
 # external packages.
 TARBALLS=$(shell pwd)/../tarballs
@@ -153,8 +157,9 @@ INST_NAME=gnupg-w32
 # Use this to override the installaion directory for native builds.
 INSTALL_PREFIX=none
 
-# The Authenticode key used to sign the Windows installer
+# The Authenticode key and cert chain used to sign the Windows installer
 AUTHENTICODE_KEY=${HOME}/.gnupg/g10code-authenticode-key.p12
+AUTHENTICODE_CERTS=${HOME}/.gnupg/g10code-authenticode-certs.pem
 
 
 # Directory names.
@@ -184,14 +189,22 @@ speedo_spkgs  = \
 
 ifeq ($(TARGETOS),w32)
 speedo_spkgs += \
-	zlib bzip2 adns sqlite
+	zlib bzip2 sqlite
 ifeq ($(WITH_GUI),1)
 speedo_spkgs += gettext libiconv
 endif
 endif
 
 speedo_spkgs += \
-	libassuan libksba gnupg
+	libassuan libksba
+
+ifeq ($(TARGETOS),w32)
+speedo_spkgs += \
+	ntbtls
+endif
+
+speedo_spkgs += \
+	gnupg
 
 ifeq ($(TARGETOS),w32)
 ifeq ($(WITH_GUI),1)
@@ -200,8 +213,10 @@ speedo_spkgs += \
 endif
 endif
 
+ifeq ($(STATIC),0)
 speedo_spkgs += \
 	gpgme
+endif
 
 ifeq ($(TARGETOS),w32)
 ifeq ($(WITH_GUI),1)
@@ -241,7 +256,7 @@ endif
 # Packages which use the gnupg autogen.sh build style
 speedo_gnupg_style = \
 	libgpg-error npth libgcrypt  \
-	libassuan libksba gnupg gpgme \
+	libassuan libksba ntbtls gnupg gpgme \
 	pinentry gpa gpgex
 
 # Packages which use only make and no build directory
@@ -268,7 +283,7 @@ endif
 # Version numbers of the released packages
 gnupg_ver_this = $(shell cat $(topsrc)/VERSION)
 
-gnupg_ver        := $(shell awk '$$1=="gnupg21_ver" {print $$2}' swdb.lst)
+gnupg_ver        := $(shell awk '$$1=="gnupg22_ver" {print $$2}' swdb.lst)
 
 libgpg_error_ver := $(shell awk '$$1=="libgpg_error_ver" {print $$2}' swdb.lst)
 libgpg_error_sha1:= $(shell awk '$$1=="libgpg_error_sha1" {print $$2}' swdb.lst)
@@ -289,6 +304,10 @@ libassuan_sha2 := $(shell awk '$$1=="libassuan_sha2" {print $$2}' swdb.lst)
 libksba_ver  := $(shell awk '$$1=="libksba_ver" {print $$2}' swdb.lst)
 libksba_sha1 := $(shell awk '$$1=="libksba_sha1" {print $$2}' swdb.lst)
 libksba_sha2 := $(shell awk '$$1=="libksba_sha2" {print $$2}' swdb.lst)
+
+ntbtls_ver  := $(shell awk '$$1=="ntbtls_ver" {print $$2}' swdb.lst)
+ntbtls_sha1 := $(shell awk '$$1=="ntbtls_sha1" {print $$2}' swdb.lst)
+ntbtls_sha2 := $(shell awk '$$1=="ntbtls_sha2" {print $$2}' swdb.lst)
 
 gpgme_ver  := $(shell awk '$$1=="gpgme_ver" {print $$2}' swdb.lst)
 gpgme_sha1 := $(shell awk '$$1=="gpgme_sha1" {print $$2}' swdb.lst)
@@ -314,10 +333,6 @@ bzip2_ver  := $(shell awk '$$1=="bzip2_ver" {print $$2}' swdb.lst)
 bzip2_sha1 := $(shell awk '$$1=="bzip2_sha1_gz" {print $$2}' swdb.lst)
 bzip2_sha2 := $(shell awk '$$1=="bzip2_sha2_gz" {print $$2}' swdb.lst)
 
-adns_ver  := $(shell awk '$$1=="adns_ver" {print $$2}' swdb.lst)
-adns_sha1 := $(shell awk '$$1=="adns_sha1" {print $$2}' swdb.lst)
-adns_sha2 := $(shell awk '$$1=="adns_sha2" {print $$2}' swdb.lst)
-
 sqlite_ver  := $(shell awk '$$1=="sqlite_ver" {print $$2}' swdb.lst)
 sqlite_sha1 := $(shell awk '$$1=="sqlite_sha1_gz" {print $$2}' swdb.lst)
 sqlite_sha2 := $(shell awk '$$1=="sqlite_sha2_gz" {print $$2}' swdb.lst)
@@ -329,10 +344,11 @@ $(info Libgpg-error ...: $(libgpg_error_ver))
 $(info Npth ...........: $(npth_ver))
 $(info Libgcrypt ......: $(libgcrypt_ver))
 $(info Libassuan ......: $(libassuan_ver))
+$(info Libksba ........: $(libksba_ver))
 $(info Zlib ...........: $(zlib_ver))
 $(info Bzip2 ..........: $(bzip2_ver))
-$(info ADNS ...........: $(adns_ver))
 $(info SQLite .........: $(sqlite_ver))
+$(info NtbTLS .. ......: $(ntbtls_ver))
 $(info GPGME ..........: $(gpgme_ver))
 $(info Pinentry .......: $(pinentry_ver))
 $(info GPA ............: $(gpa_ver))
@@ -396,6 +412,8 @@ else ifeq ($(WHAT),git)
   speedo_pkg_libgcrypt_gitref = master
   speedo_pkg_libksba_git = $(gitrep)/libksba
   speedo_pkg_libksba_gitref = master
+  speedo_pkg_ntbtls_git = $(gitrep)/ntbtls
+  speedo_pkg_ntbtls_gitref = master
   speedo_pkg_gpgme_git = $(gitrep)/gpgme
   speedo_pkg_gpgme_gitref = master
   speedo_pkg_pinentry_git = $(gitrep)/pinentry
@@ -415,6 +433,8 @@ else ifeq ($(WHAT),release)
 	$(pkgrep)/libgcrypt/libgcrypt-$(libgcrypt_ver).tar.bz2
   speedo_pkg_libksba_tar = \
 	$(pkgrep)/libksba/libksba-$(libksba_ver).tar.bz2
+  speedo_pkg_ntbtls_tar = \
+	$(pkgrep)/ntbtls/ntbtls-$(ntbtls_ver).tar.bz2
   speedo_pkg_gpgme_tar = \
 	$(pkgrep)/gpgme/gpgme-$(gpgme_ver).tar.bz2
   speedo_pkg_pinentry_tar = \
@@ -431,7 +451,6 @@ speedo_pkg_pkg_config_tar = $(pkg2rep)/pkg-config-$(pkg_config_ver).tar.gz
 speedo_pkg_zlib_tar       = $(pkgrep)/zlib/zlib-$(zlib_ver).tar.gz
 speedo_pkg_bzip2_tar      = $(pkgrep)/bzip2/bzip2-$(bzip2_ver).tar.gz
 speedo_pkg_sqlite_tar     = $(pkgrep)/sqlite/sqlite-autoconf-$(sqlite_ver).tar.gz
-speedo_pkg_adns_tar       = $(pkg10rep)/adns/adns-$(adns_ver).tar.bz2
 speedo_pkg_libiconv_tar   = $(pkg2rep)/libiconv-$(libiconv_ver).tar.gz
 speedo_pkg_gettext_tar    = $(pkg2rep)/gettext-$(gettext_ver).tar.gz
 speedo_pkg_libffi_tar     = $(pkg2rep)/libffi-$(libffi_ver).tar.gz
@@ -449,6 +468,8 @@ speedo_pkg_gtk__tar       = $(pkg2rep)/gtk+-$(gtk__ver).tar.xz
 # Package build options
 #
 
+speedo_pkg_npth_configure = --enable-static
+
 speedo_pkg_libgpg_error_configure = --enable-static
 speedo_pkg_w64_libgpg_error_configure = --enable-static
 
@@ -459,12 +480,30 @@ speedo_pkg_libgcrypt_configure = --disable-static
 
 speedo_pkg_libksba_configure = --disable-static
 
+speedo_pkg_ntbtls_configure = --enable-static
+
+
+ifeq ($(STATIC),1)
+speedo_pkg_npth_configure += --disable-shared
+
+speedo_pkg_libgpg_error_configure += --disable-shared
+
+speedo_pkg_libassuan_configure += --disable-shared
+
+speedo_pkg_libgcrypt_configure += --disable-shared
+
+speedo_pkg_libksba_configure += --disable-shared
+endif
+
+# For now we build ntbtls only static
+speedo_pkg_ntbtls_configure = --disable-shared
+
 ifeq ($(TARGETOS),w32)
 speedo_pkg_gnupg_configure = \
-        --enable-gpg2-is-gpg --disable-g13 --disable-ntbtls \
+        --disable-g13 --enable-ntbtls \
         --enable-build-timestamp
 else
-speedo_pkg_gnupg_configure = --disable-g13
+speedo_pkg_gnupg_configure = --disable-g13 --enable-wks-tools
 endif
 speedo_pkg_gnupg_extracflags = -g
 
@@ -482,12 +521,12 @@ endif
 # The LDFLAGS is needed for -lintl for glib.
 ifeq ($(WITH_GUI),1)
 speedo_pkg_gpgme_configure = \
-	--enable-static --enable-w32-glib --disable-w32-qt \
+	--enable-static --enable-w32-glib  \
 	--with-gpg-error-prefix=$(idir) \
 	LDFLAGS=-L$(idir)/lib
 else
 speedo_pkg_gpgme_configure = \
-	--disable-static --disable-w32-glib --disable-w32-qt \
+	--disable-static --disable-w32-glib \
 	--with-gpg-error-prefix=$(idir) \
 	LDFLAGS=-L$(idir)/lib
 endif
@@ -499,7 +538,10 @@ else
 speedo_pkg_pinentry_configure = --enable-pinentry-gtk2
 endif
 speedo_pkg_pinentry_configure += \
-        --disable-pinentry-qt4 \
+        --disable-pinentry-qt5   \
+        --disable-pinentry-qt    \
+	--disable-pinentry-fltk  \
+	--disable-pinentry-tty   \
 	CPPFLAGS=-I$(idir)/include   \
 	LDFLAGS=-L$(idir)/lib        \
 	CXXFLAGS=-static-libstdc++
@@ -742,6 +784,7 @@ define SETVARS
         git="$(call GETVAR,speedo_pkg_$(1)_git)";                       \
         gitref="$(call GETVAR,speedo_pkg_$(1)_gitref)";                 \
         tar="$(call GETVAR,speedo_pkg_$(1)_tar)";                       \
+        ver="$(call GETVAR,$(1)_ver)";                                  \
         sha2="$(call GETVAR,$(1)_sha2)";                                \
         sha1="$(call GETVAR,$(1)_sha1)";                                \
         pkgsdir="$(sdir)/$(1)";                                         \
@@ -777,6 +820,7 @@ define SETVARS_W64
         git="$(call GETVAR,speedo_pkg_$(1)_git)";                       \
         gitref="$(call GETVAR,speedo_pkg_$(1)_gitref)";                 \
         tar="$(call GETVAR,speedo_pkg_$(1)_tar)";                       \
+        ver="$(call GETVAR,$(1)_ver)";                                  \
         sha2="$(call GETVAR,$(1)_sha2)";                                \
         sha1="$(call GETVAR,$(1)_sha1)";                                \
         pkgsdir="$(sdir)/$(1)";                                         \
@@ -1033,6 +1077,9 @@ endif
 	touch $(stampdir)/stamp-w64-$(1)-03-install
 
 $(stampdir)/stamp-final-$(1): $(stampdir)/stamp-$(1)-03-install
+	@($(call SETVARS,$(1));                                  \
+	  printf "%-14s %-12s %s\n" $(1) "$$$${ver}" "$$$${sha1}" \
+	      >> $(bdir)/pkg-versions.txt)
 	@echo "speedo: $(1) done"
 	@touch $(stampdir)/stamp-final-$(1)
 
@@ -1082,12 +1129,15 @@ endef
 # Insert the template for each source package.
 $(foreach spkg, $(speedo_spkgs), $(eval $(call SPKG_template,$(spkg))))
 
-$(stampdir)/stamp-final: $(stampdir)/stamp-directories
+$(stampdir)/stamp-final: $(stampdir)/stamp-directories clean-pkg-versions
 ifeq ($(TARGETOS),w32)
 $(stampdir)/stamp-final: $(addprefix $(stampdir)/stamp-w64-final-,$(speedo_w64_build_list))
 endif
 $(stampdir)/stamp-final: $(addprefix $(stampdir)/stamp-final-,$(speedo_build_list))
 	touch $(stampdir)/stamp-final
+
+clean-pkg-versions:
+        @: >$(bdir)/pkg-versions.txt
 
 all-speedo: $(stampdir)/stamp-final
 
@@ -1112,10 +1162,10 @@ dist-source: installer
 	(set -e;\
 	 tarname="$(INST_NAME)-$(INST_VERSION)_$(BUILD_DATESTR).tar" ;\
 	 [ -f "$$tarname" ] && rm "$$tarname" ;\
-         tar -C $(topsrc) -cf "$$tarname" --exclude-backups --exclude-vc \
+         tar -C $(topsrc) -cf "$$tarname" --exclude-backups --exclude-vcs \
              --transform='s,^\./,$(INST_NAME)-$(INST_VERSION)/,' \
              --anchored --exclude './PLAY' . ;\
-	 tar --totals -rf "$$tarname" --exclude-backups --exclude-vc \
+	 tar --totals -rf "$$tarname" --exclude-backups --exclude-vcs \
               --transform='s,^,$(INST_NAME)-$(INST_VERSION)/,' \
 	     PLAY/stamps/stamp-*-00-unpack PLAY/src swdb.lst swdb.lst.sig ;\
 	 [ -f "$$tarname".xz ] && rm "$$tarname".xz;\
@@ -1128,12 +1178,18 @@ $(bdir)/NEWS.tmp: $(topsrc)/NEWS
 	awk '/^Notewo/ {if(okay>1){exit}; okay++};okay {print $0}' \
 	    <$(topsrc)/NEWS  >$(bdir)/NEWS.tmp
 
+# Sort the file with the package versions.
+$(bdir)/pkg-versions.sorted: $(bdir)/pkg-versions.txt
+	grep -v '^gnupg ' <$(bdir)/pkg-versions.txt \
+	    | sort | uniq >$(bdir)/pkg-versions.sorted
+
 $(bdir)/README.txt: $(bdir)/NEWS.tmp $(topsrc)/README $(w32src)/README.txt \
-                    $(w32src)/pkg-copyright.txt
+                    $(w32src)/pkg-copyright.txt $(bdir)/pkg-versions.sorted
 	sed -e '/^;.*/d;' \
 	-e '/!NEWSFILE!/{r $(bdir)/NEWS.tmp' -e 'd;}' \
 	-e '/!GNUPGREADME!/{r $(topsrc)/README' -e 'd;}' \
         -e '/!PKG-COPYRIGHT!/{r $(w32src)/pkg-copyright.txt' -e 'd;}' \
+        -e '/!PKG-VERSIONS!/{r $(bdir)/pkg-versions.sorted' -e 'd;}' \
         -e 's,!VERSION!,$(INST_VERSION),g' \
 	   < $(w32src)/README.txt \
            | sed -e '/^#/d' \
@@ -1172,7 +1228,7 @@ installer: all w32_insthelpers $(w32src)/inst-options.ini $(bdir)/README.txt
 
 
 define MKSWDB_commands
- ( pref="#+macro: gnupg21_w32_" ;\
+ ( pref="#+macro: gnupg22_w32_" ;\
    echo "$${pref}ver  $(INST_VERSION)_$(BUILD_DATESTR)"  ;\
    echo "$${pref}date $(2)" ;\
    echo "$${pref}size $$(wc -c <$(1)|awk '{print int($$1/1024)}')k";\
@@ -1211,8 +1267,11 @@ sign-installer:
 	 echo "speedo:  * Signing installer" ;\
 	 echo "speedo:  * Key: $(AUTHENTICODE_KEY)";\
 	 echo "speedo:  */" ;\
-	 osslsigncode sign -pkcs12 $(AUTHENTICODE_KEY) -askpass \
-            -h sha256 -in "PLAY/inst/$$exefile" -out "../../$$exefile" ;\
+	 osslsigncode sign -certs $(AUTHENTICODE_CERTS)\
+            -pkcs12 $(AUTHENTICODE_KEY) -askpass \
+            -ts "http://timestamp.globalsign.com/scripts/timstamp.dll" \
+            -h sha256 -n GnuPG -i https://gnupg.org \
+	    -in "PLAY/inst/$$exefile" -out "../../$$exefile" ;\
 	 exefile="../../$$exefile" ;\
 	 $(call MKSWDB_commands,$${exefile},$${reldate}); \
 	 echo "speedo: /*" ;\
@@ -1237,4 +1296,4 @@ check-tools:
 # Mark phony targets
 #
 .PHONY: all all-speedo report-speedo clean-stamps clean-speedo installer \
-	w32_insthelpers check-tools
+	w32_insthelpers check-tools clean-pkg-versions

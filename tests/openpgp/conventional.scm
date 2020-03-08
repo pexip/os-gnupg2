@@ -17,7 +17,7 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "defs.scm"))
+(load (in-srcdir "tests" "openpgp" "defs.scm"))
 (setup-legacy-environment)
 
 (define s2k '--s2k-count=65536)
@@ -29,7 +29,7 @@
    (tr:do
     (tr:open source)
      (tr:gpg passphrase `(--yes --passphrase-fd "0" ,s2k -c))
-     (tr:gpg passphrase `(--yes --passphrase-fd "0" ,s2k))
+     (tr:gpg passphrase `(--yes --passphrase-fd "0" --decrypt ,s2k))
      (tr:assert-identity source)))
  '("plain-2" "data-32000"))
 
@@ -43,7 +43,7 @@
        (tr:open source)
        (tr:gpg passphrase `(--yes --passphrase-fd "0" ,s2k -c
 				  --cipher-algo ,algo))
-       (tr:gpg passphrase `(--yes --passphrase-fd "0" ,s2k))
+       (tr:gpg passphrase `(--yes --passphrase-fd "0" --decrypt ,s2k))
        (tr:assert-identity source)))
     '("plain-1" "data-80000")))
  (force all-cipher-algos))

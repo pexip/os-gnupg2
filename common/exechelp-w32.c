@@ -309,6 +309,7 @@ create_pipe_and_estream (int filedes[2], int flags,
 {
   gpg_error_t err = 0;
   HANDLE fds[2];
+  es_syshd_t syshd;
 
   filedes[0] = filedes[1] = -1;
   err = my_error (GPG_ERR_GENERAL);
@@ -337,10 +338,17 @@ create_pipe_and_estream (int filedes[2], int flags,
 
   if (! err && r_fp)
     {
+      syshd.type = ES_SYSHD_HANDLE;
       if (!outbound)
-        *r_fp = es_fdopen (filedes[0], nonblock? "r,nonblock" : "r");
+        {
+          syshd.u.handle = fds[0];
+          *r_fp = es_sysopen (&syshd, nonblock? "r,nonblock" : "r");
+        }
       else
-        *r_fp = es_fdopen (filedes[1], nonblock? "w,nonblock" : "w");
+        {
+          syshd.u.handle = fds[1];
+          *r_fp = es_sysopen (&syshd, nonblock? "w,nonblock" : "w");
+        }
       if (!*r_fp)
         {
           err = my_error_from_syserror ();
@@ -547,7 +555,7 @@ gnupg_spawn_process (const char *pgmname, const char *argv[],
   memset (&si, 0, sizeof si);
   si.cb = sizeof (si);
   si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-  si.wShowWindow = DEBUG_W32_SPAWN? SW_SHOW : SW_MINIMIZE;
+  si.wShowWindow = DEBUG_W32_SPAWN? SW_SHOW : SW_HIDE;
   si.hStdInput  = inpipe[0]  == INVALID_HANDLE_VALUE? nullhd[0] : inpipe[0];
   si.hStdOutput = outpipe[1] == INVALID_HANDLE_VALUE? nullhd[1] : outpipe[1];
   si.hStdError  = errpipe[1] == INVALID_HANDLE_VALUE? nullhd[2] : errpipe[1];

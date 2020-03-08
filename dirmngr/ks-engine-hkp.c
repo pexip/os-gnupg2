@@ -37,7 +37,7 @@
 
 #include "dirmngr.h"
 #include "misc.h"
-#include "userids.h"
+#include "../common/userids.h"
 #include "dns-stuff.h"
 #include "ks-engine.h"
 
@@ -55,7 +55,7 @@
 
 
 /* Number of seconds after a host is marked as resurrected.  */
-#define RESURRECT_INTERVAL  (3600*3)  /* 3 hours */
+#define RESURRECT_INTERVAL  (3600+1800)  /* 1.5 hours */
 
 /* To match the behaviour of our old gpgkeys helper code we escape
    more characters than actually needed. */
@@ -67,6 +67,8 @@
 /* Number of retries done for a dead host etc.  */
 #define SEND_REQUEST_RETRIES 3
 
+enum ks_protocol { KS_PROTOCOL_HKP, KS_PROTOCOL_HKPS, KS_PROTOCOL_MAX };
+
 /* Objects used to maintain information about hosts.  */
 struct hostinfo_s;
 typedef struct hostinfo_s *hostinfo_t;
@@ -74,25 +76,30 @@ struct hostinfo_s
 {
   time_t lastfail;   /* Time we tried to connect and failed.  */
   time_t lastused;   /* Time of last use.  */
-  int *pool;         /* A -1 terminated array with indices into
-                        HOSTTABLE or NULL if NAME is not a pool
-                        name.  */
+  int *pool;         /* An array with indices into HOSTTABLE or NULL
+                        if NAME is not a pool name.  */
+  size_t pool_len;   /* Length of POOL.  */
+  size_t pool_size;  /* Allocated size of POOL.  */
+#define MAX_POOL_SIZE	128
   int poolidx;       /* Index into POOL with the used host.  -1 if not set.  */
   unsigned int v4:1; /* Host supports AF_INET.  */
   unsigned int v6:1; /* Host supports AF_INET6.  */
   unsigned int onion:1;/* NAME is an onion (Tor HS) address.  */
   unsigned int dead:1; /* Host is currently unresponsive.  */
+  unsigned int iporname_valid:1;  /* The field IPORNAME below is valid */
+                                  /* (but may be NULL) */
+  unsigned int did_a_lookup:1;    /* Have we done an A lookup yet?  */
+  unsigned int did_srv_lookup:2;  /* One bit per protocol indicating
+                                     whether we already did a SRV
+                                     lookup.  */
   time_t died_at;    /* The time the host was marked dead.  If this is
                         0 the host has been manually marked dead.  */
   char *cname;       /* Canonical name of the host.  Only set if this
                         is a pool or NAME has a numerical IP address.  */
-  char *v4addr;      /* A string with the v4 IP address of the host.
-                        NULL if NAME has a numeric IP address or no v4
-                        address is available.  */
-  char *v6addr;      /* A string with the v6 IP address of the host.
-                        NULL if NAME has a numeric IP address or no v6
-                        address is available.  */
-  unsigned short port; /* The port used by the host, 0 if unknown.  */
+  char *iporname;    /* Numeric IP address or name for printing.  */
+  unsigned short port[KS_PROTOCOL_MAX];
+                     /* The port used by the host for all protocols, 0
+                        if unknown.  */
   char name[1];      /* The hostname.  */
 };
 
@@ -103,7 +110,7 @@ static hostinfo_t *hosttable;
 static int hosttable_size;
 
 /* The number of host slots we initially allocate for HOSTTABLE.  */
-#define INITIAL_HOSTTABLE_SIZE 10
+#define INITIAL_HOSTTABLE_SIZE 50
 
 
 /* Create a new hostinfo object, fill in NAME and put it into
@@ -121,6 +128,8 @@ create_new_hostinfo (const char *name)
     return -1;
   strcpy (hi->name, name);
   hi->pool = NULL;
+  hi->pool_len = 0;
+  hi->pool_size = 0;
   hi->poolidx = -1;
   hi->lastused = (time_t)(-1);
   hi->lastfail = (time_t)(-1);
@@ -128,11 +137,14 @@ create_new_hostinfo (const char *name)
   hi->v6 = 0;
   hi->onion = 0;
   hi->dead = 0;
+  hi->did_a_lookup = 0;
+  hi->did_srv_lookup = 0;
+  hi->iporname_valid = 0;
   hi->died_at = 0;
   hi->cname = NULL;
-  hi->v4addr = NULL;
-  hi->v6addr = NULL;
-  hi->port = 0;
+  hi->iporname = NULL;
+  hi->port[KS_PROTOCOL_HKP] = 0;
+  hi->port[KS_PROTOCOL_HKPS] = 0;
 
   /* Add it to the hosttable. */
   for (idx=0; idx < hosttable_size; idx++)
@@ -190,24 +202,24 @@ sort_hostpool (const void *xa, const void *xb)
 }
 
 
-/* Return true if the host with the hosttable index TBLIDX is in POOL.  */
+/* Return true if the host with the hosttable index TBLIDX is in HI->pool.  */
 static int
-host_in_pool_p (int *pool, int tblidx)
+host_in_pool_p (hostinfo_t hi, int tblidx)
 {
   int i, pidx;
 
-  for (i=0; (pidx = pool[i]) != -1; i++)
+  for (i = 0; i < hi->pool_len && (pidx = hi->pool[i]) != -1; i++)
     if (pidx == tblidx && hosttable[pidx])
       return 1;
   return 0;
 }
 
 
-/* Select a random host.  Consult TABLE which indices into the global
-   hosttable.  Returns index into TABLE or -1 if no host could be
+/* Select a random host.  Consult HI->pool which indices into the global
+   hosttable.  Returns index into HI->pool or -1 if no host could be
    selected.  */
 static int
-select_random_host (int *table)
+select_random_host (hostinfo_t hi)
 {
   int *tbl;
   size_t tblsize;
@@ -215,7 +227,9 @@ select_random_host (int *table)
 
   /* We create a new table so that we randomly select only from
      currently alive hosts.  */
-  for (idx=0, tblsize=0; (pidx = table[idx]) != -1; idx++)
+  for (idx = 0, tblsize = 0;
+       idx < hi->pool_len && (pidx = hi->pool[idx]) != -1;
+       idx++)
     if (hosttable[pidx] && !hosttable[pidx]->dead)
       tblsize++;
   if (!tblsize)
@@ -224,7 +238,9 @@ select_random_host (int *table)
   tbl = xtrymalloc (tblsize * sizeof *tbl);
   if (!tbl)
     return -1;
-  for (idx=0, tblsize=0; (pidx = table[idx]) != -1; idx++)
+  for (idx = 0, tblsize = 0;
+       idx < hi->pool_len && (pidx = hi->pool[idx]) != -1;
+       idx++)
     if (hosttable[pidx] && !hosttable[pidx]->dead)
       tbl[tblsize++] = pidx;
 
@@ -258,27 +274,59 @@ arecords_is_pool (dns_addrinfo_t aibuf)
 }
 
 
+/* Print a warning iff Tor is not running but Tor has been requested.
+ * Also return true if it is not running.  */
+static int
+tor_not_running_p (ctrl_t ctrl)
+{
+  assuan_fd_t sock;
+
+  if (!dirmngr_use_tor ())
+    return 0;
+
+  sock = assuan_sock_connect_byname (NULL, 0, 0, NULL, ASSUAN_SOCK_TOR);
+  if (sock != ASSUAN_INVALID_FD)
+    {
+      assuan_sock_close (sock);
+      return 0;
+    }
+
+  log_info ("(it seems Tor is not running)\n");
+  dirmngr_status (ctrl, "WARNING", "tor_not_running 0",
+                  "Tor is enabled but the local Tor daemon"
+                  " seems to be down", NULL);
+  return 1;
+}
+
+
 /* Add the host AI under the NAME into the HOSTTABLE.  If PORT is not
-   zero, it specifies which port to use to talk to the host.  If NAME
-   specifies a pool (as indicated by IS_POOL), update the given
-   reference table accordingly.  */
+   zero, it specifies which port to use to talk to the host for
+   PROTOCOL.  If NAME specifies a pool (as indicated by IS_POOL),
+   update the given reference table accordingly.  */
 static void
 add_host (const char *name, int is_pool,
-          const dns_addrinfo_t ai, unsigned short port,
-          int *reftbl, size_t reftblsize, int *refidx)
+          const dns_addrinfo_t ai,
+          enum ks_protocol protocol, unsigned short port)
 {
   gpg_error_t tmperr;
   char *tmphost;
   int idx, tmpidx;
-  int is_numeric = 0;
+  hostinfo_t host;
   int i;
 
   idx = find_hostinfo (name);
+  host = hosttable[idx];
 
-  if (!is_pool && !is_ip_address (name))
+  if (is_pool)
     {
-      /* This is a hostname but not a pool.  Use the name
-         as given without going through resolve_dns_addr.  */
+      /* For a pool immediately convert the address to a string.  */
+      tmperr = resolve_dns_addr (ai->addr, ai->addrlen,
+                                 (DNS_NUMERICHOST | DNS_WITHBRACKET), &tmphost);
+    }
+  else if (!is_ip_address (name))
+    {
+      /* This is a hostname.  Use the name as given without going
+       * through resolve_dns_addr.  */
       tmphost = xtrystrdup (name);
       if (!tmphost)
         tmperr = gpg_error_from_syserror ();
@@ -287,10 +335,10 @@ add_host (const char *name, int is_pool,
     }
   else
     {
+      /* Do a PTR lookup on AI.  If a name was not found the function
+       * returns the numeric address (with brackets).  */
       tmperr = resolve_dns_addr (ai->addr, ai->addrlen,
                                  DNS_WITHBRACKET, &tmphost);
-      if (tmphost && is_ip_address (tmphost))
-        is_numeric = 1;
     }
 
   if (tmperr)
@@ -298,7 +346,7 @@ add_host (const char *name, int is_pool,
       log_info ("resolve_dns_addr failed while checking '%s': %s\n",
                 name, gpg_strerror (tmperr));
     }
-  else if ((*refidx) + 1 >= reftblsize)
+  else if (host->pool_len + 1 >= MAX_POOL_SIZE)
     {
       log_error ("resolve_dns_addr for '%s': '%s'"
                  " [index table full - ignored]\n", name, tmphost);
@@ -319,59 +367,72 @@ add_host (const char *name, int is_pool,
 
       if (tmpidx == -1)
         {
-          log_error ("map_host for '%s' problem: %s - '%s'"
-                     " [ignored]\n",
+          log_error ("map_host for '%s' problem: %s - '%s' [ignored]\n",
                      name, strerror (errno), tmphost);
         }
       else  /* Set or update the entry. */
         {
-          char *ipaddr = NULL;
-
           if (port)
-            hosttable[tmpidx]->port = port;
-
-          if (!is_numeric)
-            {
-              xfree (tmphost);
-              tmperr = resolve_dns_addr (ai->addr, ai->addrlen,
-                                         (DNS_NUMERICHOST
-                                          | DNS_WITHBRACKET),
-                                         &tmphost);
-              if (tmperr)
-                log_info ("resolve_dns_addr failed: %s\n",
-                          gpg_strerror (tmperr));
-              else
-                {
-                  ipaddr = tmphost;
-                  tmphost = NULL;
-                }
-            }
+            hosttable[tmpidx]->port[protocol] = port;
 
           if (ai->family == AF_INET6)
             {
               hosttable[tmpidx]->v6 = 1;
-              xfree (hosttable[tmpidx]->v6addr);
-              hosttable[tmpidx]->v6addr = ipaddr;
             }
           else if (ai->family == AF_INET)
             {
               hosttable[tmpidx]->v4 = 1;
-              xfree (hosttable[tmpidx]->v4addr);
-              hosttable[tmpidx]->v4addr = ipaddr;
             }
           else
             BUG ();
 
-          for (i=0; i < *refidx; i++)
-            if (reftbl[i] == tmpidx)
-              break;
-          if (!(i < *refidx) && tmpidx != idx)
-            reftbl[(*refidx)++] = tmpidx;
+          /* If we updated the main entry, we're done.  */
+          if (idx == tmpidx)
+            goto leave;
+
+          /* If we updated an existing entry, we're done.  */
+          for (i = 0; i < host->pool_len; i++)
+            if (host->pool[i] == tmpidx)
+              goto leave;
+
+          /* Otherwise, we need to add it to the pool.  Check if there
+             is space.  */
+          if (host->pool_len + 1 > host->pool_size)
+            {
+              int *new_pool;
+              size_t new_size;
+
+              if (host->pool_size == 0)
+                new_size = 4;
+              else
+                new_size = host->pool_size * 2;
+
+              new_pool = xtryrealloc (host->pool,
+                                      new_size * sizeof *new_pool);
+
+              if (new_pool == NULL)
+                goto leave;
+
+              host->pool = new_pool;
+              host->pool_size = new_size;
+            }
+
+          /* Finally, add it.  */
+          log_assert (host->pool_len < host->pool_size);
+          host->pool[host->pool_len++] = tmpidx;
         }
     }
+ leave:
   xfree (tmphost);
 }
 
+
+/* Sort the pool of the given hostinfo HI.  */
+static void
+hostinfo_sort_pool (hostinfo_t hi)
+{
+  qsort (hi->pool, hi->pool_len, sizeof *hi->pool, sort_hostpool);
+}
 
 /* Map the host name NAME to the actual to be used host name.  This
  * allows us to manage round robin DNS names.  We use our own strategy
@@ -390,12 +451,16 @@ add_host (const char *name, int is_pool,
  * pool.  */
 static gpg_error_t
 map_host (ctrl_t ctrl, const char *name, const char *srvtag, int force_reselect,
-          char **r_host, char *r_portstr,
+          enum ks_protocol protocol, char **r_host, char *r_portstr,
           unsigned int *r_httpflags, char **r_httphost)
 {
   gpg_error_t err = 0;
   hostinfo_t hi;
   int idx;
+  dns_addrinfo_t aibuf, ai;
+  int is_pool;
+  int new_hosts = 0;
+  char *cname;
 
   *r_host = NULL;
   if (r_httpflags)
@@ -412,72 +477,62 @@ map_host (ctrl_t ctrl, const char *name, const char *srvtag, int force_reselect,
 
   /* See whether the host is in our table.  */
   idx = find_hostinfo (name);
-  if (idx == -1 && is_onion_address (name))
+  if (idx == -1)
     {
       idx = create_new_hostinfo (name);
       if (idx == -1)
         return gpg_error_from_syserror ();
       hi = hosttable[idx];
-      hi->onion = 1;
+      hi->onion = is_onion_address (name);
     }
-  else if (idx == -1)
+  else
+    hi = hosttable[idx];
+
+  is_pool = hi->pool != NULL;
+
+  if (srvtag && !is_ip_address (name)
+      && ! hi->onion
+      && ! (hi->did_srv_lookup & 1 << protocol))
     {
-      /* We never saw this host.  Allocate a new entry.  */
-      dns_addrinfo_t aibuf, ai;
-      int *reftbl;
-      size_t reftblsize;
-      int refidx;
-      int is_pool = 0;
-      char *cname;
       struct srventry *srvs;
       unsigned int srvscount;
 
-      reftblsize = 100;
-      reftbl = xtrymalloc (reftblsize * sizeof *reftbl);
-      if (!reftbl)
-        return gpg_error_from_syserror ();
-      refidx = 0;
-
-      idx = create_new_hostinfo (name);
-      if (idx == -1)
+      /* Check for SRV records.  */
+      err = get_dns_srv (name, srvtag, NULL, &srvs, &srvscount);
+      if (err)
         {
-          err = gpg_error_from_syserror ();
-          xfree (reftbl);
+          if (gpg_err_code (err) == GPG_ERR_ECONNREFUSED)
+            tor_not_running_p (ctrl);
           return err;
         }
-      hi = hosttable[idx];
 
-      if (srvtag && !is_ip_address (name))
+      if (srvscount > 0)
         {
-          /* Check for SRV records.  */
-          err = get_dns_srv (name, srvtag, NULL, &srvs, &srvscount);
-          if (err)
+          int i;
+          if (! is_pool)
+            is_pool = srvscount > 1;
+
+          for (i = 0; i < srvscount; i++)
             {
-              xfree (reftbl);
-              return err;
+              err = resolve_dns_name (srvs[i].target, 0,
+                                      AF_UNSPEC, SOCK_STREAM,
+                                      &ai, &cname);
+              if (err)
+                continue;
+              dirmngr_tick (ctrl);
+              add_host (name, is_pool, ai, protocol, srvs[i].port);
+              new_hosts = 1;
             }
 
-          if (srvscount > 0)
-            {
-              int i;
-              is_pool = srvscount > 1;
-
-              for (i = 0; i < srvscount; i++)
-                {
-                  err = resolve_dns_name (srvs[i].target, 0,
-                                          AF_UNSPEC, SOCK_STREAM,
-                                          &ai, &cname);
-                  if (err)
-                    continue;
-                  dirmngr_tick (ctrl);
-                  add_host (name, is_pool, ai, srvs[i].port,
-                            reftbl, reftblsize, &refidx);
-                }
-
-              xfree (srvs);
-            }
+          xfree (srvs);
         }
 
+      hi->did_srv_lookup |= 1 << protocol;
+    }
+
+  if (! hi->did_a_lookup
+      && ! hi->onion)
+    {
       /* Find all A records for this entry and put them into the pool
          list - if any.  */
       err = resolve_dns_name (name, 0, 0, SOCK_STREAM, &aibuf, &cname);
@@ -505,40 +560,30 @@ map_host (ctrl_t ctrl, const char *name, const char *srvtag, int force_reselect,
             {
               if (ai->family != AF_INET && ai->family != AF_INET6)
                 continue;
+              if (opt.disable_ipv4 && ai->family == AF_INET)
+                continue;
+              if (opt.disable_ipv6 && ai->family == AF_INET6)
+                continue;
               dirmngr_tick (ctrl);
 
-              add_host (name, is_pool, ai, 0, reftbl, reftblsize, &refidx);
+              add_host (name, is_pool, ai, 0, 0);
+              new_hosts = 1;
             }
+
+          hi->did_a_lookup = 1;
         }
-      reftbl[refidx] = -1;
       xfree (cname);
       free_dns_addrinfo (aibuf);
-
-      if (refidx && is_pool)
-        {
-          assert (!hi->pool);
-          hi->pool = xtryrealloc (reftbl, (refidx+1) * sizeof *reftbl);
-          if (!hi->pool)
-            {
-              err = gpg_error_from_syserror ();
-              log_error ("shrinking index table in map_host failed: %s\n",
-                         gpg_strerror (err));
-              xfree (reftbl);
-              return err;
-            }
-          qsort (hi->pool, refidx, sizeof *reftbl, sort_hostpool);
-        }
-      else
-        xfree (reftbl);
     }
+  if (new_hosts)
+    hostinfo_sort_pool (hi);
 
-  hi = hosttable[idx];
   if (hi->pool)
     {
       /* Deal with the pool name before selecting a host. */
       if (r_httphost)
         {
-          *r_httphost = xtrystrdup (hi->cname? hi->cname : hi->name);
+          *r_httphost = xtrystrdup (hi->name);
           if (!*r_httphost)
             return gpg_error_from_syserror ();
         }
@@ -554,7 +599,7 @@ map_host (ctrl_t ctrl, const char *name, const char *srvtag, int force_reselect,
       /* Select a host if needed.  */
       if (hi->poolidx == -1)
         {
-          hi->poolidx = select_random_host (hi->pool);
+          hi->poolidx = select_random_host (hi);
           if (hi->poolidx == -1)
             {
               log_error ("no alive host found in pool '%s'\n", name);
@@ -577,7 +622,6 @@ map_host (ctrl_t ctrl, const char *name, const char *srvtag, int force_reselect,
        * find the canonical name so that it can be used in the HTTP
        * Host header.  Fixme: We should store that name in the
        * hosttable. */
-      dns_addrinfo_t aibuf, ai;
       char *host;
 
       err = resolve_dns_name (hi->name, 0, 0, SOCK_STREAM, &aibuf, NULL);
@@ -585,7 +629,8 @@ map_host (ctrl_t ctrl, const char *name, const char *srvtag, int force_reselect,
         {
           for (ai = aibuf; ai; ai = ai->next)
             {
-              if (ai->family == AF_INET6 || ai->family == AF_INET)
+              if ((!opt.disable_ipv6 && ai->family == AF_INET6)
+                  || (!opt.disable_ipv4 && ai->family == AF_INET))
                 {
                   err = resolve_dns_addr (ai->addr, ai->addrlen, 0, &host);
                   if (!err)
@@ -640,9 +685,9 @@ map_host (ctrl_t ctrl, const char *name, const char *srvtag, int force_reselect,
         }
       return err;
     }
-  if (hi->port)
+  if (hi->port[protocol])
     snprintf (r_portstr, 6 /* five digits and the sentinel */,
-              "%hu", hi->port);
+              "%hu", hi->port[protocol]);
   return 0;
 }
 
@@ -730,7 +775,9 @@ ks_hkp_mark_host (ctrl_t ctrl, const char *name, int alive)
   /* If the host is a pool mark all member hosts. */
   if (!err && hi->pool)
     {
-      for (idx2=0; !err && (n=hi->pool[idx2]) != -1; idx2++)
+      for (idx2 = 0;
+           !err && idx2 < hi->pool_len && (n = hi->pool[idx2]) != -1;
+           idx2++)
         {
           assert (n >= 0 && n < hosttable_size);
 
@@ -743,7 +790,7 @@ ks_hkp_mark_host (ctrl_t ctrl, const char *name, int alive)
                   if (hosttable[idx3]
                       && hosttable[idx3]->pool
                       && idx3 != idx
-                      && host_in_pool_p (hosttable[idx3]->pool, n))
+                      && host_in_pool_p (hosttable[idx3], n))
                     break;
                 }
               if (idx3 < hosttable_size)
@@ -789,6 +836,7 @@ ks_hkp_print_hosttable (ctrl_t ctrl)
   if (err)
     return err;
 
+  /* FIXME: We need a lock for the hosttable.  */
   curtime = gnupg_get_time ();
   for (idx=0; idx < hosttable_size; idx++)
     if ((hi=hosttable[idx]))
@@ -800,16 +848,82 @@ ks_hkp_print_hosttable (ctrl_t ctrl)
           }
         else
           diedstr = died = NULL;
-        err = ks_printf_help (ctrl, "%3d %s %s %s %s%s%s%s%s%s%s%s\n",
+
+        if (!hi->iporname_valid)
+          {
+            char *canon = NULL;
+
+            xfree (hi->iporname);
+            hi->iporname = NULL;
+
+            /* Do a lookup just for the display purpose.  */
+            if (hi->onion || hi->pool)
+              ;
+            else if (is_ip_address (hi->name))
+              {
+                dns_addrinfo_t aibuf, ai;
+
+                /* Turn the numerical IP address string into an AI and
+                 * then do a DNS PTR lookup.  */
+                if (!resolve_dns_name (hi->name, 0, 0,
+                                       SOCK_STREAM,
+                                       &aibuf, &canon))
+                  {
+                    if (canon && is_ip_address (canon))
+                      {
+                        xfree (canon);
+                        canon = NULL;
+                      }
+                    for (ai = aibuf; !canon && ai; ai = ai->next)
+                      {
+                        resolve_dns_addr (ai->addr, ai->addrlen,
+                                          DNS_WITHBRACKET, &canon);
+                        if (canon && is_ip_address (canon))
+                          {
+                            /* We already have the numeric IP - no need to
+                             * display it a second time.  */
+                            xfree (canon);
+                            canon = NULL;
+                          }
+                      }
+                  }
+                free_dns_addrinfo (aibuf);
+              }
+            else
+              {
+                dns_addrinfo_t aibuf, ai;
+
+                /* Get the IP address as a string from a name.  Note
+                 * that resolve_dns_addr allocates CANON on success
+                 * and thus terminates the loop. */
+                if (!resolve_dns_name (hi->name, 0,
+                                       hi->v6? AF_INET6 : AF_INET,
+                                       SOCK_STREAM,
+                                       &aibuf, NULL))
+                  {
+                    for (ai = aibuf; !canon && ai; ai = ai->next)
+                      {
+                        resolve_dns_addr (ai->addr, ai->addrlen,
+                                          DNS_NUMERICHOST|DNS_WITHBRACKET,
+                                          &canon);
+                      }
+                  }
+                free_dns_addrinfo (aibuf);
+              }
+
+            hi->iporname = canon;
+            hi->iporname_valid = 1;
+          }
+
+        err = ks_printf_help (ctrl, "%3d %s %s %s %s%s%s%s%s%s%s\n",
                               idx,
                               hi->onion? "O" : hi->v6? "6":" ",
                               hi->v4? "4":" ",
                               hi->dead? "d":" ",
                               hi->name,
-                              hi->v6addr? " v6=":"",
-                              hi->v6addr? hi->v6addr:"",
-                              hi->v4addr? " v4=":"",
-                              hi->v4addr? hi->v4addr:"",
+                              hi->iporname? " (":"",
+                              hi->iporname? hi->iporname : "",
+                              hi->iporname? ")":"",
                               diedstr? "  (":"",
                               diedstr? diedstr:"",
                               diedstr? ")":""   );
@@ -826,7 +940,7 @@ ks_hkp_print_hosttable (ctrl_t ctrl)
           {
             init_membuf (&mb, 256);
             put_membuf_printf (&mb, "  .   -->");
-            for (idx2=0; hi->pool[idx2] != -1; idx2++)
+            for (idx2 = 0; idx2 < hi->pool_len && hi->pool[idx2] != -1; idx2++)
               {
                 put_membuf_printf (&mb, " %d", hi->pool[idx2]);
                 if (hi->poolidx == hi->pool[idx2])
@@ -894,6 +1008,7 @@ make_host_part (ctrl_t ctrl,
   const char *srvtag;
   char portstr[10];
   char *hostname;
+  enum ks_protocol protocol;
 
   *r_hostport = NULL;
 
@@ -901,15 +1016,17 @@ make_host_part (ctrl_t ctrl,
     {
       scheme = "https";
       srvtag = no_srv? NULL : "pgpkey-https";
+      protocol = KS_PROTOCOL_HKPS;
     }
   else /* HKP or HTTP.  */
     {
       scheme = "http";
       srvtag = no_srv? NULL : "pgpkey-http";
+      protocol = KS_PROTOCOL_HKP;
     }
 
   portstr[0] = 0;
-  err = map_host (ctrl, host, srvtag, force_reselect,
+  err = map_host (ctrl, host, srvtag, force_reselect, protocol,
                   &hostname, portstr, r_httpflags, r_httphost);
   if (err)
     return err;
@@ -1016,6 +1133,7 @@ ks_hkp_reload (void)
       hi = hosttable[idx];
       if (!hi)
         continue;
+      hi->iporname_valid = 0;
       if (!hi->dead)
         continue;
       hi->dead = 0;
@@ -1041,16 +1159,30 @@ send_request (ctrl_t ctrl, const char *request, const char *hostportstr,
   gpg_error_t err;
   http_session_t session = NULL;
   http_t http = NULL;
-  int redirects_left = MAX_REDIRECTS;
+  http_redir_info_t redirinfo = { MAX_REDIRECTS };
   estream_t fp = NULL;
   char *request_buffer = NULL;
+  parsed_uri_t uri = NULL;
 
   *r_fp = NULL;
 
-  err = http_session_new (&session, NULL, httphost, HTTP_FLAG_TRUST_DEF);
+  err = http_parse_uri (&uri, request, 0);
+  if (err)
+    goto leave;
+  redirinfo.orig_url   = request;
+  redirinfo.orig_onion = uri->onion;
+  redirinfo.allow_downgrade = 1;
+  /* FIXME: I am not sure whey we allow a downgrade for hkp requests.
+   * Needs at least an explanation here..  */
+
+  err = http_session_new (&session, httphost,
+                          ((ctrl->http_no_crl? HTTP_FLAG_NO_CRL : 0)
+                           | HTTP_FLAG_TRUST_DEF),
+                          gnupg_http_tls_verify_cb, ctrl);
   if (err)
     goto leave;
   http_session_set_log_cb (session, cert_log_cb);
+  http_session_set_timeout (session, ctrl->timeout);
 
  once_more:
   err = http_open (&http,
@@ -1060,7 +1192,9 @@ send_request (ctrl_t ctrl, const char *request, const char *hostportstr,
                    /* fixme: AUTH */ NULL,
                    (httpflags
                     |(opt.honor_http_proxy? HTTP_FLAG_TRY_PROXY:0)
-                    |(opt.use_tor? HTTP_FLAG_FORCE_TOR:0)),
+                    |(dirmngr_use_tor ()? HTTP_FLAG_FORCE_TOR:0)
+                    |(opt.disable_ipv4? HTTP_FLAG_IGNORE_IPv4 : 0)
+                    |(opt.disable_ipv6? HTTP_FLAG_IGNORE_IPv6 : 0)),
                    ctrl->http_proxy,
                    session,
                    NULL,
@@ -1120,28 +1254,18 @@ send_request (ctrl_t ctrl, const char *request, const char *hostportstr,
     case 302:
     case 307:
       {
-        const char *s = http_get_header (http, "Location");
+        xfree (request_buffer);
+        err = http_prepare_redirect (&redirinfo, http_get_status_code (http),
+                                     http_get_header (http, "Location"),
+                                     &request_buffer);
+        if (err)
+          goto leave;
 
-        log_info (_("URL '%s' redirected to '%s' (%u)\n"),
-                  request, s?s:"[none]", http_get_status_code (http));
-        if (s && *s && redirects_left-- )
-          {
-            xfree (request_buffer);
-            request_buffer = xtrystrdup (s);
-            if (request_buffer)
-              {
-                request = request_buffer;
-                http_close (http, 0);
-                http = NULL;
-                goto once_more;
-              }
-            err = gpg_error_from_syserror ();
-          }
-        else
-          err = gpg_error (GPG_ERR_NO_DATA);
-        log_error (_("too many redirections\n"));
+        request = request_buffer;
+        http_close (http, 0);
+        http = NULL;
       }
-      goto leave;
+      goto once_more;
 
     case 501:
       err = gpg_error (GPG_ERR_NOT_IMPLEMENTED);
@@ -1174,18 +1298,19 @@ send_request (ctrl_t ctrl, const char *request, const char *hostportstr,
   http_close (http, 0);
   http_session_release (session);
   xfree (request_buffer);
+  http_release_parsed_uri (uri);
   return err;
 }
 
 
-/* Helper to evaluate the error code ERR form a send_request() call
+/* Helper to evaluate the error code ERR from a send_request() call
    with REQUEST.  The function returns true if the caller shall try
    again.  TRIES_LEFT points to a variable to track the number of
    retries; this function decrements it and won't return true if it is
    down to zero. */
 static int
-handle_send_request_error (gpg_error_t err, const char *request,
-                           unsigned int *tries_left)
+handle_send_request_error (ctrl_t ctrl, gpg_error_t err, const char *request,
+                           unsigned int http_status, unsigned int *tries_left)
 {
   int retry = 0;
 
@@ -1195,21 +1320,17 @@ handle_send_request_error (gpg_error_t err, const char *request,
   switch (gpg_err_code (err))
     {
     case GPG_ERR_ECONNREFUSED:
-      if (opt.use_tor)
-        {
-          assuan_fd_t sock;
-
-          sock = assuan_sock_connect_byname (NULL, 0, 0, NULL, ASSUAN_SOCK_TOR);
-          if (sock == ASSUAN_INVALID_FD)
-            log_info ("(it seems Tor is not running)\n");
-          else
-            assuan_sock_close (sock);
-        }
+      if (tor_not_running_p (ctrl))
+        break; /* A retry does not make sense.  */
+      /* Okay: Tor is up or --use-tor is not used.  */
       /*FALLTHRU*/
     case GPG_ERR_ENETUNREACH:
     case GPG_ERR_ENETDOWN:
     case GPG_ERR_UNKNOWN_HOST:
     case GPG_ERR_NETWORK:
+    case GPG_ERR_EIO:  /* Sometimes used by estream cookie functions.  */
+    case GPG_ERR_EADDRNOTAVAIL:  /* e.g. when IPv6 is disabled */
+    case GPG_ERR_EAFNOSUPPORT:  /* e.g. when IPv6 is not compiled in */
       if (mark_host_dead (request) && *tries_left)
         retry = 1;
       break;
@@ -1220,6 +1341,37 @@ handle_send_request_error (gpg_error_t err, const char *request,
           log_info ("selecting a different host due to a timeout\n");
           retry = 1;
         }
+      break;
+
+    case GPG_ERR_EACCES:
+      if (dirmngr_use_tor ())
+        {
+          log_info ("(Tor configuration problem)\n");
+          dirmngr_status (ctrl, "WARNING", "tor_config_problem 0",
+                          "Please check that the \"SocksPort\" flag "
+                          "\"IPv6Traffic\" is set in torrc", NULL);
+        }
+      break;
+
+    case GPG_ERR_NO_DATA:
+      {
+        switch (http_status)
+          {
+          case 502: /* Bad Gateway  */
+            log_info ("marking host dead due to a %u (%s)\n",
+                      http_status, http_status2string (http_status));
+            if (mark_host_dead (request) && *tries_left)
+              retry = 1;
+            break;
+
+          case 503: /* Service Unavailable */
+          case 504: /* Gateway Timeout    */
+            log_info ("selecting a different host due to a %u (%s)",
+                      http_status, http_status2string (http_status));
+            retry = 1;
+            break;
+          }
+      }
       break;
 
     default:
@@ -1250,6 +1402,7 @@ ks_hkp_search (ctrl_t ctrl, parsed_uri_t uri, const char *pattern,
   int reselect;
   unsigned int httpflags;
   char *httphost = NULL;
+  unsigned int http_status;
   unsigned int tries = SEND_REQUEST_RETRIES;
 
   *r_fp = NULL;
@@ -1331,14 +1484,20 @@ ks_hkp_search (ctrl_t ctrl, parsed_uri_t uri, const char *pattern,
 
   /* Send the request.  */
   err = send_request (ctrl, request, hostport, httphost, httpflags,
-                      NULL, NULL, &fp, r_http_status);
-  if (handle_send_request_error (err, request, &tries))
+                      NULL, NULL, &fp, &http_status);
+  if (handle_send_request_error (ctrl, err, request, http_status, &tries))
     {
       reselect = 1;
       goto again;
     }
+  if (r_http_status)
+    *r_http_status = http_status;
   if (err)
-    goto leave;
+    {
+      if (gpg_err_code (err) == GPG_ERR_NO_DATA)
+        dirmngr_status (ctrl, "SOURCE", hostport, NULL);
+      goto leave;
+    }
 
   err = dirmngr_status (ctrl, "SOURCE", hostport, NULL);
   if (err)
@@ -1394,6 +1553,7 @@ ks_hkp_get (ctrl_t ctrl, parsed_uri_t uri, const char *keyspec, estream_t *r_fp)
   int reselect;
   char *httphost = NULL;
   unsigned int httpflags;
+  unsigned int http_status;
   unsigned int tries = SEND_REQUEST_RETRIES;
 
   *r_fp = NULL;
@@ -1428,6 +1588,7 @@ ks_hkp_get (ctrl_t ctrl, parsed_uri_t uri, const char *keyspec, estream_t *r_fp)
 
     case KEYDB_SEARCH_MODE_FPR16:
       log_error ("HKP keyservers do not support v3 fingerprints\n");
+      /* fall through */
     default:
       return gpg_error (GPG_ERR_INV_USER_ID);
     }
@@ -1465,14 +1626,18 @@ ks_hkp_get (ctrl_t ctrl, parsed_uri_t uri, const char *keyspec, estream_t *r_fp)
 
   /* Send the request.  */
   err = send_request (ctrl, request, hostport, httphost, httpflags,
-                      NULL, NULL, &fp, NULL);
-  if (handle_send_request_error (err, request, &tries))
+                      NULL, NULL, &fp, &http_status);
+  if (handle_send_request_error (ctrl, err, request, http_status, &tries))
     {
       reselect = 1;
       goto again;
     }
   if (err)
-    goto leave;
+    {
+      if (gpg_err_code (err) == GPG_ERR_NO_DATA)
+        dirmngr_status (ctrl, "SOURCE", hostport, NULL);
+      goto leave;
+    }
 
   err = dirmngr_status (ctrl, "SOURCE", hostport, NULL);
   if (err)
@@ -1536,6 +1701,7 @@ ks_hkp_put (ctrl_t ctrl, parsed_uri_t uri, const void *data, size_t datalen)
   int reselect;
   char *httphost = NULL;
   unsigned int httpflags;
+  unsigned int http_status;
   unsigned int tries = SEND_REQUEST_RETRIES;
 
   parm.datastring = NULL;
@@ -1574,8 +1740,8 @@ ks_hkp_put (ctrl_t ctrl, parsed_uri_t uri, const void *data, size_t datalen)
 
   /* Send the request.  */
   err = send_request (ctrl, request, hostport, httphost, 0,
-                      put_post_cb, &parm, &fp, NULL);
-  if (handle_send_request_error (err, request, &tries))
+                      put_post_cb, &parm, &fp, &http_status);
+  if (handle_send_request_error (ctrl, err, request, http_status, &tries))
     {
       reselect = 1;
       goto again;

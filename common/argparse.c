@@ -4,8 +4,8 @@
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify it
- * under the terms of either
+ * GnuPG is free software; you can redistribute and/or modify this
+ * part of GnuPG under the terms of either
  *
  *   - the GNU Lesser General Public License as published by the Free
  *     Software Foundation; either version 3 of the License, or (at
@@ -61,7 +61,7 @@
 /* GnuPG uses GPLv3+ but a standalone version of this defaults to
    GPLv2+ because that is the license of this file.  Change this if
    you include it in a program which uses GPLv3.  If you don't want to
-   set a a copyright string for your usage() you may also hardcode it
+   set a copyright string for your usage() you may also hardcode it
    here.  */
 #ifndef GNUPG_MAJOR_VERSION
 
@@ -71,7 +71,7 @@
 #else /* Used by GnuPG  */
 
 # define ARGPARSE_GPL_VERSION      3
-# define ARGPARSE_CRIGHT_STR "Copyright (C) 2017 Free Software Foundation, Inc."
+# define ARGPARSE_CRIGHT_STR "Copyright (C) 2018 Free Software Foundation, Inc."
 
 #endif /*GNUPG_MAJOR_VERSION*/
 
@@ -571,7 +571,7 @@ optfile_parse (FILE *fp, const char *filename, unsigned *lineno,
   int unread_buf[3];  /* We use an int so that we can store EOF.  */
   int unread_buf_count = 0;
 
-  if (!fp) /* Divert to to arg_parse() in this case.  */
+  if (!fp) /* Divert to arg_parse() in this case.  */
     return arg_parse (arg, opts);
 
   initialize (arg, filename, lineno);
@@ -918,6 +918,46 @@ arg_parse( ARGPARSE_ARGS *arg, ARGPARSE_OPTS *opts)
   char *s, *s2;
   int i;
 
+  /* Fill in missing standard options: help, version, warranty and
+   * dump-options.  */
+  ARGPARSE_OPTS help_opt
+    = ARGPARSE_s_n (ARGPARSE_SHORTOPT_HELP, "help", "@");
+  ARGPARSE_OPTS version_opt
+    = ARGPARSE_s_n (ARGPARSE_SHORTOPT_VERSION, "version", "@");
+  ARGPARSE_OPTS warranty_opt
+    = ARGPARSE_s_n (ARGPARSE_SHORTOPT_WARRANTY, "warranty", "@");
+  ARGPARSE_OPTS dump_options_opt
+    = ARGPARSE_s_n(ARGPARSE_SHORTOPT_DUMP_OPTIONS, "dump-options", "@");
+  int seen_help = 0;
+  int seen_version = 0;
+  int seen_warranty = 0;
+  int seen_dump_options = 0;
+
+  i = 0;
+  while (opts[i].short_opt)
+    {
+      if (opts[i].long_opt)
+	{
+	  if (!strcmp(opts[i].long_opt, help_opt.long_opt))
+	    seen_help = 1;
+	  else if (!strcmp(opts[i].long_opt, version_opt.long_opt))
+	    seen_version = 1;
+	  else if (!strcmp(opts[i].long_opt, warranty_opt.long_opt))
+	    seen_warranty = 1;
+	  else if (!strcmp(opts[i].long_opt, dump_options_opt.long_opt))
+	    seen_dump_options = 1;
+	}
+      i++;
+    }
+  if (! seen_help)
+    opts[i++] = help_opt;
+  if (! seen_version)
+    opts[i++] = version_opt;
+  if (! seen_warranty)
+    opts[i++] = warranty_opt;
+  if (! seen_dump_options)
+    opts[i++] = dump_options_opt;
+
   initialize( arg, NULL, NULL );
   argc = *arg->argc;
   argv = *arg->argv;
@@ -974,9 +1014,9 @@ arg_parse( ARGPARSE_ARGS *arg, ARGPARSE_OPTS *opts)
       if ( argpos )
         *argpos = '=';
 
-      if ( i < 0 && !strcmp ( "help", s+2) )
+      if (i > 0 && opts[i].short_opt == ARGPARSE_SHORTOPT_HELP)
         show_help (opts, arg->flags);
-      else if ( i < 0 && !strcmp ( "version", s+2) )
+      else if (i > 0 && opts[i].short_opt == ARGPARSE_SHORTOPT_VERSION)
         {
           if (!(arg->flags & ARGPARSE_FLAG_NOVERSION))
             {
@@ -984,20 +1024,18 @@ arg_parse( ARGPARSE_ARGS *arg, ARGPARSE_OPTS *opts)
               exit(0);
             }
 	}
-      else if ( i < 0 && !strcmp( "warranty", s+2))
+      else if (i > 0 && opts[i].short_opt == ARGPARSE_SHORTOPT_WARRANTY)
         {
           writestrings (0, strusage (16), "\n", NULL);
           exit (0);
 	}
-      else if ( i < 0 && !strcmp( "dump-options", s+2) )
+      else if (i > 0 && opts[i].short_opt == ARGPARSE_SHORTOPT_DUMP_OPTIONS)
         {
           for (i=0; opts[i].short_opt; i++ )
             {
               if (opts[i].long_opt && !(opts[i].flags & ARGPARSE_OPT_IGNORE))
                 writestrings (0, "--", opts[i].long_opt, "\n", NULL);
 	    }
-          writestrings (0, "--dump-options\n--help\n--version\n--warranty\n",
-                        NULL);
           exit (0);
 	}
 

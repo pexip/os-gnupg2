@@ -28,19 +28,21 @@
 #include "gpg.h"
 #include "options.h"
 #include "packet.h"
-#include "status.h"
+#include "../common/status.h"
 #include "keydb.h"
-#include "util.h"
+#include "../common/util.h"
 #include "main.h"
-#include "i18n.h"
-#include "membuf.h"
-#include "host2net.h"
-#include "zb32.h"
-#include "recsel.h"
-#include "mbox-util.h"
-#include "init.h"
+#include "../common/i18n.h"
+#include "../common/membuf.h"
+#include "../common/host2net.h"
+#include "../common/zb32.h"
+#include "../common/recsel.h"
+#include "../common/mbox-util.h"
+#include "../common/init.h"
 #include "trustdb.h"
 #include "call-agent.h"
+#include "key-clean.h"
+
 
 /* An object to keep track of subkeys. */
 struct subkey_list_s
@@ -247,16 +249,17 @@ export_pubkeys (ctrl_t ctrl, strlist_t users, unsigned int options,
 /*
  * Export secret keys (to stdout or to --output FILE).
  *
- * Depending on opt.armor the output is armored.  If USERS is NULL,
- * all secret keys will be exported.  STATS is either an export stats
- * object for update or NULL.
+ * Depending on opt.armor the output is armored.  OPTIONS are defined
+ * in main.h.  If USERS is NULL, all secret keys will be exported.
+ * STATS is either an export stats object for update or NULL.
  *
  * This function is the core of "gpg --export-secret-keys".
  */
 int
-export_seckeys (ctrl_t ctrl, strlist_t users, export_stats_t stats)
+export_seckeys (ctrl_t ctrl, strlist_t users, unsigned int options,
+                export_stats_t stats)
 {
-  return do_export (ctrl, users, 1, 0, stats);
+  return do_export (ctrl, users, 1, options, stats);
 }
 
 
@@ -264,16 +267,18 @@ export_seckeys (ctrl_t ctrl, strlist_t users, export_stats_t stats)
  * Export secret sub keys (to stdout or to --output FILE).
  *
  * This is the same as export_seckeys but replaces the primary key by
- * a stub key.  Depending on opt.armor the output is armored.  If
- * USERS is NULL, all secret subkeys will be exported.  STATS is
- * either an export stats object for update or NULL.
+ * a stub key.  Depending on opt.armor the output is armored.  OPTIONS
+ * are defined in main.h.  If USERS is NULL, all secret subkeys will
+ * be exported.  STATS is either an export stats object for update or
+ * NULL.
  *
  * This function is the core of "gpg --export-secret-subkeys".
  */
 int
-export_secsubkeys (ctrl_t ctrl, strlist_t users, export_stats_t stats)
+export_secsubkeys (ctrl_t ctrl, strlist_t users, unsigned int options,
+                   export_stats_t stats)
 {
-  return do_export (ctrl, users, 2, 0, stats);
+  return do_export (ctrl, users, 2, options, stats);
 }
 
 
@@ -577,7 +582,7 @@ canon_pk_algo (enum gcry_pk_algos algo)
 static gpg_error_t
 cleartext_secret_key_to_openpgp (gcry_sexp_t s_key, PKT_public_key *pk)
 {
-  gpg_error_t err = gpg_error (GPG_ERR_NOT_IMPLEMENTED);
+  gpg_error_t err;
   gcry_sexp_t top_list;
   gcry_sexp_t key = NULL;
   char *key_type = NULL;
@@ -1022,7 +1027,7 @@ transfer_format_to_openpgp (gcry_sexp_t s_pgp, PKT_public_key *pk)
           err = gpg_error (GPG_ERR_UNKNOWN_CURVE);
           goto leave;
         }
-      /* Put the curve's OID into into the MPI array.  This requires
+      /* Put the curve's OID into the MPI array.  This requires
          that we shift Q and D.  For ECDH also insert the KDF parms. */
       if (is_ecdh)
         {
@@ -1185,9 +1190,10 @@ receive_seckey_from_agent (ctrl_t ctrl, gcry_cipher_hd_t cipherhd,
   if (opt.verbose)
     log_info ("key %s: asking agent for the secret parts\n", hexgrip);
 
-  prompt = gpg_format_keydesc (pk, FORMAT_KEYDESC_EXPORT,1);
+  prompt = gpg_format_keydesc (ctrl, pk, FORMAT_KEYDESC_EXPORT,1);
   err = agent_export_key (ctrl, hexgrip, prompt, !cleartext, cache_nonce_addr,
-                          &wrappedkey, &wrappedkeylen);
+                          &wrappedkey, &wrappedkeylen,
+			  pk->keyid, pk->main_keyid, pk->pubkey_algo);
   xfree (prompt);
 
   if (err)
@@ -1279,13 +1285,19 @@ write_keyblock_to_output (kbnode_t keyblock, int with_armor,
 
   for (node = keyblock; node; node = node->next)
     {
-      if (is_deleted_kbnode (node) || node->pkt->pkttype == PKT_RING_TRUST)
+      if (is_deleted_kbnode (node))
         continue;
+      if (node->pkt->pkttype == PKT_RING_TRUST)
+        continue; /* Skip - they should not be here anyway.  */
+
       if (!pk && (node->pkt->pkttype == PKT_PUBLIC_KEY
                   || node->pkt->pkttype == PKT_SECRET_KEY))
         pk = node->pkt->pkt.public_key;
 
-      err = build_packet (out_help? out_help : out, node->pkt);
+      if ((options & EXPORT_BACKUP))
+        err = build_packet_and_meta (out_help? out_help : out, node->pkt);
+      else
+        err = build_packet (out_help? out_help : out, node->pkt);
       if (err)
         {
           log_error ("build_packet(%d) failed: %s\n",
@@ -1327,15 +1339,19 @@ write_keyblock_to_output (kbnode_t keyblock, int with_armor,
  * KEYBLOCK must not have any blocks marked as deleted.
  */
 static void
-apply_keep_uid_filter (kbnode_t keyblock, recsel_expr_t selector)
+apply_keep_uid_filter (ctrl_t ctrl, kbnode_t keyblock, recsel_expr_t selector)
 {
   kbnode_t node;
+  struct impex_filter_parm_s parm;
+
+  parm.ctrl = ctrl;
 
   for (node = keyblock->next; node; node = node->next )
     {
       if (node->pkt->pkttype == PKT_USER_ID)
         {
-          if (!recsel_select (selector, impex_filter_getval, node))
+          parm.node = node;
+          if (!recsel_select (selector, impex_filter_getval, &parm))
             {
               /* log_debug ("keep-uid: deleting '%s'\n", */
               /*            node->pkt->pkt.user_id->name); */
@@ -1363,18 +1379,23 @@ apply_keep_uid_filter (kbnode_t keyblock, recsel_expr_t selector)
  * KEYBLOCK must not have any blocks marked as deleted.
  */
 static void
-apply_drop_subkey_filter (kbnode_t keyblock, recsel_expr_t selector)
+apply_drop_subkey_filter (ctrl_t ctrl, kbnode_t keyblock,
+                          recsel_expr_t selector)
 {
   kbnode_t node;
+  struct impex_filter_parm_s parm;
+
+  parm.ctrl = ctrl;
 
   for (node = keyblock->next; node; node = node->next )
     {
       if (node->pkt->pkttype == PKT_PUBLIC_SUBKEY
           || node->pkt->pkttype == PKT_SECRET_SUBKEY)
         {
-          if (recsel_select (selector, impex_filter_getval, node))
+          parm.node = node;
+          if (recsel_select (selector, impex_filter_getval, &parm))
             {
-              log_debug ("drop-subkey: deleting a key\n");
+              /*log_debug ("drop-subkey: deleting a key\n");*/
               /* The subkey packet and all following packets up to the
                * next subkey.  */
               delete_kbnode (node);
@@ -1411,6 +1432,11 @@ print_pka_or_dane_records (iobuf_t out, kbnode_t keyblock, PKT_public_key *pk,
   char *hexfpr;
 
   hexfpr = hexfingerprint (pk, NULL, 0);
+  if (!hexfpr)
+    {
+      err = gpg_error_from_syserror ();
+      goto leave;
+    }
   hexdata = bin2hex (data, datalen, NULL);
   if (!hexdata)
     {
@@ -1431,7 +1457,7 @@ print_pka_or_dane_records (iobuf_t out, kbnode_t keyblock, PKT_public_key *pk,
         continue;
       uid = node->pkt->pkt.user_id;
 
-      if (uid->is_expired || uid->is_revoked)
+      if (uid->flags.expired || uid->flags.revoked)
         continue;
 
       xfree (mbox);
@@ -1521,7 +1547,7 @@ do_export_one_keyblock (ctrl_t ctrl, kbnode_t keyblock, u32 *keyid,
                         KEYDB_SEARCH_DESC *desc, size_t ndesc,
                         size_t descindex, gcry_cipher_hd_t cipherhd)
 {
-  gpg_error_t err;
+  gpg_error_t err = gpg_error (GPG_ERR_NOT_FOUND);
   char *cache_nonce = NULL;
   subkey_list_t subkey_list = NULL;  /* Track already processed subkeys. */
   int skip_until_subkey = 0;
@@ -1549,9 +1575,8 @@ do_export_one_keyblock (ctrl_t ctrl, kbnode_t keyblock, u32 *keyid,
       if (node->pkt->pkttype == PKT_COMMENT)
         continue;
 
-      /* Make sure that ring_trust packets are only exported in backup
-       * mode. */
-      if (node->pkt->pkttype == PKT_RING_TRUST && !(options & EXPORT_BACKUP))
+      /* Skip ring trust packets - they should not ne here anyway.  */
+      if (node->pkt->pkttype == PKT_RING_TRUST)
         continue;
 
       /* If exact is set, then we only export what was requested
@@ -1717,7 +1742,10 @@ do_export_one_keyblock (ctrl_t ctrl, kbnode_t keyblock, u32 *keyid,
                     ski->iv[ski->ivlen] = xtoi_2 (s);
                 }
 
-              err = build_packet (out, node->pkt);
+              if ((options & EXPORT_BACKUP))
+                err = build_packet_and_meta (out, node->pkt);
+              else
+                err = build_packet (out, node->pkt);
               if (!err && node->pkt->pkttype == PKT_PUBLIC_KEY)
                 {
                   stats->exported++;
@@ -1738,7 +1766,10 @@ do_export_one_keyblock (ctrl_t ctrl, kbnode_t keyblock, u32 *keyid,
                 }
               else
                 {
-                  err = build_packet (out, node->pkt);
+                  if ((options & EXPORT_BACKUP))
+                    err = build_packet_and_meta (out, node->pkt);
+                  else
+                    err = build_packet (out, node->pkt);
                   if (node->pkt->pkttype == PKT_PUBLIC_KEY)
                     {
                       stats->exported++;
@@ -1769,7 +1800,10 @@ do_export_one_keyblock (ctrl_t ctrl, kbnode_t keyblock, u32 *keyid,
         }
       else /* Not secret or common packets.  */
         {
-          err = build_packet (out, node->pkt);
+          if ((options & EXPORT_BACKUP))
+            err = build_packet_and_meta (out, node->pkt);
+          else
+            err = build_packet (out, node->pkt);
           if (!err && node->pkt->pkttype == PKT_PUBLIC_KEY)
             {
               stats->exported++;
@@ -1969,25 +2003,31 @@ do_export_stream (ctrl_t ctrl, iobuf_t out, strlist_t users, int secret,
         }
 
       /* Always do the cleaning on the public key part if requested.
-         Note that we don't yet set this option if we are exporting
-         secret keys.  Note that both export-clean and export-minimal
-         only apply to UID sigs (0x10, 0x11, 0x12, and 0x13).  A
-         designated revocation is never stripped, even with
-         export-minimal set.  */
+       * A designated revocation is never stripped, even with
+       * export-minimal set.  */
       if ((options & EXPORT_CLEAN))
-        clean_key (keyblock, opt.verbose, (options&EXPORT_MINIMAL), NULL, NULL);
+        {
+          merge_keys_and_selfsig (ctrl, keyblock);
+          clean_all_uids (ctrl, keyblock, opt.verbose,
+                          (options&EXPORT_MINIMAL), NULL, NULL);
+          clean_all_subkeys (ctrl, keyblock, opt.verbose,
+                             (options&EXPORT_MINIMAL)? KEY_CLEAN_ALL
+                             /**/                    : KEY_CLEAN_AUTHENCR,
+                             NULL, NULL);
+          commit_kbnode (&keyblock);
+        }
 
       if (export_keep_uid)
         {
           commit_kbnode (&keyblock);
-          apply_keep_uid_filter (keyblock, export_keep_uid);
+          apply_keep_uid_filter (ctrl, keyblock, export_keep_uid);
           commit_kbnode (&keyblock);
         }
 
       if (export_drop_subkey)
         {
           commit_kbnode (&keyblock);
-          apply_drop_subkey_filter (keyblock, export_drop_subkey);
+          apply_drop_subkey_filter (ctrl, keyblock, export_drop_subkey);
           commit_kbnode (&keyblock);
         }
 
@@ -2100,7 +2140,7 @@ export_ssh_key (ctrl_t ctrl, const char *userid)
   u32 curtime = make_timestamp ();
   kbnode_t latest_key, node;
   PKT_public_key *pk;
-  const char *identifier;
+  const char *identifier = NULL;
   membuf_t mb;
   estream_t fp = NULL;
   struct b64state b64_state;
@@ -2124,13 +2164,13 @@ export_ssh_key (ctrl_t ctrl, const char *userid)
                                1  /* No AKL lookup.  */);
       if (!err)
         {
-          err = getkey_next (getkeyctx, NULL, NULL);
+          err = getkey_next (ctrl, getkeyctx, NULL, NULL);
           if (!err)
             err = gpg_error (GPG_ERR_AMBIGUOUS_NAME);
           else if (gpg_err_code (err) == GPG_ERR_NO_PUBKEY)
             err = 0;
         }
-      getkey_end (getkeyctx);
+      getkey_end (ctrl, getkeyctx);
     }
   if (err)
     {
@@ -2208,6 +2248,48 @@ export_ssh_key (ctrl_t ctrl, const char *userid)
               latest_key = node;
             }
         }
+
+      /* If no subkey was suitable check the primary key.  */
+      if (!latest_key
+          && (node = keyblock) && node->pkt->pkttype == PKT_PUBLIC_KEY)
+        {
+          pk = node->pkt->pkt.public_key;
+          if (DBG_LOOKUP)
+            log_debug ("\tchecking primary key %08lX\n",
+                       (ulong) keyid_from_pk (pk, NULL));
+          if (!(pk->pubkey_usage & PUBKEY_USAGE_AUTH))
+            {
+              if (DBG_LOOKUP)
+                log_debug ("\tprimary key not usable for authentication\n");
+            }
+          else if (!pk->flags.valid)
+            {
+              if (DBG_LOOKUP)
+                log_debug ("\tprimary key not valid\n");
+            }
+          else if (pk->flags.revoked)
+            {
+              if (DBG_LOOKUP)
+                log_debug ("\tprimary key has been revoked\n");
+            }
+          else if (pk->has_expired)
+            {
+              if (DBG_LOOKUP)
+                log_debug ("\tprimary key has expired\n");
+            }
+          else if (pk->timestamp > curtime && !opt.ignore_valid_from)
+            {
+              if (DBG_LOOKUP)
+                log_debug ("\tprimary key not yet valid\n");
+            }
+          else
+            {
+              if (DBG_LOOKUP)
+                log_debug ("\tprimary key is fine\n");
+              latest_date = pk->timestamp;
+              latest_key = node;
+            }
+        }
     }
 
   if (!latest_key)
@@ -2254,8 +2336,6 @@ export_ssh_key (ctrl_t ctrl, const char *userid)
               identifier = "ecdsa-sha2-nistp384";
             else if (!strcmp (curve, "nistp521"))
               identifier = "ecdsa-sha2-nistp521";
-            else
-              identifier = NULL;
 
             if (!identifier)
               err = gpg_error (GPG_ERR_UNKNOWN_CURVE);
@@ -2286,7 +2366,7 @@ export_ssh_key (ctrl_t ctrl, const char *userid)
       break;
     }
 
-  if (err)
+  if (!identifier)
     goto leave;
 
   if (opt.outfile && *opt.outfile && strcmp (opt.outfile, "-"))
@@ -2302,22 +2382,21 @@ export_ssh_key (ctrl_t ctrl, const char *userid)
 
   es_fprintf (fp, "%s ", identifier);
   err = b64enc_start_es (&b64_state, fp, "");
-  if (err)
-    goto leave;
-  {
-    void *blob;
-    size_t bloblen;
+  if (!err)
+    {
+      void *blob;
+      size_t bloblen;
 
-    blob = get_membuf (&mb, &bloblen);
-    if (!blob)
-      err = gpg_error_from_syserror ();
-    else
-      err = b64enc_write (&b64_state, blob, bloblen);
-    xfree (blob);
-    if (err)
-      goto leave;
-  }
-  err = b64enc_finish (&b64_state);
+      blob = get_membuf (&mb, &bloblen);
+      if (blob)
+        {
+          err = b64enc_write (&b64_state, blob, bloblen);
+          xfree (blob);
+          if (err)
+            goto leave;
+        }
+      err = b64enc_finish (&b64_state);
+    }
   if (err)
     goto leave;
   es_fprintf (fp, " openpgp:0x%08lX\n", (ulong)keyid_from_pk (pk, NULL));

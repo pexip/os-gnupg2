@@ -6,17 +6,16 @@ XSBC-Pexip-Original-Maintainer: Debian GnuPG Maintainers <pkg-gnupg-maint@lists.
 XSBC-Pexip-Original-Uploaders:
  Eric Dorland <eric@debian.org>,
  Daniel Kahn Gillmor <dkg@fifthhorseman.net>,
-Standards-Version: 3.9.8
+Standards-Version: 4.2.1
 Build-Depends:
  automake,
  autopoint,
- debhelper (>= 9),
- dh-autoreconf,
+ debhelper (>= 11~),
  file,
  gettext,
  ghostscript,
  imagemagick,
- libassuan-dev (>= 2.4.3),
+ libassuan-dev (>= 2.5.0),
  libbz2-dev,
  libcurl4-gnutls-dev,
  libgcrypt20-dev (>= 1.7.0),
@@ -29,40 +28,83 @@ Build-Depends:
  librsvg2-bin,
  libsqlite3-dev,
  libusb-1.0-0-dev [!hurd-any],
+ openssh-client <!nocheck>,
  pkg-config,
  texinfo,
  transfig,
  zlib1g-dev | libz-dev,
 Build-Depends-Indep:
  binutils-multiarch [!amd64 !i386],
- libassuan-mingw-w64-dev,
- libgcrypt-mingw-w64-dev,
- libgpg-error-mingw-w64-dev,
- libksba-mingw-w64-dev,
- libnpth-mingw-w64-dev,
+ libassuan-mingw-w64-dev (>= 2.5.0),
+ libgcrypt-mingw-w64-dev (>= 1.7.0),
+ libgpg-error-mingw-w64-dev (>= 1.26-2~),
+ libksba-mingw-w64-dev (>= 1.3.4),
+ libnpth-mingw-w64-dev (>= 1.2),
  libz-mingw-w64-dev,
  mingw-w64,
-Vcs-Git: https://salsa.debian.org/debian/gnupg2.git -b debian/stretch
+Vcs-Git: https://salsa.debian.org/debian/gnupg2.git -b debian/buster
 Vcs-Browser: https://salsa.debian.org/debian/gnupg2
 Homepage: https://www.gnupg.org/
+Rules-Requires-Root: no
 XS-Pexip-Upstream: http://ftp.debian.org/debian/ buster
 
-Package: gnupg-agent
+Package: gpgconf
 Architecture: any
 Multi-Arch: foreign
 Depends:
+ ${misc:Depends},
+ ${shlibs:Depends},
+Replaces:
+ gnupg (<< 2.1.21-4),
+ gnupg-agent (<< 2.1.21-4),
+Breaks:
+ gnupg (<< 2.1.21-4),
+ gnupg-agent (<< 2.1.21-4),
+Description: GNU privacy guard - core configuration utilities
+ GnuPG is GNU's tool for secure communication and data storage.
+ .
+ This package contains core utilities used by different tools in the
+ suite offered by GnuPG.  It can be used to programmatically edit
+ config files for tools in the GnuPG suite, to launch or terminate
+ per-user daemons (if installed), etc.
+
+Package: gnupg-agent
+Architecture: all
+Section: oldlibs
+Multi-Arch: foreign
+Depends:
+ gpg-agent (>= ${source:Version}),
+ ${misc:Depends},
+Description: GNU privacy guard - cryptographic agent (dummy transitional package)
+ GnuPG is GNU's tool for secure communication and data storage.
+ It can be used to encrypt data and to create digital signatures.
+ It includes an advanced key management facility and is compliant
+ with the proposed OpenPGP Internet standard as described in RFC4880.
+ .
+ This is a dummy transitional package; please use gpg-agent instead.
+
+Package: gpg-agent
+Architecture: any
+Multi-Arch: foreign
+Depends:
+ gpgconf (= ${binary:Version}),
  pinentry-curses | pinentry,
  ${misc:Depends},
  ${shlibs:Depends},
 Recommends:
- gnupg (= ${binary:Version}) | gpgsm,
+ gnupg (= ${binary:Version}),
+ ${shlibs:Recommends},
 Suggests:
  dbus-user-session,
  libpam-systemd,
  pinentry-gnome3,
  scdaemon,
+Replaces:
+ gnupg-agent (<< 2.1.21-4),
+Breaks:
+ gnupg-agent (<< 2.1.21-4),
 Provides:
- gpg-agent,
+ gnupg-agent,
 Description: GNU privacy guard - cryptographic agent
  GnuPG is GNU's tool for secure communication and data storage.
  It can be used to encrypt data and to create digital signatures.
@@ -72,17 +114,72 @@ Description: GNU privacy guard - cryptographic agent
  This package contains the agent program gpg-agent which handles all
  secret key material for OpenPGP and S/MIME use.  The agent also
  provides a passphrase cache, which is used by pre-2.1 versions of
- GnuPG for OpenPGP operations.
+ GnuPG for OpenPGP operations.  Without this package, trying to do
+ secret-key operations with any part of the modern GnuPG suite will
+ fail.
+
+Package: gpg-wks-server
+Architecture: any
+Multi-Arch: foreign
+Depends:
+ gpg (= ${binary:Version}),
+ gpg-agent (= ${binary:Version}),
+ ${misc:Depends},
+ ${shlibs:Depends},
+Recommends:
+ gnupg (= ${binary:Version}),
+ ${shlibs:Recommends},
+Description: GNU privacy guard - Web Key Service server
+ GnuPG is GNU's tool for secure communication and data storage.
+ It can be used to encrypt data and to create digital signatures.
+ It includes an advanced key management facility and is compliant
+ with the proposed OpenPGP Internet standard as described in RFC4880.
+ .
+ This package provides the GnuPG server for the Web Key Service
+ protocol.
+ .
+ A Web Key Service is a service that allows users to upload keys per
+ mail to be verified over https as described in
+ https://tools.ietf.org/html/draft-koch-openpgp-webkey-service
+ .
+ For more information see: https://wiki.gnupg.org/WKS
+
+Package: gpg-wks-client
+Architecture: any
+Multi-Arch: foreign
+Depends:
+ dirmngr (= ${binary:Version}),
+ gpg (= ${binary:Version}),
+ gpg-agent (= ${binary:Version}),
+ ${misc:Depends},
+ ${shlibs:Depends},
+Recommends:
+ gnupg (= ${binary:Version}),
+ ${shlibs:Recommends},
+Description: GNU privacy guard - Web Key Service client
+ GnuPG is GNU's tool for secure communication and data storage.
+ It can be used to encrypt data and to create digital signatures.
+ It includes an advanced key management facility and is compliant
+ with the proposed OpenPGP Internet standard as described in RFC4880.
+ .
+ This package provides the GnuPG client for the Web Key Service
+ protocol.
+ .
+ A Web Key Service is a service that allows users to upload keys per
+ mail to be verified over https as described in
+ https://tools.ietf.org/html/draft-koch-openpgp-webkey-service
+ .
+ For more information see: https://wiki.gnupg.org/WKS
 
 Package: scdaemon
 Architecture: any
 Multi-Arch: foreign
 Depends:
- gnupg-agent (= ${binary:Version}),
+ gpg-agent (= ${binary:Version}),
  ${misc:Depends},
  ${shlibs:Depends},
 Enhances:
- gnupg-agent,
+ gpg-agent,
 Description: GNU privacy guard - smart card support
  GnuPG is GNU's tool for secure communication and data storage.
  It can be used to encrypt data and to create digital signatures.
@@ -90,17 +187,18 @@ Description: GNU privacy guard - smart card support
  with the proposed OpenPGP Internet standard as described in RFC4880.
  .
  This package contains the smart card program scdaemon, which is used
- by gnupg-agent to access OpenPGP smart cards.
+ by gpg-agent to access OpenPGP smart cards.
 
 Package: gpgsm
 Architecture: any
 Multi-Arch: foreign
 Depends:
- gnupg-agent (= ${binary:Version}),
+ gpgconf (= ${binary:Version}),
  ${misc:Depends},
  ${shlibs:Depends},
 Recommends:
- dirmngr (= ${binary:Version}),
+ gnupg (= ${binary:Version}),
+ ${shlibs:Recommends},
 Breaks:
  gnupg2 (<< 2.1.10-2),
 Replaces:
@@ -115,16 +213,56 @@ Description: GNU privacy guard - S/MIME version
  digital encryption and signing services on X.509 certificates and the
  CMS protocol. gpgsm includes complete certificate management.
 
-Package: gnupg
+Package: gpg
 Architecture: any
 Multi-Arch: foreign
 Depends:
- gnupg-agent (= ${binary:Version}),
+ gpgconf (= ${binary:Version}),
  ${misc:Depends},
  ${shlibs:Depends},
 Recommends:
- dirmngr (= ${binary:Version}),
+ gnupg (= ${binary:Version}),
+ ${shlibs:Recommends},
+Breaks:
+ gnupg (<< 2.1.21-4),
+Replaces:
+ gnupg (<< 2.1.21-4),
+Description: GNU Privacy Guard -- minimalist public key operations
+ GnuPG is GNU's tool for secure communication and data storage.
+ It can be used to encrypt data and to create digital signatures.
+ It includes an advanced key management facility and is compliant
+ with the proposed OpenPGP Internet standard as described in RFC4880.
+ .
+ This package contains /usr/bin/gpg itself, and is useful on its own
+ only for public key operations (encryption, signature verification,
+ listing OpenPGP certificates, etc).  If you want full capabilities
+ (including secret key operations, network access, etc), please
+ install the "gnupg" package, which pulls in the full suite of tools.
+
+Package: gnupg
+Architecture: all
+Multi-Arch: foreign
+Depends:
+ dirmngr (<< ${source:Version}.1~),
+ dirmngr (>= ${source:Version}),
  gnupg-l10n (= ${source:Version}),
+ gnupg-utils (<< ${source:Version}.1~),
+ gnupg-utils (>= ${source:Version}),
+ gpg (<< ${source:Version}.1~),
+ gpg (>= ${source:Version}),
+ gpg-agent (<< ${source:Version}.1~),
+ gpg-agent (>= ${source:Version}),
+ gpg-wks-client (<< ${source:Version}.1~),
+ gpg-wks-client (>= ${source:Version}),
+ gpg-wks-server (<< ${source:Version}.1~),
+ gpg-wks-server (>= ${source:Version}),
+ gpgsm (<< ${source:Version}.1~),
+ gpgsm (>= ${source:Version}),
+ gpgv (<< ${source:Version}.1~),
+ gpgv (>= ${source:Version}),
+ ${misc:Depends},
+ ${shlibs:Depends},
+Recommends:
  ${shlibs:Recommends},
 Suggests:
  parcimonie,
@@ -143,21 +281,18 @@ Breaks:
  python3-apt (<= 1.1.0~beta4),
 Replaces:
  gnupg2 (<< 2.1.11-7+exp1),
-Provides:
- gpg,
 Description: GNU privacy guard - a free PGP replacement
  GnuPG is GNU's tool for secure communication and data storage.
  It can be used to encrypt data and to create digital signatures.
  It includes an advanced key management facility and is compliant
  with the proposed OpenPGP Internet standard as described in RFC4880.
  .
- This package contains /usr/bin/gpg and some helper utilities like
- gpgconf and kbxutil.
+ This package contains the full suite of GnuPG tools for cryptographic
+ communications and data storage.
 
 Package: gnupg2
 Architecture: all
 Section: oldlibs
-Priority: extra
 Multi-Arch: foreign
 Depends:
  gnupg (>= ${source:Version}),
@@ -198,7 +333,6 @@ Description: GNU privacy guard - signature verification tool
 
 Package: gpgv2
 Section: oldlibs
-Priority: extra
 Architecture: all
 Multi-Arch: foreign
 Depends:
@@ -214,8 +348,10 @@ Description: GNU privacy guard - signature verification tool (dummy transitional
 
 Package: dirmngr
 Architecture: any
+Multi-Arch: foreign
 Depends:
  adduser,
+ gpgconf (= ${binary:Version}),
  lsb-base (>= 3.2-13),
  ${misc:Depends},
  ${shlibs:Depends},
@@ -223,7 +359,7 @@ Recommends:
  gnupg (= ${binary:Version}),
  ${shlibs:Recommends},
 Enhances:
- gnupg,
+ gpg,
  gpgsm,
  squid,
 Breaks:
@@ -241,16 +377,16 @@ Description: GNU privacy guard - network certificate management service
  certificates.  For OpenPGP, this means pulling from the public
  HKP/HKPS keyservers, or from LDAP servers.  For X.509 this includes
  Certificate Revocation Lists (CRLs) and Online Certificate Status
- Protocol updates (OCSP).  It is capable of using tor for network
+ Protocol updates (OCSP).  It is capable of using Tor for network
  access.
  .
  dirmngr is used for network access by gpg, gpgsm, and dirmngr-client,
- among other tools.
+ among other tools.  Unless this package is installed, the parts of
+ the GnuPG suite that try to interact with the network will fail.
 
 Package: gpgv-udeb
 Package-Type: udeb
 Section: debian-installer
-Priority: extra
 Architecture: any
 Depends:
  ${misc:Depends},
@@ -265,8 +401,8 @@ Description: minimal signature verification tool
  form for use in debian-installer.
 
 Package: gpgv-static
-Priority: extra
 Architecture: any
+Multi-Arch: foreign
 Depends:
  ${misc:Depends},
  ${shlibs:Depends},
@@ -290,7 +426,6 @@ Description: minimal signature verification tool (static build)
 
 Package: gpgv-win32
 Architecture: all
-Priority: extra
 Multi-Arch: foreign
 Depends:
  ${misc:Depends},
@@ -308,13 +443,15 @@ Description: GNU privacy guard - signature verification tool (win32 build)
  component of Debian-Installer.
 
 Package: gnupg-l10n
+Section: localization
 Architecture: all
-Priority: extra
 Multi-Arch: foreign
 Depends:
  ${misc:Depends},
 Enhances:
- gnupg,
+ dirmngr,
+ gpg,
+ gpg-agent,
 Breaks:
  gnupg (<< 2.1.14-2~),
  gnupg2 (<< 2.1.14-2~),
@@ -329,3 +466,39 @@ Description: GNU privacy guard - localization files
  .
  This package contains the translation files for the use of GnuPG in
  non-English locales.
+
+Package: gnupg-utils
+Architecture: any
+Multi-Arch: foreign
+Replaces:
+ gnupg (<< 2.1.21-4),
+ gnupg-agent (<< 2.1.21-4),
+Breaks:
+ gnupg (<< 2.1.21-4),
+ gnupg-agent (<< 2.1.21-4),
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends},
+Recommends:
+ gpg,
+ gpg-agent,
+ gpgconf,
+ gpgsm,
+Description: GNU privacy guard - utility programs
+ GnuPG is GNU's tool for secure communication and data storage.
+ .
+ This package contains several useful utilities for manipulating
+ OpenPGP data and other related cryptographic elements.  It includes:
+ .
+  * addgnupghome -- create .gnupg home directories
+  * applygnupgdefaults -- run gpgconf --apply-defaults for all users
+  * gpgcompose -- an experimental tool for constructing arbitrary
+                  sequences of OpenPGP packets (e.g. for testing)
+  * gpgparsemail -- parse an e-mail message into annotated format
+  * gpgsplit -- split a sequence of OpenPGP packets into files
+  * gpgtar -- encrypt or sign files in an archive
+  * kbxutil -- list, export, import Keybox data
+  * lspgpot -- convert PGP ownertrust values to GnuPG
+  * migrate-pubring-from-classic-gpg -- use only "modern" formats
+  * symcryptrun -- use simple symmetric encryption tool in GnuPG framework
+  * watchgnupg -- watch socket-based logs

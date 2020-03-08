@@ -35,18 +35,18 @@
 
 #define INCLUDED_BY_MAIN_MODULE 1
 #include "gpg.h"
-#include "util.h"
+#include "../common/util.h"
 #include "packet.h"
-#include "iobuf.h"
+#include "../common/iobuf.h"
 #include "main.h"
 #include "options.h"
 #include "keydb.h"
 #include "trustdb.h"
 #include "filter.h"
-#include "ttyio.h"
-#include "i18n.h"
-#include "sysutils.h"
-#include "status.h"
+#include "../common/ttyio.h"
+#include "../common/i18n.h"
+#include "../common/sysutils.h"
+#include "../common/status.h"
 #include "call-agent.h"
 #include "../common/init.h"
 
@@ -61,9 +61,11 @@ enum cmd_and_opt_values {
   oIgnoreTimeConflict,
   oStatusFD,
   oLoggerFD,
+  oLoggerFile,
   oHomedir,
   oWeakDigest,
   oEnableSpecialFilenames,
+  oDebug,
   aTest
 };
 
@@ -81,14 +83,36 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_i (oStatusFD, "status-fd",
                 N_("|FD|write status info to this FD")),
   ARGPARSE_s_i (oLoggerFD, "logger-fd", "@"),
+  ARGPARSE_s_s (oLoggerFile, "log-file", "@"),
   ARGPARSE_s_s (oHomedir, "homedir", "@"),
   ARGPARSE_s_s (oWeakDigest, "weak-digest",
                 N_("|ALGO|reject signatures made with ALGO")),
   ARGPARSE_s_n (oEnableSpecialFilenames, "enable-special-filenames", "@"),
+  ARGPARSE_s_s (oDebug, "debug", "@"),
 
   ARGPARSE_end ()
 };
 
+
+/* The list of supported debug flags.  */
+static struct debug_flags_s debug_flags [] =
+  {
+    { DBG_PACKET_VALUE , "packet"  },
+    { DBG_MPI_VALUE    , "mpi"     },
+    { DBG_CRYPTO_VALUE , "crypto"  },
+    { DBG_FILTER_VALUE , "filter"  },
+    { DBG_IOBUF_VALUE  , "iobuf"   },
+    { DBG_MEMORY_VALUE , "memory"  },
+    { DBG_CACHE_VALUE  , "cache"   },
+    { DBG_MEMSTAT_VALUE, "memstat" },
+    { DBG_TRUST_VALUE  , "trust"   },
+    { DBG_HASHING_VALUE, "hashing" },
+    { DBG_IPC_VALUE    , "ipc"     },
+    { DBG_CLOCK_VALUE  , "clock"   },
+    { DBG_LOOKUP_VALUE , "lookup"  },
+    { DBG_EXTPROG_VALUE, "extprog" },
+    { 0, NULL }
+  };
 
 
 int g10_errors_seen = 0;
@@ -178,6 +202,7 @@ main( int argc, char **argv )
   dotlock_disable ();
   gcry_control (GCRYCTL_INITIALIZATION_FINISHED, 0);
   additional_weak_digest("MD5");
+  gnupg_initialize_compliance (GNUPG_MODULE_NAME_GPG);
 
   pargs.argc = &argc;
   pargs.argv = &argv;
@@ -192,11 +217,26 @@ main( int argc, char **argv )
           opt.list_sigs=1;
           gcry_control (GCRYCTL_SET_VERBOSITY, (int)opt.verbose);
           break;
+        case oDebug:
+          if (parse_debug_flag (pargs.r.ret_str, &opt.debug, debug_flags))
+            {
+              pargs.r_opt = ARGPARSE_INVALID_ARG;
+              pargs.err = ARGPARSE_PRINT_ERROR;
+            }
+          break;
         case oKeyring: append_to_strlist( &nrings, pargs.r.ret_str); break;
         case oOutput: opt.outfile = pargs.r.ret_str; break;
-        case oStatusFD: set_status_fd( pargs.r.ret_int ); break;
+        case oStatusFD:
+          set_status_fd (translate_sys2libc_fd_int (pargs.r.ret_int, 1));
+          break;
         case oLoggerFD:
           log_set_fd (translate_sys2libc_fd_int (pargs.r.ret_int, 1));
+          break;
+        case oLoggerFile:
+          log_set_file (pargs.r.ret_str);
+          log_set_prefix (NULL, (GPGRT_LOG_WITH_PREFIX
+                                 | GPGRT_LOG_WITH_TIME
+                                 | GPGRT_LOG_WITH_PID) );
           break;
         case oHomedir: gnupg_set_homedir (pargs.r.ret_str); break;
         case oWeakDigest:
@@ -231,6 +271,7 @@ main( int argc, char **argv )
   if ((rc = verify_signatures (ctrl, argc, argv)))
     log_error("verify signatures failed: %s\n", gpg_strerror (rc) );
 
+  keydb_release (ctrl->cached_getkey_kdb);
   xfree (ctrl);
 
   /* cleanup */
@@ -260,10 +301,12 @@ check_signatures_trust (ctrl_t ctrl, PKT_signature *sig)
 }
 
 void
-read_trust_options(byte *trust_model, ulong *created, ulong *nextcheck,
-		   byte *marginals, byte *completes, byte *cert_depth,
-		   byte *min_cert_level)
+read_trust_options (ctrl_t ctrl,
+                    byte *trust_model, ulong *created, ulong *nextcheck,
+                    byte *marginals, byte *completes, byte *cert_depth,
+                    byte *min_cert_level)
 {
+  (void)ctrl;
   (void)trust_model;
   (void)created;
   (void)nextcheck;
@@ -279,8 +322,9 @@ read_trust_options(byte *trust_model, ulong *created, ulong *nextcheck,
  */
 
 int
-cache_disabled_value(PKT_public_key *pk)
+cache_disabled_value (ctrl_t ctrl, PKT_public_key *pk)
 {
+  (void)ctrl;
   (void)pk;
   return 0;
 }
@@ -332,15 +376,18 @@ uid_trust_string_fixed (ctrl_t ctrl, PKT_public_key *key, PKT_user_id *uid)
 }
 
 int
-get_ownertrust_info (PKT_public_key *pk)
+get_ownertrust_info (ctrl_t ctrl, PKT_public_key *pk, int no_create)
 {
+  (void)ctrl;
   (void)pk;
+  (void)no_create;
   return '?';
 }
 
 unsigned int
-get_ownertrust (PKT_public_key *pk)
+get_ownertrust (ctrl_t ctrl, PKT_public_key *pk)
 {
+  (void)ctrl;
   (void)pk;
   return TRUST_UNKNOWN;
 }
@@ -723,5 +770,20 @@ tofu_notice_key_changed (ctrl_t ctrl, kbnode_t kb)
   (void) ctrl;
   (void) kb;
 
+  return 0;
+}
+
+
+int
+get_revocation_reason (PKT_signature *sig, char **r_reason,
+                       char **r_comment, size_t *r_commentlen)
+{
+  (void)sig;
+  (void)r_commentlen;
+
+  if (r_reason)
+    *r_reason = NULL;
+  if (r_comment)
+    *r_comment = NULL;
   return 0;
 }

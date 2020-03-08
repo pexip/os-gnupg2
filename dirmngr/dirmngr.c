@@ -17,6 +17,8 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: GPL-3.0+
  */
 
 #include <config.h>
@@ -65,13 +67,14 @@
 #if USE_LDAP
 # include "ldapserver.h"
 #endif
-#include "asshelp.h"
+#include "../common/asshelp.h"
 #if USE_LDAP
 # include "ldap-wrapper.h"
 #endif
 #include "../common/init.h"
-#include "gc-opt-flags.h"
+#include "../common/gc-opt-flags.h"
 #include "dns-stuff.h"
+#include "http-common.h"
 
 #ifndef ENAMETOOLONG
 # define ENAMETOOLONG EINVAL
@@ -111,6 +114,8 @@ enum cmd_and_opt_values {
   oBatch,
   oDisableHTTP,
   oDisableLDAP,
+  oDisableIPv4,
+  oDisableIPv6,
   oIgnoreLDAPDP,
   oIgnoreHTTPDP,
   oIgnoreOCSPSvcUrl,
@@ -137,12 +142,16 @@ enum cmd_and_opt_values {
   oHTTPWrapperProgram,
   oIgnoreCertExtension,
   oUseTor,
+  oNoUseTor,
   oKeyServer,
   oNameServer,
   oDisableCheckOwnSocket,
   oStandardResolver,
   oRecursiveResolver,
   oResolverTimeout,
+  oConnectTimeout,
+  oConnectQuickTimeout,
+  oListenBacklog,
   aTest
 };
 
@@ -223,6 +232,10 @@ static ARGPARSE_OPTS opts[] = {
                 N_("|FILE|use the CA certificates in FILE for HKP over TLS")),
 
   ARGPARSE_s_n (oUseTor, "use-tor", N_("route all network traffic via Tor")),
+  ARGPARSE_s_n (oNoUseTor, "no-use-tor", "@"),
+
+  ARGPARSE_s_n (oDisableIPv4, "disable-ipv4", "@"),
+  ARGPARSE_s_n (oDisableIPv6, "disable-ipv6", "@"),
 
   ARGPARSE_s_s (oSocketName, "socket-name", "@"),  /* Only for debugging.  */
 
@@ -242,6 +255,9 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oStandardResolver, "standard-resolver", "@"),
   ARGPARSE_s_n (oRecursiveResolver, "recursive-resolver", "@"),
   ARGPARSE_s_i (oResolverTimeout, "resolver-timeout", "@"),
+  ARGPARSE_s_i (oConnectTimeout, "connect-timeout", "@"),
+  ARGPARSE_s_i (oConnectQuickTimeout, "connect-quick-timeout", "@"),
+  ARGPARSE_s_i (oListenBacklog, "listen-backlog", "@"),
 
   ARGPARSE_group (302,N_("@\n(See the \"info\" manual for a complete listing "
                          "of all commands and options)\n")),
@@ -262,11 +278,15 @@ static struct debug_flags_s debug_flags [] =
     { DBG_DNS_VALUE    , "dns"     },
     { DBG_NETWORK_VALUE, "network" },
     { DBG_LOOKUP_VALUE , "lookup"  },
+    { DBG_EXTPROG_VALUE, "extprog" },
     { 77, NULL } /* 77 := Do not exit on "help" or "?".  */
   };
 
 #define DEFAULT_MAX_REPLIES 10
-#define DEFAULT_LDAP_TIMEOUT 100 /* arbitrary large timeout */
+#define DEFAULT_LDAP_TIMEOUT 15  /* seconds */
+
+#define DEFAULT_CONNECT_TIMEOUT       (15*1000)  /* 15 seconds */
+#define DEFAULT_CONNECT_QUICK_TIMEOUT ( 2*1000)  /*  2 seconds */
 
 /* For the cleanup handler we need to keep track of the socket's name.  */
 static const char *socket_name;
@@ -277,6 +297,10 @@ static const char *redir_socket_name;
 /* We need to keep track of the server's nonces (these are dummies for
    POSIX systems). */
 static assuan_sock_nonce_t socket_nonce;
+
+/* Value for the listen() backlog argument.
+ * Change at runtime with --listen-backlog.  */
+static int listen_backlog = 64;
 
 /* Only if this flag has been set will we remove the socket file.  */
 static int cleanup_socket;
@@ -297,6 +321,16 @@ static volatile int shutdown_pending;
 /* Flags to indicate that we shall not watch our own socket. */
 static int disable_check_own_socket;
 
+/* Flag to control the Tor mode.  */
+static enum
+  { TOR_MODE_AUTO = 0,  /* Switch to NO or YES         */
+    TOR_MODE_NEVER,     /* Never use Tor.              */
+    TOR_MODE_NO,        /* Do not use Tor              */
+    TOR_MODE_YES,       /* Use Tor                     */
+    TOR_MODE_FORCE      /* Force using Tor             */
+  } tor_mode;
+
+
 /* Counter for the active connections.  */
 static int active_connections;
 
@@ -304,8 +338,13 @@ static int active_connections;
  * thread to run background network tasks.  */
 static int network_activity_seen;
 
-/* The timer tick used for housekeeping stuff.  */
-#define TIMERTICK_INTERVAL         (60)
+/* A list of filenames registred with --hkp-cacert.  */
+static strlist_t hkp_cacert_filenames;
+
+
+/* The timer tick used for housekeeping stuff.  The second constant is used when a shutdown is pending.  */
+#define TIMERTICK_INTERVAL           (60)
+#define TIMERTICK_INTERVAL_SHUTDOWN  (4)
 
 /* How oft to run the housekeeping.  */
 #define HOUSEKEEPING_INTERVAL      (600)
@@ -327,7 +366,7 @@ union int_and_ptr_u
    local storage.  We use this in conjunction with the
    log_set_pid_suffix_cb feature.  */
 #ifndef HAVE_W32_SYSTEM
-static int my_tlskey_current_fd;
+static npth_key_t my_tlskey_current_fd;
 #endif
 
 /* Prototypes. */
@@ -479,7 +518,7 @@ set_debug (void)
 static void
 set_tor_mode (void)
 {
-  if (opt.use_tor)
+  if (dirmngr_use_tor ())
     {
       /* Enable Tor mode and when called again force a new curcuit
        * (e.g. on SIGHUP).  */
@@ -490,6 +529,36 @@ set_tor_mode (void)
           log_info ("(is your Libassuan recent enough?)\n");
         }
     }
+  else
+    disable_dns_tormode ();
+}
+
+
+/* Return true if Tor shall be used.  */
+int
+dirmngr_use_tor (void)
+{
+  if (tor_mode == TOR_MODE_AUTO)
+    {
+      /* Figure out whether Tor is running.  */
+      assuan_fd_t sock;
+
+      sock = assuan_sock_connect_byname (NULL, 0, 0, NULL, ASSUAN_SOCK_TOR);
+      if (sock == ASSUAN_INVALID_FD)
+        tor_mode = TOR_MODE_NO;
+      else
+        {
+          tor_mode = TOR_MODE_YES;
+          assuan_sock_close (sock);
+        }
+    }
+
+  if (tor_mode == TOR_MODE_FORCE)
+    return 2; /* Use Tor (using 2 to indicate force mode) */
+  else if (tor_mode == TOR_MODE_YES)
+    return 1; /* Use Tor */
+  else
+    return 0; /* Do not use Tor.  */
 }
 
 
@@ -551,11 +620,16 @@ parse_rereadable_options (ARGPARSE_ARGS *pargs, int reread)
         }
       FREE_STRLIST (opt.ignored_cert_extensions);
       http_register_tls_ca (NULL);
+      FREE_STRLIST (hkp_cacert_filenames);
       FREE_STRLIST (opt.keyserver);
-      /* Note: We do not allow resetting of opt.use_tor at runtime.  */
+      /* Note: We do not allow resetting of TOR_MODE_FORCE at runtime.  */
+      if (tor_mode != TOR_MODE_FORCE)
+        tor_mode = TOR_MODE_AUTO;
       disable_check_own_socket = 0;
       enable_standard_resolver (0);
       set_dns_timeout (0);
+      opt.connect_timeout = 0;
+      opt.connect_quick_timeout = 0;
       return 1;
     }
 
@@ -593,6 +667,8 @@ parse_rereadable_options (ARGPARSE_ARGS *pargs, int reread)
 
     case oDisableHTTP: opt.disable_http = 1; break;
     case oDisableLDAP: opt.disable_ldap = 1; break;
+    case oDisableIPv4: opt.disable_ipv4 = 1; break;
+    case oDisableIPv6: opt.disable_ipv6 = 1; break;
     case oHonorHTTPProxy: opt.honor_http_proxy = 1; break;
     case oHTTPProxy: opt.http_proxy = pargs->r.ret_str; break;
     case oLDAPProxy: opt.ldap_proxy = pargs->r.ret_str; break;
@@ -615,11 +691,14 @@ parse_rereadable_options (ARGPARSE_ARGS *pargs, int reread)
 
     case oHkpCaCert:
       {
+        /* We need to register the filenames with gnutls (http.c) and
+         * also for our own cert cache.  */
         char *tmpname;
 
         /* Do tilde expansion and make path absolute.  */
         tmpname = make_absfilename (pargs->r.ret_str, NULL);
         http_register_tls_ca (tmpname);
+        add_to_strlist (&hkp_cacert_filenames, pargs->r.ret_str);
         xfree (tmpname);
       }
       break;
@@ -628,7 +707,13 @@ parse_rereadable_options (ARGPARSE_ARGS *pargs, int reread)
       add_to_strlist (&opt.ignored_cert_extensions, pargs->r.ret_str);
       break;
 
-    case oUseTor: opt.use_tor = 1; break;
+    case oUseTor:
+      tor_mode = TOR_MODE_FORCE;
+      break;
+    case oNoUseTor:
+      if (tor_mode != TOR_MODE_FORCE)
+        tor_mode = TOR_MODE_NEVER;
+      break;
 
     case oStandardResolver: enable_standard_resolver (1); break;
     case oRecursiveResolver: enable_recursive_resolver (1); break;
@@ -646,14 +731,39 @@ parse_rereadable_options (ARGPARSE_ARGS *pargs, int reread)
       set_dns_timeout (pargs->r.ret_int);
       break;
 
+    case oConnectTimeout:
+      opt.connect_timeout = pargs->r.ret_ulong * 1000;
+      break;
+
+    case oConnectQuickTimeout:
+      opt.connect_quick_timeout = pargs->r.ret_ulong * 1000;
+      break;
+
     default:
       return 0; /* Not handled. */
     }
 
   set_dns_verbose (opt.verbose, !!DBG_DNS);
   http_set_verbose (opt.verbose, !!DBG_NETWORK);
+  set_dns_disable_ipv4 (opt.disable_ipv4);
+  set_dns_disable_ipv6 (opt.disable_ipv6);
 
   return 1; /* Handled. */
+}
+
+
+/* This fucntion is called after option parsing to adjust some values
+ * and call option setup functions.  */
+static void
+post_option_parsing (void)
+{
+  /* It would be too surpirsing if the quick timeout is larger than
+   * the standard value.  */
+  if (opt.connect_quick_timeout > opt.connect_timeout)
+    opt.connect_quick_timeout = opt.connect_timeout;
+
+  set_debug ();
+  set_tor_mode ();
 }
 
 
@@ -669,6 +779,23 @@ pid_suffix_callback (unsigned long *r_suffix)
   return (*r_suffix != -1);  /* Use decimal representation.  */
 }
 #endif /*!HAVE_W32_SYSTEM*/
+
+#if HTTP_USE_NTBTLS
+static void
+my_ntbtls_log_handler (void *opaque, int level, const char *fmt, va_list argv)
+{
+  (void)opaque;
+
+  if (level == -1)
+    log_logv_with_prefix (GPGRT_LOG_INFO, "ntbtls: ", fmt, argv);
+  else
+    {
+      char prefix[10+20];
+      snprintf (prefix, sizeof prefix, "ntbtls(%d): ", level);
+      log_logv_with_prefix (GPGRT_LOG_DEBUG, prefix, fmt, argv);
+    }
+}
+#endif
 
 
 static void
@@ -756,6 +883,10 @@ main (int argc, char **argv)
 
   setup_libgcrypt_logging ();
 
+#if HTTP_USE_NTBTLS
+  ntbtls_set_log_handler (my_ntbtls_log_handler, NULL);
+#endif
+
   /* Setup defaults. */
   shell = getenv ("SHELL");
   if (shell && strlen (shell) >= 3 && !strcmp (shell+strlen (shell)-3, "csh") )
@@ -763,6 +894,10 @@ main (int argc, char **argv)
 
   /* Reset rereadable options to default values. */
   parse_rereadable_options (NULL, 0);
+
+  /* Default TCP timeouts.  */
+  opt.connect_timeout = DEFAULT_CONNECT_TIMEOUT;
+  opt.connect_quick_timeout = DEFAULT_CONNECT_QUICK_TIMEOUT;
 
   /* LDAP defaults.  */
   opt.add_new_ldapservers = 0;
@@ -890,6 +1025,10 @@ main (int argc, char **argv)
 
         case oSocketName: socket_name = pargs.r.ret_str; break;
 
+        case oListenBacklog:
+          listen_backlog = pargs.r.ret_int;
+          break;
+
         default : pargs.err = configfp? 1:2; break;
 	}
     }
@@ -951,8 +1090,7 @@ main (int argc, char **argv)
       log_printf ("\n");
     }
 
-  set_debug ();
-  set_tor_mode ();
+  post_option_parsing ();
 
   /* Get LDAP server list from file. */
 #if USE_LDAP
@@ -1003,10 +1141,10 @@ main (int argc, char **argv)
 
 
       thread_init ();
-      cert_cache_init ();
+      cert_cache_init (hkp_cacert_filenames);
       crl_cache_init ();
       http_register_netactivity_cb (netactivity_action);
-      start_command_handler (ASSUAN_INVALID_FD);
+      start_command_handler (ASSUAN_INVALID_FD, 0);
       shutdown_reaper ();
     }
 #ifndef HAVE_W32_SYSTEM
@@ -1038,7 +1176,7 @@ main (int argc, char **argv)
         log_set_prefix (NULL, 0);
 
       thread_init ();
-      cert_cache_init ();
+      cert_cache_init (hkp_cacert_filenames);
       crl_cache_init ();
       http_register_netactivity_cb (netactivity_action);
       handle_connections (3);
@@ -1063,6 +1201,14 @@ main (int argc, char **argv)
                                  |GPGRT_LOG_WITH_TIME
                                  |GPGRT_LOG_WITH_PID));
           current_logfile = xstrdup (logfile);
+        }
+
+      if (debug_wait)
+        {
+          log_debug ("waiting for debugger - my pid is %u .....\n",
+                     (unsigned int)getpid());
+          gnupg_sleep (debug_wait);
+          log_debug ("... okay\n");
         }
 
 #ifndef HAVE_W32_SYSTEM
@@ -1135,9 +1281,10 @@ main (int argc, char **argv)
         log_error (_("can't set permissions of '%s': %s\n"),
                    serv_addr.sun_path, strerror (errno));
 
-      if (listen (FD2INT (fd), 5) == -1)
+      if (listen (FD2INT (fd), listen_backlog) == -1)
         {
-          log_error (_("listen() failed: %s\n"), strerror (errno));
+          log_error ("listen(fd,%d) failed: %s\n",
+                     listen_backlog, strerror (errno));
           assuan_sock_close (fd);
           dirmngr_exit (1);
         }
@@ -1236,16 +1383,21 @@ main (int argc, char **argv)
           log_set_prefix (NULL, oldflags | GPGRT_LOG_RUN_DETACHED);
           opt.running_detached = 1;
 
-          if (chdir("/"))
-            {
-              log_error ("chdir to / failed: %s\n", strerror (errno));
-              dirmngr_exit (1);
-            }
         }
 #endif
 
+      if (!nodetach )
+        {
+          if (gnupg_chdir (gnupg_daemon_rootdir ()))
+            {
+              log_error ("chdir to '%s' failed: %s\n",
+                         gnupg_daemon_rootdir (), strerror (errno));
+              dirmngr_exit (1);
+            }
+        }
+
       thread_init ();
-      cert_cache_init ();
+      cert_cache_init (hkp_cacert_filenames);
       crl_cache_init ();
       http_register_netactivity_cb (netactivity_action);
       handle_connections (fd);
@@ -1267,7 +1419,7 @@ main (int argc, char **argv)
       dirmngr_init_default_ctrl (&ctrlbuf);
 
       thread_init ();
-      cert_cache_init ();
+      cert_cache_init (hkp_cacert_filenames);
       crl_cache_init ();
       if (!argc)
         rc = crl_cache_load (&ctrlbuf, NULL);
@@ -1290,7 +1442,7 @@ main (int argc, char **argv)
       dirmngr_init_default_ctrl (&ctrlbuf);
 
       thread_init ();
-      cert_cache_init ();
+      cert_cache_init (hkp_cacert_filenames);
       crl_cache_init ();
       rc = crl_fetch (&ctrlbuf, argv[0], &reader);
       if (rc)
@@ -1379,7 +1531,13 @@ main (int argc, char **argv)
       es_printf ("ignore-ocsp-servic-url:%lu:\n", flags | GC_OPT_FLAG_NONE);
 
       es_printf ("use-tor:%lu:\n", flags | GC_OPT_FLAG_NONE);
-      es_printf ("keyserver:%lu:\n", flags | GC_OPT_FLAG_NONE);
+
+      filename_esc = percent_escape (get_default_keyserver (0), NULL);
+      es_printf ("keyserver:%lu:\"%s:\n", flags | GC_OPT_FLAG_DEFAULT,
+                 filename_esc);
+      xfree (filename_esc);
+
+
       es_printf ("nameserver:%lu:\n", flags | GC_OPT_FLAG_NONE);
       es_printf ("resolver-timeout:%lu:%u\n",
                  flags | GC_OPT_FLAG_DEFAULT, 0);
@@ -1423,8 +1581,11 @@ dirmngr_exit (int rc)
 void
 dirmngr_init_default_ctrl (ctrl_t ctrl)
 {
+  ctrl->magic = SERVER_CONTROL_MAGIC;
   if (opt.http_proxy)
     ctrl->http_proxy = xstrdup (opt.http_proxy);
+  ctrl->http_no_crl = 1;
+  ctrl->timeout = opt.connect_timeout;
 }
 
 
@@ -1433,6 +1594,8 @@ dirmngr_deinit_default_ctrl (ctrl_t ctrl)
 {
   if (!ctrl)
     return;
+  ctrl->magic = 0xdeadbeef;
+
   xfree (ctrl->http_proxy);
   ctrl->http_proxy = NULL;
 }
@@ -1466,7 +1629,11 @@ parse_ldapserver_file (const char* filename)
   fp = es_fopen (filename, "r");
   if (!fp)
     {
-      log_error (_("error opening '%s': %s\n"), filename, strerror (errno));
+      if (errno == ENOENT)
+        log_info ("No ldapserver file at: '%s'\n", filename);
+      else
+        log_error (_("error opening '%s': %s\n"), filename,
+                   strerror (errno));
       return NULL;
     }
 
@@ -1684,8 +1851,7 @@ reread_configuration (void)
     }
   fclose (fp);
 
-  set_debug ();
-  set_tor_mode ();
+  post_option_parsing ();
 }
 
 
@@ -1699,7 +1865,7 @@ dirmngr_sighup_action (void)
   reread_configuration ();
   cert_cache_deinit (0);
   crl_cache_deinit ();
-  cert_cache_init ();
+  cert_cache_init (hkp_cacert_filenames);
   crl_cache_init ();
   reload_dns_stuff (0);
   ks_hkp_reload ();
@@ -1730,6 +1896,7 @@ handle_signal (int signo)
 
     case SIGUSR1:
       cert_cache_print_stats ();
+      domaininfo_print_stats ();
       break;
 
     case SIGUSR2:
@@ -1793,9 +1960,12 @@ housekeeping_thread (void *arg)
   if (network_activity_seen)
     {
       network_activity_seen = 0;
-      if (opt.use_tor || opt.allow_version_check)
+      if (opt.allow_version_check)
         dirmngr_load_swdb (&ctrlbuf, 0);
+      workqueue_run_global_tasks (&ctrlbuf, 1);
     }
+  else
+    workqueue_run_global_tasks (&ctrlbuf, 0);
 
   dirmngr_deinit_default_ctrl (&ctrlbuf);
 
@@ -1837,6 +2007,8 @@ time_for_housekeeping_p (time_t curtime)
 static void
 handle_tick (void)
 {
+  struct stat statbuf;
+
   if (time_for_housekeeping_p (gnupg_get_time ()))
     {
       npth_t thread;
@@ -1855,6 +2027,14 @@ handle_tick (void)
                        strerror (err));
           npth_attr_destroy (&tattr);
         }
+    }
+
+  /* Check whether the homedir is still available.  */
+  if (!shutdown_pending
+      && stat (gnupg_homedir (), &statbuf) && errno == ENOENT)
+    {
+      shutdown_pending = 1;
+      log_info ("homedir has been removed - shutting down\n");
     }
 }
 
@@ -1880,6 +2060,8 @@ check_nonce (assuan_fd_t fd, assuan_sock_nonce_t *nonce)
 static void *
 start_connection_thread (void *arg)
 {
+  static unsigned int last_session_id;
+  unsigned int session_id;
   union int_and_ptr_u argval;
   gnupg_fd_t fd;
 
@@ -1901,11 +2083,16 @@ start_connection_thread (void *arg)
   if (opt.verbose)
     log_info (_("handler for fd %d started\n"), FD2INT (fd));
 
-  start_command_handler (fd);
+  session_id = ++last_session_id;
+  if (!session_id)
+    session_id = ++last_session_id;
+  start_command_handler (fd, session_id);
 
   if (opt.verbose)
     log_info (_("handler for fd %d terminated\n"), FD2INT (fd));
   active_connections--;
+
+  workqueue_run_post_session_tasks (session_id);
 
 #ifndef HAVE_W32_SYSTEM
   argval.afd = ASSUAN_INVALID_FD;
@@ -1956,7 +2143,6 @@ handle_connections (assuan_fd_t listen_fd)
 #endif
   struct sockaddr_un paddr;
   socklen_t plen = sizeof( paddr );
-  gnupg_fd_t fd;
   int nfd, ret;
   fd_set fdset, read_fdset;
   struct timespec abstime;
@@ -2050,15 +2236,19 @@ handle_connections (assuan_fd_t listen_fd)
       npth_clock_gettime (&curtime);
       if (!(npth_timercmp (&curtime, &abstime, <)))
 	{
-	  /* Timeout.  */
+	  /* Timeout.  When a shutdown is pending we use a shorter
+           * interval to handle the shutdown more quickly.  */
 	  handle_tick ();
 	  npth_clock_gettime (&abstime);
-	  abstime.tv_sec += TIMERTICK_INTERVAL;
+	  abstime.tv_sec += (shutdown_pending
+                             ? TIMERTICK_INTERVAL_SHUTDOWN
+                             : TIMERTICK_INTERVAL);
 	}
       npth_timersub (&abstime, &curtime, &timeout);
 
 #ifndef HAVE_W32_SYSTEM
-      ret = npth_pselect (nfd+1, &read_fdset, NULL, NULL, &timeout, npth_sigev_sigmask());
+      ret = npth_pselect (nfd+1, &read_fdset, NULL, NULL, &timeout,
+                          npth_sigev_sigmask());
       saved_errno = errno;
 
       while (npth_sigev_get_pending(&signo))
@@ -2100,6 +2290,8 @@ handle_connections (assuan_fd_t listen_fd)
 
       if (FD_ISSET (FD2INT (listen_fd), &read_fdset))
 	{
+          gnupg_fd_t fd;
+
           plen = sizeof paddr;
 	  fd = INT2FD (npth_accept (FD2INT(listen_fd),
 				    (struct sockaddr *)&paddr, &plen));
@@ -2128,7 +2320,6 @@ handle_connections (assuan_fd_t listen_fd)
                 }
 	      npth_setname_np (thread, threadname);
             }
-          fd = GNUPG_INVALID_FD;
 	}
     }
 
@@ -2137,8 +2328,8 @@ handle_connections (assuan_fd_t listen_fd)
     close (my_inotify_fd);
 #endif /*HAVE_INOTIFY_INIT*/
   npth_attr_destroy (&tattr);
-  if (listen_fd != -1)
-    assuan_sock_close (fd);
+  if (listen_fd != GNUPG_INVALID_FD)
+    assuan_sock_close (listen_fd);
   cleanup ();
   log_info ("%s %s stopped\n", strusage(11), strusage(13));
 }

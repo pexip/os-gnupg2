@@ -3,8 +3,8 @@
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify it
- * under the terms of either
+ * GnuPG is free software; you can redistribute and/or modify this
+ * part of GnuPG under the terms of either
  *
  *   - the GNU Lesser General Public License as published by the Free
  *     Software Foundation; either version 3 of the License, or (at
@@ -47,6 +47,22 @@
 #include "stringhelp.h"
 #include "utf8conv.h"
 #include "mischelp.h"
+
+
+void
+wipememory (void *ptr, size_t len)
+{
+#if defined(HAVE_W32_SYSTEM) && defined(SecureZeroMemory)
+  SecureZeroMemory (ptr, len);
+#elif defined(HAVE_EXPLICIT_BZERO)
+  explicit_bzero (ptr, len);
+#else
+  /* Prevent compiler from optimizing away the call to memset by accessing
+     memset through volatile pointer. */
+  static void *(*volatile memset_ptr)(void *, int, size_t) = (void *)memset;
+  memset_ptr (ptr, 0, len);
+#endif
+}
 
 
 /* Check whether the files NAME1 and NAME2 are identical.  This is for

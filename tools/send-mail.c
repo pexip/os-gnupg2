@@ -1,19 +1,20 @@
 /* send-mail.c - Invoke sendmail or other delivery tool.
  * Copyright (C) 2016 g10 Code GmbH
+ * Copyright (C) 2016 Bundesamt für Sicherheit in der Informationstechnik
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
+ * This file is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation; either version 2.1 of
+ * the License, or (at your option) any later version.
  *
- * GnuPG is distributed in the hope that it will be useful,
+ * This file is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
@@ -22,9 +23,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "util.h"
-#include "exectool.h"
-#include "sysutils.h"
+#include "../common/util.h"
+#include "../common/exectool.h"
+#include "../common/sysutils.h"
 #include "send-mail.h"
 
 
@@ -71,13 +72,23 @@ send_mail_to_file (estream_t fp, const char *fname)
   if (!buffer)
     return gpg_error_from_syserror ();
 
-  outfp = !strcmp (fname,"-")? es_stdout : es_fopen (fname, "wb");
-  if (!outfp)
+
+  if (!strcmp (fname,"-"))
     {
-      err = gpg_error_from_syserror ();
-      log_error ("error creating '%s': %s\n", fname, gpg_strerror (err));
-      goto leave;
+      outfp = es_stdout;
+      es_set_binary (es_stdout);
     }
+  else
+    {
+      outfp = es_fopen (fname, "wb");
+      if (!outfp)
+        {
+          err = gpg_error_from_syserror ();
+          log_error ("error creating '%s': %s\n", fname, gpg_strerror (err));
+          goto leave;
+        }
+    }
+
   for (;;)
     {
       if (es_read (fp, buffer, sizeof buffer, &nbytes))

@@ -5,8 +5,8 @@
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify it
- * under the terms of either
+ * GnuPG is free software; you can redistribute and/or modify this
+ * part of GnuPG under the terms of either
  *
  *   - the GNU Lesser General Public License as published by the Free
  *     Software Foundation; either version 3 of the License, or (at
@@ -151,11 +151,15 @@ char **strtokenize (const char *string, const char *delim);
  * provided ARRAY.  */
 int split_fields (char *string, char **array, int arraysize);
 
+/* Split STRING into colon delimited fields and store them in the
+ * provided ARRAY.  */
+int split_fields_colon (char *string, char **array, int arraysize);
+
 /* Return True if MYVERSION is greater or equal than REQ_VERSION.  */
 int compare_version_strings (const char *my_version, const char *req_version);
 
 /* Format a string so that it fits within about TARGET_COLS columns.  */
-char *format_text (char *text, int in_place, int target_cols, int max_cols);
+char *format_text (const char *text, int target_cols, int max_cols);
 
 
 /*-- mapstrings.c --*/

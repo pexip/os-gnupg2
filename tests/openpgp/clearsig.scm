@@ -17,7 +17,7 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "defs.scm"))
+(load (in-srcdir "tests" "openpgp" "defs.scm"))
 (setup-legacy-environment)
 
 (define (check-signing args input)
@@ -25,7 +25,7 @@
     (lettmp (signed)
 	    (call-popen `(,@GPG --output ,signed --yes
 				,@args ,source) input)
-	    (call-popen `(,@GPG --output ,sink --yes ,signed) ""))))
+	    (call-popen `(,@GPG --output ,sink --yes --verify ,signed) ""))))
 
 (for-each-p
  "Checking signing and verifying plain text messages"

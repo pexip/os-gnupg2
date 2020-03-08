@@ -34,8 +34,8 @@
 
 #include "keydb.h"
 #include "../kbx/keybox.h" /* for KEYBOX_FLAG_* */
-#include "i18n.h"
-#include "tlv.h"
+#include "../common/i18n.h"
+#include "../common/tlv.h"
 
 
 /* Object to keep track of certain root certificates. */
@@ -2120,7 +2120,7 @@ get_regtp_ca_info (ctrl_t ctrl, ksba_cert_t cert, int *chainlen)
     }
 
   /* If this is a German signature law issued certificate, we store
-     additional additional information. */
+     additional information. */
   if (!gpgsm_is_in_qualified_list (NULL, array[depth-1], country)
       && !strcmp (country, "de"))
     {

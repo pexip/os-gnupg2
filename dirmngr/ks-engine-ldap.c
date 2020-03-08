@@ -45,7 +45,7 @@
 
 #include "dirmngr.h"
 #include "misc.h"
-#include "userids.h"
+#include "../common/userids.h"
 #include "ks-engine.h"
 #include "ldap-parse-uri.h"
 
@@ -850,7 +850,7 @@ ks_ldap_get (ctrl_t ctrl, parsed_uri_t uri, const char *keyspec,
 
   (void) ctrl;
 
-  if (opt.use_tor)
+  if (dirmngr_use_tor ())
     {
       /* For now we do not support LDAP over Tor.  */
       log_error (_("LDAP access not possible due to Tor mode\n"));
@@ -1033,7 +1033,7 @@ ks_ldap_search (ctrl_t ctrl, parsed_uri_t uri, const char *pattern,
 
   (void) ctrl;
 
-  if (opt.use_tor)
+  if (dirmngr_use_tor ())
     {
       /* For now we do not support LDAP over Tor.  */
       log_error (_("LDAP access not possible due to Tor mode\n"));
@@ -1471,7 +1471,7 @@ modlist_dump (LDAPMod **modlist, estream_t output)
 	  for ((ptr = (*m)->mod_values), (i = 1); ptr && *ptr; ptr++, i ++)
 	    {
 	      /* Assuming terminals are about 80 characters wide,
-		 display at most most about 10 lines of debugging
+		 display at most about 10 lines of debugging
 		 output.  If we do trim the buffer, append '...' to
 		 the end.  */
 	      const int max_len = 10 * 70;
@@ -1694,26 +1694,16 @@ extract_attributes (LDAPMod ***modlist, char *line)
 
   if (is_pub || is_sub)
     {
-      char *size = fields[2];
-      int val = atoi (size);
-      size = NULL;
+      char padded[6];
+      int val;
 
-      if (val > 0)
-	{
-	  /* We zero pad this on the left to make PGP happy. */
-	  char padded[6];
-	  if (val < 99999 && val > 0)
-	    {
-	      snprintf (padded, sizeof padded, "%05u", val);
-	      size = padded;
-	    }
-	}
-
-      if (size)
-	{
-	  if (is_pub || is_sub)
-	    modlist_add (modlist, "pgpKeySize", size);
-	}
+      val = atoi (fields[2]);
+      if (val < 99999 && val > 0)
+        {
+          /* We zero pad this on the left to make PGP happy. */
+          snprintf (padded, sizeof padded, "%05u", val);
+          modlist_add (modlist, "pgpKeySize", padded);
+        }
     }
 
   if (is_pub)
@@ -1736,10 +1726,7 @@ extract_attributes (LDAPMod ***modlist, char *line)
 	}
 
       if (algo)
-	{
-	  if (is_pub)
-	    modlist_add (modlist, "pgpKeyType", algo);
-	}
+        modlist_add (modlist, "pgpKeyType", algo);
     }
 
   if (is_pub || is_sub || is_sig)
@@ -1909,7 +1896,7 @@ ks_ldap_put (ctrl_t ctrl, parsed_uri_t uri,
   /* Elide a warning.  */
   (void) ctrl;
 
-  if (opt.use_tor)
+  if (dirmngr_use_tor ())
     {
       /* For now we do not support LDAP over Tor.  */
       log_error (_("LDAP access not possible due to Tor mode\n"));

@@ -40,8 +40,8 @@
 #ifdef HAVE_LIBUSB
 #include "ccid-driver.h"
 #endif
-#include "asshelp.h"
-#include "server-help.h"
+#include "../common/asshelp.h"
+#include "../common/server-help.h"
 
 /* Maximum length allowed as a PIN; used for INQUIRE NEEDPIN */
 #define MAXLEN_PIN 100
@@ -79,7 +79,7 @@ struct server_local_s
   assuan_context_t assuan_ctx;
 
 #ifdef HAVE_W32_SYSTEM
-  unsigned long event_signal;   /* Or 0 if not used. */
+  void *event_signal;           /* Or NULL if not used. */
 #else
   int event_signal;             /* Or 0 if not used. */
 #endif
@@ -178,7 +178,11 @@ option_handler (assuan_context_t ctx, const char *key, const char *value)
 #ifdef HAVE_W32_SYSTEM
       if (!*value)
         return gpg_error (GPG_ERR_ASS_PARAMETER);
-      ctrl->server_local->event_signal = strtoul (value, NULL, 16);
+#ifdef _WIN64
+      ctrl->server_local->event_signal = (void *)strtoull (value, NULL, 16);
+#else
+      ctrl->server_local->event_signal = (void *)strtoul (value, NULL, 16);
+#endif
 #else
       int i = *value? atoi (value) : -1;
       if (i < 0)
@@ -217,12 +221,17 @@ open_card_with_request (ctrl_t ctrl, const char *apptype, const char *serialno)
   gpg_error_t err;
   unsigned char *serialno_bin = NULL;
   size_t serialno_bin_len = 0;
+  app_t app = ctrl->app_ctx;
 
   /* If we are already initialized for one specific application we
      need to check that the client didn't requested a specific
      application different from the one in use before we continue. */
   if (apptype && ctrl->app_ctx)
     return check_application_conflict (apptype, ctrl->app_ctx);
+
+  /* Re-scan USB devices.  Release APP, before the scan.  */
+  ctrl->app_ctx = NULL;
+  release_application (app, 0);
 
   if (serialno)
     serialno_bin = hex_to_buffer (serialno, &serialno_bin_len);
@@ -440,7 +449,7 @@ cmd_learn (assuan_context_t ctx, char *line)
               xfree (serial);
               return rc;
             }
-          /* Not canceled, so we have to proceeed.  */
+          /* Not canceled, so we have to proceed.  */
         }
       xfree (serial);
     }
@@ -895,7 +904,7 @@ cmd_getattr (assuan_context_t ctx, char *line)
 static const char hlp_setattr[] =
   "SETATTR <name> <value> \n"
   "\n"
-  "This command is used to store data on a a smartcard.  The allowed\n"
+  "This command is used to store data on a smartcard.  The allowed\n"
   "names and values are depend on the currently selected smartcard\n"
   "application.  NAME and VALUE must be percent and '+' escaped.\n"
   "\n"
@@ -949,7 +958,7 @@ static const char hlp_writecert[] =
   "application. The actual certifciate is requested using the inquiry\n"
   "\"CERTDATA\" and needs to be provided in its raw (e.g. DER) form.\n"
   "\n"
-  "In almost all cases a a PIN will be requested.  See the related\n"
+  "In almost all cases a PIN will be requested.  See the related\n"
   "writecert function of the actually used application (app-*.c) for\n"
   "details.";
 static gpg_error_t
@@ -1002,7 +1011,7 @@ cmd_writecert (assuan_context_t ctx, char *line)
 static const char hlp_writekey[] =
   "WRITEKEY [--force] <keyid> \n"
   "\n"
-  "This command is used to store a secret key on a a smartcard.  The\n"
+  "This command is used to store a secret key on a smartcard.  The\n"
   "allowed keyids depend on the currently selected smartcard\n"
   "application. The actual keydata is requested using the inquiry\n"
   "\"KEYDATA\" and need to be provided without any protection.  With\n"
@@ -1367,30 +1376,26 @@ static const char hlp_getinfo[] =
   "Multi purpose command to return certain information.  \n"
   "Supported values of WHAT are:\n"
   "\n"
-  "version     - Return the version of the program.\n"
-  "pid         - Return the process id of the server.\n"
-  "\n"
-  "socket_name - Return the name of the socket.\n"
-  "\n"
-  "status - Return the status of the current reader (in the future, may\n"
-  "also return the status of all readers).  The status is a list of\n"
-  "one-character flags.  The following flags are currently defined:\n"
-  "  'u'  Usable card present.  This is the normal state during operation.\n"
-  "  'r'  Card removed.  A reset is necessary.\n"
-  "These flags are exclusive.\n"
-  "\n"
-  "reader_list - Return a list of detected card readers.  Does\n"
-  "              currently only work with the internal CCID driver.\n"
-  "\n"
-  "deny_admin  - Returns OK if admin commands are not allowed or\n"
-  "              GPG_ERR_GENERAL if admin commands are allowed.\n"
-  "\n"
-  "app_list    - Return a list of supported applications.  One\n"
-  "              application per line, fields delimited by colons,\n"
-  "              first field is the name.\n"
-  "\n"
-  "card_list   - Return a list of serial numbers of active cards,\n"
-  "              using a status response.";
+  "  version     - Return the version of the program.\n"
+  "  pid         - Return the process id of the server.\n"
+  "  socket_name - Return the name of the socket.\n"
+  "  connections - Return number of active connections.\n"
+  "  status      - Return the status of the current reader (in the future,\n"
+  "                may also return the status of all readers).  The status\n"
+  "                is a list of one-character flags.  The following flags\n"
+  "                are currently defined:\n"
+  "                  'u'  Usable card present.\n"
+  "                  'r'  Card removed.  A reset is necessary.\n"
+  "                These flags are exclusive.\n"
+  "  reader_list - Return a list of detected card readers.  Does\n"
+  "                currently only work with the internal CCID driver.\n"
+  "  deny_admin  - Returns OK if admin commands are not allowed or\n"
+  "                GPG_ERR_GENERAL if admin commands are allowed.\n"
+  "  app_list    - Return a list of supported applications.  One\n"
+  "                application per line, fields delimited by colons,\n"
+  "                first field is the name.\n"
+  "  card_list   - Return a list of serial numbers of active cards,\n"
+  "                using a status response.";
 static gpg_error_t
 cmd_getinfo (assuan_context_t ctx, char *line)
 {
@@ -1416,6 +1421,13 @@ cmd_getinfo (assuan_context_t ctx, char *line)
         rc = assuan_send_data (ctx, s, strlen (s));
       else
         rc = gpg_error (GPG_ERR_NO_DATA);
+    }
+  else if (!strcmp (line, "connections"))
+    {
+      char numbuf[20];
+
+      snprintf (numbuf, sizeof numbuf, "%d", get_active_connection_count ());
+      rc = assuan_send_data (ctx, numbuf, strlen (numbuf));
     }
   else if (!strcmp (line, "status"))
     {
@@ -1487,7 +1499,7 @@ cmd_restart (assuan_context_t ctx, char *line)
   if (app)
     {
       ctrl->app_ctx = NULL;
-      release_application (app);
+      release_application (app, 0);
     }
   if (locked_session && ctrl->server_local == locked_session)
     {
@@ -1840,7 +1852,8 @@ send_status_info (ctrl_t ctrl, const char *keyword, ...)
 
   p = buf;
   n = 0;
-  while ( (value = va_arg (arg_ptr, const unsigned char *)) )
+  while ( (value = va_arg (arg_ptr, const unsigned char *))
+           && n < DIM (buf)-2 )
     {
       valuelen = va_arg (arg_ptr, size_t);
       if (!valuelen)
@@ -1857,6 +1870,7 @@ send_status_info (ctrl_t ctrl, const char *keyword, ...)
             {
               sprintf (p, "%%%02X", *value);
               p += 3;
+              n += 2;
             }
           else if (*value == ' ')
             *p++ = '+';
@@ -1914,7 +1928,7 @@ send_client_notifications (app_t app, int removal)
           {
             sl->ctrl_backlink->app_ctx = NULL;
             sl->card_removed = 1;
-            release_application (app);
+            release_application (app, 1);
           }
 
         if (!sl->event_signal || !sl->assuan_ctx)
@@ -1923,20 +1937,20 @@ send_client_notifications (app_t app, int removal)
         pid = assuan_get_pid (sl->assuan_ctx);
 
 #ifdef HAVE_W32_SYSTEM
-        handle = (void *)sl->event_signal;
+        handle = sl->event_signal;
         for (kidx=0; kidx < killidx; kidx++)
           if (killed[kidx].pid == pid
               && killed[kidx].handle == handle)
             break;
         if (kidx < killidx)
-          log_info ("event %lx (%p) already triggered for client %d\n",
+          log_info ("event %p (%p) already triggered for client %d\n",
                     sl->event_signal, handle, (int)pid);
         else
           {
-            log_info ("triggering event %lx (%p) for client %d\n",
+            log_info ("triggering event %p (%p) for client %d\n",
                       sl->event_signal, handle, (int)pid);
             if (!SetEvent (handle))
-              log_error ("SetEvent(%lx) failed: %s\n",
+              log_error ("SetEvent(%p) failed: %s\n",
                          sl->event_signal, w32_strerror (-1));
             if (killidx < DIM (killed))
               {

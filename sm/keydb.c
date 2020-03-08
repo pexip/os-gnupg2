@@ -31,7 +31,7 @@
 #include "gpgsm.h"
 #include "../kbx/keybox.h"
 #include "keydb.h"
-#include "i18n.h"
+#include "../common/i18n.h"
 
 static int active_handles;
 
@@ -205,7 +205,7 @@ maybe_create_keybox (char *filename, int force, int *r_created)
 
   /* The file does not yet exist, create it now. */
   oldmask = umask (077);
-  fp = fopen (filename, "w");
+  fp = fopen (filename, "wb");
   if (!fp)
     {
       rc = gpg_error_from_syserror ();
@@ -265,7 +265,7 @@ keydb_add_resource (ctrl_t ctrl, const char *url, int force, int *auto_created)
 
   /* Do we have an URL?
      gnupg-kbx:filename := this is a plain keybox
-     filename := See what is is, but create as plain keybox.
+     filename := See what it is, but create as plain keybox.
   */
   if (strlen (resname) > 10)
     {

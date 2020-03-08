@@ -31,17 +31,24 @@
 
 #include "gpg.h"
 #include <assuan.h>
-#include "util.h"
-#include "membuf.h"
+#include "../common/util.h"
+#include "../common/membuf.h"
 #include "options.h"
-#include "i18n.h"
-#include "asshelp.h"
-#include "keyserver.h"
-#include "status.h"
+#include "../common/i18n.h"
+#include "../common/asshelp.h"
+#include "../common/keyserver.h"
+#include "../common/status.h"
 #include "call-dirmngr.h"
 
 
-/* Parameter structure used to gather status info.  */
+/* Keys retrieved from the web key directory should be small.  There
+ * is only one UID and we can expect that the number of subkeys is
+ * reasonable.  So we set a generous limit of 256 KiB.  */
+#define MAX_WKD_RESULT_LENGTH   (256 * 1024)
+
+
+/* Parameter structure used to gather status info.  Note that it is
+ * also used for WKD requests.  */
 struct ks_status_parm_s
 {
   const char *keyword; /* Look for this keyword or NULL for "SOURCE". */
@@ -156,6 +163,14 @@ warn_version_mismatch (assuan_context_t ctx, const char *servername)
       else
         {
           log_info (_("WARNING: %s\n"), warn);
+          if (!opt.quiet)
+            {
+              log_info (_("Note: Outdated servers may lack important"
+                          " security fixes.\n"));
+              log_info (_("Note: Use the command \"%s\" to restart them.\n"),
+                        "gpgconf --kill all");
+            }
+
           write_status_strings (STATUS_WARNING, "server_version_mismatch 0",
                                 " ", warn, NULL);
           xfree (warn);
@@ -175,6 +190,10 @@ create_context (ctrl_t ctrl, assuan_context_t *r_ctx)
   assuan_context_t ctx;
 
   *r_ctx = NULL;
+
+  if (opt.disable_dirmngr)
+    return gpg_error (GPG_ERR_NO_DIRMNGR);
+
   err = start_new_dirmngr (&ctx,
                            GPG_ERR_SOURCE_DEFAULT,
                            opt.dirmngr_program,
@@ -368,21 +387,46 @@ clear_context_flags (ctrl_t ctrl, assuan_context_t ctx)
 
 
 
-/* Status callback for ks_list, ks_get and ks_search.  */
+/* Status callback for ks_list, ks_get, ks_search, and wkd_get  */
 static gpg_error_t
 ks_status_cb (void *opaque, const char *line)
 {
   struct ks_status_parm_s *parm = opaque;
   gpg_error_t err = 0;
-  const char *s;
+  const char *s, *s2;
+  const char *warn;
 
   if ((s = has_leading_keyword (line, parm->keyword? parm->keyword : "SOURCE")))
     {
+      /* Note that the arg for "S SOURCE" is the URL of a keyserver.  */
       if (!parm->source)
         {
           parm->source = xtrystrdup (s);
           if (!parm->source)
             err = gpg_error_from_syserror ();
+        }
+    }
+  else if ((s = has_leading_keyword (line, "WARNING")))
+    {
+      if ((s2 = has_leading_keyword (s, "tor_not_running")))
+        warn = _("Tor is not running");
+      else if ((s2 = has_leading_keyword (s, "tor_config_problem")))
+        warn = _("Tor is not properly configured");
+      else
+        warn = NULL;
+
+      if (warn)
+        {
+          log_info (_("WARNING: %s\n"), warn);
+          if (s2)
+            {
+              while (*s2 && !spacep (s2))
+                s2++;
+              while (*s2 && spacep (s2))
+                s2++;
+              if (*s2)
+                print_further_info ("%s", s2);
+            }
         }
     }
 
@@ -562,6 +606,12 @@ gpg_dirmngr_ks_search (ctrl_t ctrl, const char *searchstr,
                         NULL, NULL, ks_status_cb, &stparm);
   if (!err)
     err = cb (cb_value, 0, NULL);  /* Send EOF.  */
+  else if (parm.stparm->source)
+    {
+      /* Error but we received a SOURCE status.  Tell via callback but
+       * ignore errors.  */
+      parm.data_cb (parm.data_cb_value, 1, parm.stparm->source);
+    }
 
   xfree (get_membuf (&parm.saveddata, NULL));
   xfree (parm.helpbuf);
@@ -604,6 +654,7 @@ ks_get_data_cb (void *opaque, const void *data, size_t datalen)
 
    If R_SOURCE is not NULL the source of the data is stored as a
    malloced string there.  If a source is not known NULL is stored.
+   Note that this may even be returned after an error.
 
    If there are too many patterns the function returns an error.  That
    could be fixed by issuing several search commands or by
@@ -691,13 +742,13 @@ gpg_dirmngr_ks_get (ctrl_t ctrl, char **pattern,
   *r_fp = parm.memfp;
   parm.memfp = NULL;
 
-  if (r_source)
+
+ leave:
+  if (r_source && stparm.source)
     {
       *r_source = stparm.source;
       stparm.source = NULL;
     }
-
- leave:
   es_fclose (parm.memfp);
   xfree (stparm.source);
   xfree (line);
@@ -963,9 +1014,9 @@ ks_put_inq_cb (void *opaque, const char *line)
 		    int i;
 
 		    i = 0;
-		    if (uid->is_revoked)
+		    if (uid->flags.revoked)
 		      validity[i ++] = 'r';
-		    if (uid->is_expired)
+		    if (uid->flags.expired)
 		      validity[i ++] = 'e';
 		    validity[i] = '\0';
 
@@ -1044,7 +1095,7 @@ gpg_dirmngr_ks_put (ctrl_t ctrl, void *data, size_t datalen, kbnode_t keyblock)
   /* We are going to parse the keyblock, thus we better make sure the
      all information is readily available.  */
   if (keyblock)
-    merge_keys_and_selfsig (keyblock);
+    merge_keys_and_selfsig (ctrl, keyblock);
 
   err = open_context (ctrl, &ctx);
   if (err)
@@ -1292,17 +1343,24 @@ gpg_dirmngr_get_pka (ctrl_t ctrl, const char *userid,
 
 /* Ask the dirmngr to retrieve a key via the Web Key Directory
  * protocol.  If QUICK is set the dirmngr is advised to use a shorter
- * timeout.  On success a new estream with the key is stored at R_KEY.
+ * timeout.  On success a new estream with the key stored at R_KEY and the
+ * url of the lookup (if any) stored at R_URL.  Note that
  */
 gpg_error_t
-gpg_dirmngr_wkd_get (ctrl_t ctrl, const char *name, int quick, estream_t *r_key)
+gpg_dirmngr_wkd_get (ctrl_t ctrl, const char *name, int quick,
+                     estream_t *r_key, char **r_url)
 {
   gpg_error_t err;
   assuan_context_t ctx;
-  struct dns_cert_parm_s parm;
+  struct ks_status_parm_s stparm = { NULL };
+  struct dns_cert_parm_s parm = { NULL };
   char *line = NULL;
 
-  memset (&parm, 0, sizeof parm);
+  if (r_key)
+    *r_key = NULL;
+
+  if (r_url)
+    *r_url = NULL;
 
   err = open_context (ctrl, &ctx);
   if (err)
@@ -1320,14 +1378,16 @@ gpg_dirmngr_wkd_get (ctrl_t ctrl, const char *name, int quick, estream_t *r_key)
       goto leave;
     }
 
-  parm.memfp = es_fopenmem (0, "rwb");
+  parm.memfp = es_fopenmem (MAX_WKD_RESULT_LENGTH, "rwb");
   if (!parm.memfp)
     {
       err = gpg_error_from_syserror ();
       goto leave;
     }
   err = assuan_transact (ctx, line, dns_cert_data_cb, &parm,
-                         NULL, NULL, NULL, &parm);
+                         NULL, NULL, ks_status_cb, &stparm);
+  if (gpg_err_code (err) == GPG_ERR_ENOSPC)
+    err = gpg_error (GPG_ERR_TOO_LARGE);
   if (err)
     goto leave;
 
@@ -1338,7 +1398,14 @@ gpg_dirmngr_wkd_get (ctrl_t ctrl, const char *name, int quick, estream_t *r_key)
       parm.memfp = NULL;
     }
 
+  if (r_url)
+    {
+      *r_url = stparm.source;
+      stparm.source = NULL;
+    }
+
  leave:
+  xfree (stparm.source);
   xfree (parm.fpr);
   xfree (parm.url);
   es_fclose (parm.memfp);

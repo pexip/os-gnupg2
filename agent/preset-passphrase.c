@@ -45,9 +45,9 @@
 #endif
 
 #include "agent.h"
-#include "simple-pwquery.h"
-#include "i18n.h"
-#include "sysutils.h"
+#include "../common/simple-pwquery.h"
+#include "../common/i18n.h"
+#include "../common/sysutils.h"
 #include "../common/init.h"
 
 
@@ -78,7 +78,8 @@ static ARGPARSE_OPTS opts[] = {
   { oForget,  "forget",  256, "forget passphrase"},
 
   { oHomedir, "homedir", 2, "@" },
-  {0}
+
+  ARGPARSE_end ()
 };
 
 
@@ -239,7 +240,7 @@ main (int argc, char **argv)
   else
     usage (1);
 
-  /* Tell simple-pwquery about the the standard socket name.  */
+  /* Tell simple-pwquery about the standard socket name.  */
   {
     char *tmp = make_filename (gnupg_socketdir (), GPG_AGENT_SOCK_NAME, NULL);
     simple_pw_set_socket (tmp);

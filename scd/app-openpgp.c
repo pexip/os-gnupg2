@@ -62,13 +62,13 @@
 #include "scdaemon.h"
 #endif /* GNUPG_MAJOR_VERSION != 1 */
 
-#include "util.h"
-#include "i18n.h"
+#include "../common/util.h"
+#include "../common/i18n.h"
 #include "iso7816.h"
 #include "app-common.h"
-#include "tlv.h"
-#include "host2net.h"
-#include "openpgpdefs.h"
+#include "../common/tlv.h"
+#include "../common/host2net.h"
+#include "../common/openpgpdefs.h"
 
 
 /* A table describing the DOs of the card.  */
@@ -76,21 +76,24 @@ static struct {
   int tag;
   int constructed;
   int get_from;  /* Constructed DO with this DO or 0 for direct access. */
-  int binary:1;
-  int dont_cache:1;
-  int flush_on_error:1;
-  int get_immediate_in_v11:1; /* Enable a hack to bypass the cache of
+  unsigned int binary:1;
+  unsigned int dont_cache:1;
+  unsigned int flush_on_error:1;
+  unsigned int get_immediate_in_v11:1; /* Enable a hack to bypass the cache of
                                  this data object if it is used in 1.1
                                  and later versions of the card.  This
                                  does not work with composite DO and
                                  is currently only useful for the CHV
                                  status bytes. */
-  int try_extlen:1;           /* Large object; try to use an extended
-                                 length APDU.  */
+  unsigned int try_extlen:2;           /* Large object; try to use an extended
+                                 length APDU when !=0.  The size is
+                                 determined by extcap.max_certlen_3
+                                 when == 1, and by extcap.max_special_do
+                                 when == 2.  */
   char *desc;
 } data_objects[] = {
-  { 0x005E, 0,    0, 1, 0, 0, 0, 0, "Login Data" },
-  { 0x5F50, 0,    0, 0, 0, 0, 0, 0, "URL" },
+  { 0x005E, 0,    0, 1, 0, 0, 0, 2, "Login Data" },
+  { 0x5F50, 0,    0, 0, 0, 0, 0, 2, "URL" },
   { 0x5F52, 0,    0, 1, 0, 0, 0, 0, "Historical Bytes" },
   { 0x0065, 1,    0, 1, 0, 0, 0, 0, "Cardholder Related Data"},
   { 0x005B, 0, 0x65, 0, 0, 0, 0, 0, "Name" },
@@ -110,14 +113,15 @@ static struct {
   { 0x00CD, 0, 0x6E, 1, 0, 0, 0, 0, "Generation time" },
   { 0x007A, 1,    0, 1, 0, 0, 0, 0, "Security Support Template" },
   { 0x0093, 0, 0x7A, 1, 1, 0, 0, 0, "Digital Signature Counter" },
-  { 0x0101, 0,    0, 0, 0, 0, 0, 0, "Private DO 1"},
-  { 0x0102, 0,    0, 0, 0, 0, 0, 0, "Private DO 2"},
-  { 0x0103, 0,    0, 0, 0, 0, 0, 0, "Private DO 3"},
-  { 0x0104, 0,    0, 0, 0, 0, 0, 0, "Private DO 4"},
+  { 0x0101, 0,    0, 0, 0, 0, 0, 2, "Private DO 1"},
+  { 0x0102, 0,    0, 0, 0, 0, 0, 2, "Private DO 2"},
+  { 0x0103, 0,    0, 0, 0, 0, 0, 2, "Private DO 3"},
+  { 0x0104, 0,    0, 0, 0, 0, 0, 2, "Private DO 4"},
   { 0x7F21, 1,    0, 1, 0, 0, 0, 1, "Cardholder certificate"},
   /* V3.0 */
   { 0x7F74, 0,    0, 1, 0, 0, 0, 0, "General Feature Management"},
   { 0x00D5, 0,    0, 1, 0, 0, 0, 0, "AES key data"},
+  { 0x00F9, 0,    0, 1, 0, 0, 0, 0, "KDF data object"},
   { 0 }
 };
 
@@ -185,18 +189,25 @@ struct app_local_s {
   /* Keep track of extended card capabilities.  */
   struct
   {
-    unsigned int is_v2:1;              /* This is a v2.0 compatible card.  */
-    unsigned int sm_supported:1;       /* Secure Messaging is supported.  */
+    unsigned int is_v2:1;              /* Compatible to v2 or later.        */
+    unsigned int extcap_v3:1;          /* Extcap is in v3 format.           */
+    unsigned int has_button:1;         /* Has confirmation button or not.   */
+
+    unsigned int sm_supported:1;       /* Secure Messaging is supported.    */
     unsigned int get_challenge:1;
     unsigned int key_import:1;
     unsigned int change_force_chv:1;
     unsigned int private_dos:1;
     unsigned int algo_attr_change:1;   /* Algorithm attributes changeable.  */
-    unsigned int has_decrypt:1;        /* Support symmetric decryption.  */
-    unsigned int has_button:1;
-    unsigned int sm_algo:2;            /* Symmetric crypto algo for SM.  */
+    unsigned int has_decrypt:1;        /* Support symmetric decryption.     */
+    unsigned int kdf_do:1;                /* Support KDF DO.                */
+
+    unsigned int sm_algo:2;            /* Symmetric crypto algo for SM.     */
+    unsigned int pin_blk2:1;           /* PIN block 2 format supported.     */
+    unsigned int mse:1;                /* MSE command supported.            */
     unsigned int max_certlen_3:16;
-    unsigned int max_get_challenge:16; /* Maximum size for get_challenge.  */
+    unsigned int max_get_challenge:16; /* Maximum size for get_challenge.   */
+    unsigned int max_special_do:16;    /* Maximum size for special DOs.     */
   } extcap;
 
   /* Flags used to control the application.  */
@@ -323,14 +334,22 @@ get_cached_data (app_t app, int tag,
     }
 
   if (try_extlen && app->app_local->cardcap.ext_lc_le)
-    exmode = app->app_local->extcap.max_certlen_3;
+    {
+      if (try_extlen == 1)
+        exmode = app->app_local->extcap.max_certlen_3;
+      else if (try_extlen == 2 && app->app_local->extcap.extcap_v3)
+        exmode = app->app_local->extcap.max_special_do;
+      else
+        exmode = 0;
+    }
   else
     exmode = 0;
 
   err = iso7816_get_data (app->slot, exmode, tag, &p, &len);
   if (err)
     return err;
-  *result = p;
+  if (len)
+    *result = p;
   *resultlen = len;
 
   /* Check whether we should cache this object. */
@@ -352,7 +371,10 @@ get_cached_data (app_t app, int tag,
   c = xtrymalloc (sizeof *c + len);
   if (c)
     {
-      memcpy (c->data, p, len);
+      if (len)
+        memcpy (c->data, p, len);
+      else
+        xfree (p);
       c->length = len;
       c->tag = tag;
       c->next = app->app_local->cache;
@@ -619,7 +641,7 @@ count_bits (const unsigned char *a, size_t len)
     The lsb is here the rightmost bit.  Defined flags bits are:
 
       Bit 0 = CHV1 and CHV2 are not syncronized
-      Bit 1 = CHV2 has been been set to the default PIN of "123456"
+      Bit 1 = CHV2 has been set to the default PIN of "123456"
               (this implies that bit 0 is also set).
 
     P=<pinpad-request>
@@ -926,8 +948,8 @@ determine_rsa_response (app_t app, int keyno)
   int size;
 
   size = 2 + 3 /* header */
-    + 4 /* tag+len */ + app->app_local->keyattr[keyno].rsa.n_bits/8
-    + 2 /* tag+len */ + app->app_local->keyattr[keyno].rsa.e_bits/8;
+    + 4 /* tag+len */ + (app->app_local->keyattr[keyno].rsa.n_bits+7)/8
+    + 2 /* tag+len */ + (app->app_local->keyattr[keyno].rsa.e_bits+7)/8;
 
   return size;
 }
@@ -963,6 +985,7 @@ do_getattr (app_t app, ctrl_t ctrl, const char *name)
     { "PRIVATE-DO-4", 0x0104 },
     { "$AUTHKEYID",   0x0000, -3 },
     { "$DISPSERIALNO",0x0000, -4 },
+    { "KDF",          0x00F9 },
     { NULL, 0 }
   };
   int idx, i, rc;
@@ -995,7 +1018,7 @@ do_getattr (app_t app, ctrl_t ctrl, const char *name)
 
       snprintf (tmp, sizeof tmp,
                 "gc=%d ki=%d fc=%d pd=%d mcl3=%u aac=%d "
-                "sm=%d si=%u dec=%d bt=%d",
+                "sm=%d si=%u dec=%d bt=%d kdf=%d",
                 app->app_local->extcap.get_challenge,
                 app->app_local->extcap.key_import,
                 app->app_local->extcap.change_force_chv,
@@ -1009,7 +1032,8 @@ do_getattr (app_t app, ctrl_t ctrl, const char *name)
                  : 0),
                 app->app_local->status_indicator,
                 app->app_local->extcap.has_decrypt,
-                app->app_local->extcap.has_button);
+                app->app_local->extcap.has_button,
+                app->app_local->extcap.kdf_do);
       send_status_info (ctrl, table[idx].name, tmp, strlen (tmp), NULL, 0);
       return 0;
     }
@@ -1081,6 +1105,104 @@ do_getattr (app_t app, ctrl_t ctrl, const char *name)
     }
   return rc;
 }
+
+
+/* Return the DISP-NAME without any padding characters.  Caller must
+ * free the result.  If not found or empty NULL is returned.  */
+static char *
+get_disp_name (app_t app)
+{
+  int rc;
+  void *relptr;
+  unsigned char *value;
+  size_t valuelen;
+  char *string;
+  char *p, *given;
+  char *result;
+
+  relptr = get_one_do (app, 0x005B, &value, &valuelen, &rc);
+  if (!relptr)
+    return NULL;
+
+  string = xtrymalloc (valuelen + 1);
+  if (!string)
+    {
+      xfree (relptr);
+      return NULL;
+    }
+  memcpy (string, value, valuelen);
+  string[valuelen] = 0;
+  xfree (relptr);
+
+  /* Swap surname and given name.  */
+  given = strstr (string, "<<");
+  for (p = string; *p; p++)
+    if (*p == '<')
+      *p = ' ';
+
+  if (given && given[2])
+    {
+      *given = 0;
+      given += 2;
+      result = strconcat (given, " ", string, NULL);
+    }
+  else
+    {
+      result = string;
+      string = NULL;
+    }
+
+  xfree (string);
+  return result;
+}
+
+
+/* Return the pretty formatted serialnumber.  On error NULL is
+ * returned.  */
+static char *
+get_disp_serialno (app_t app)
+{
+  char *serial = app_get_serialno (app);
+
+  /* For our OpenPGP cards we do not want to show the entire serial
+   * number but a nicely reformatted actual serial number.  */
+  if (serial && strlen (serial) > 16+12)
+    {
+      memmove (serial, serial+16, 4);
+      serial[4] = ' ';
+      /* memmove (serial+5, serial+20, 4); */
+      /* serial[9] = ' '; */
+      /* memmove (serial+10, serial+24, 4); */
+      /* serial[14] = 0; */
+      memmove (serial+5, serial+20, 8);
+      serial[13] = 0;
+    }
+  return serial;
+}
+
+
+/* Return the number of remaining tries for the standard or the admin
+ * pw.  Returns -1 on card error.  */
+static int
+get_remaining_tries (app_t app, int adminpw)
+{
+  void *relptr;
+  unsigned char *value;
+  size_t valuelen;
+  int remaining;
+
+  relptr = get_one_do (app, 0x00C4, &value, &valuelen, NULL);
+  if (!relptr || valuelen < 7)
+    {
+      log_error (_("error retrieving CHV status from card\n"));
+      xfree (relptr);
+      return -1;
+    }
+  remaining = value[adminpw? 6 : 4];
+  xfree (relptr);
+  return remaining;
+}
+
 
 /* Retrieve the fingerprint from the card inserted in SLOT and write
    the according hex representation to FPR.  Caller must have provide
@@ -1182,7 +1304,6 @@ retrieve_key_material (FILE *fp, const char *hexkeyid,
 
       if ( strcmp (fields[0], "pkd") )
         continue; /* Not a key data record.  */
-      i = 0; /* Avoid erroneous compiler warning. */
       if ( nfields < 4 || (i = atoi (fields[1])) < 0 || i > 1
            || (!i && m_new) || (i && e_new))
         {
@@ -1491,7 +1612,7 @@ read_public_key (app_t app, ctrl_t ctrl, u32 created_at, int keyno,
 }
 
 
-/* Get the public key for KEYNO and store it as an S-expresion with
+/* Get the public key for KEYNO and store it as an S-expression with
    the APP handle.  On error that field gets cleared.  If we already
    know about the public key we will just return.  Note that this does
    not mean a key is available; this is solely indicated by the
@@ -1499,7 +1620,7 @@ read_public_key (app_t app, ctrl_t ctrl, u32 created_at, int keyno,
 
    Note that GnuPG 1.x does not need this and it would be too time
    consuming to send it just for the fun of it. However, given that we
-   use the same code in gpg 1.4, we can't use the gcry S-expresion
+   use the same code in gpg 1.4, we can't use the gcry S-expression
    here but need to open encode it. */
 #if GNUPG_MAJOR_VERSION > 1
 static gpg_error_t
@@ -1706,6 +1827,8 @@ do_learn_status (app_t app, ctrl_t ctrl, unsigned int flags)
   do_getattr (app, ctrl, "CA-FPR");
   do_getattr (app, ctrl, "CHV-STATUS");
   do_getattr (app, ctrl, "SIG-COUNTER");
+  if (app->app_local->extcap.kdf_do)
+    do_getattr (app, ctrl, "KDF");
   if (app->app_local->extcap.private_dos)
     {
       do_getattr (app, ctrl, "PRIVATE-DO-1");
@@ -1874,7 +1997,131 @@ check_pinpad_request (app_t app, pininfo_t *pininfo, int admin_pin)
 }
 
 
-/* Verify a CHV either using using the pinentry or if possible by
+/* Return a string with information about the card for use in a
+ * prompt.  Returns NULL on memory failure.  */
+static char *
+get_prompt_info (app_t app, int chvno, unsigned long sigcount, int remaining)
+{
+  char *serial, *disp_name, *rembuf, *tmpbuf, *result;
+
+  serial = get_disp_serialno (app);
+  if (!serial)
+    return NULL;
+
+  disp_name = get_disp_name (app);
+  if (chvno == 1)
+    {
+      /* TRANSLATORS: Put a \x1f right before a colon.  This can be
+       * used by pinentry to nicely align the names and values.  Keep
+       * the %s at the start and end of the string.  */
+      result = xtryasprintf (_("%s"
+                               "Number\x1f: %s%%0A"
+                               "Holder\x1f: %s%%0A"
+                               "Counter\x1f: %lu"
+                               "%s"),
+                             "\x1e",
+                             serial,
+                             disp_name? disp_name:"",
+                             sigcount,
+                             "");
+    }
+  else
+    {
+      result = xtryasprintf (_("%s"
+                               "Number\x1f: %s%%0A"
+                               "Holder\x1f: %s"
+                               "%s"),
+                             "\x1e",
+                             serial,
+                             disp_name? disp_name:"",
+                             "");
+    }
+  xfree (disp_name);
+  xfree (serial);
+
+  if (remaining != -1)
+    {
+      /* TRANSLATORS: This is the number of remaining attempts to
+       * enter a PIN.  Use %%0A (double-percent,0A) for a linefeed. */
+      rembuf = xtryasprintf (_("Remaining attempts: %d"), remaining);
+      if (!rembuf)
+        {
+          xfree (result);
+          return NULL;
+        }
+      tmpbuf = strconcat (result, "%0A%0A", rembuf, NULL);
+      xfree (rembuf);
+      if (!tmpbuf)
+        {
+          xfree (result);
+          return NULL;
+        }
+      xfree (result);
+      result = tmpbuf;
+    }
+
+  return result;
+}
+
+#define KDF_DATA_LENGTH_MIN  90
+#define KDF_DATA_LENGTH_MAX 110
+
+/* Compute hash if KDF-DO is available.  CHVNO must be 0 for reset
+   code, 1 or 2 for user pin and 3 for admin pin.
+ */
+static gpg_error_t
+pin2hash_if_kdf (app_t app, int chvno, char *pinvalue, int *r_pinlen)
+{
+  gpg_error_t err = 0;
+  void *relptr = NULL;
+  unsigned char *buffer;
+  size_t buflen;
+
+  if (app->app_local->extcap.kdf_do
+      && (relptr = get_one_do (app, 0x00F9, &buffer, &buflen, NULL))
+      && buflen >= KDF_DATA_LENGTH_MIN && (buffer[2] == 0x03))
+    {
+      const char *salt;
+      unsigned long s2k_count;
+      char dek[32];
+      int salt_index;
+
+      s2k_count = (((unsigned int)buffer[8] << 24)
+                   | (buffer[9] << 16) | (buffer[10] << 8) | buffer[11]);
+
+      if (buflen == KDF_DATA_LENGTH_MIN)
+        salt_index =14;
+      else if (buflen == KDF_DATA_LENGTH_MAX)
+        salt_index = (chvno==3 ? 34 : (chvno==0 ? 24 : 14));
+      else
+        {
+          err = gpg_error (GPG_ERR_INV_DATA);
+          goto leave;
+        }
+
+      salt = &buffer[salt_index];
+      err = gcry_kdf_derive (pinvalue, strlen (pinvalue),
+                             GCRY_KDF_ITERSALTED_S2K,
+                             DIGEST_ALGO_SHA256, salt, 8,
+                             s2k_count, sizeof (dek), dek);
+      if (!err)
+        {
+          /* pinvalue has a buffer of MAXLEN_PIN+1, 32 is OK.  */
+          *r_pinlen = 32;
+          memcpy (pinvalue, dek, *r_pinlen);
+          wipememory (dek, *r_pinlen);
+        }
+   }
+  else
+    *r_pinlen = strlen (pinvalue);
+
+ leave:
+  xfree (relptr);
+  return err;
+}
+
+
+/* Verify a CHV either using the pinentry or if possible by
    using a pinpad.  PINCB and PINCB_ARG describe the usual callback
    for the pinentry.  CHVNO must be either 1 or 2. SIGCOUNT is only
    used with CHV1.  PINVALUE is the address of a pointer which will
@@ -1887,18 +2134,24 @@ check_pinpad_request (app_t app, pininfo_t *pininfo, int admin_pin)
 static gpg_error_t
 verify_a_chv (app_t app,
               gpg_error_t (*pincb)(void*, const char *, char **),
-              void *pincb_arg,
-              int chvno, unsigned long sigcount, char **pinvalue)
+              void *pincb_arg, int chvno, unsigned long sigcount,
+              char **pinvalue, int *pinlen)
 {
   int rc = 0;
   char *prompt_buffer = NULL;
   const char *prompt;
   pininfo_t pininfo;
   int minlen = 6;
+  int remaining;
 
-  assert (chvno == 1 || chvno == 2);
+  log_assert (chvno == 1 || chvno == 2);
 
   *pinvalue = NULL;
+  *pinlen = 0;
+
+  remaining = get_remaining_tries (app, 0);
+  if (remaining == -1)
+    return gpg_error (GPG_ERR_CARD);
 
   if (chvno == 2 && app->app_local->flags.def_chv2)
     {
@@ -1923,22 +2176,19 @@ verify_a_chv (app_t app,
   pininfo.fixedlen = -1;
   pininfo.minlen = minlen;
 
+  {
+    const char *firstline = _("||Please unlock the card");
+    char *infoblock = get_prompt_info (app, chvno, sigcount,
+                                       remaining < 3? remaining : -1);
 
-  if (chvno == 1)
-    {
-#define PROMPTSTRING  _("||Please enter the PIN%%0A[sigs done: %lu]")
-      size_t promptsize = strlen (PROMPTSTRING) + 50;
-
-      prompt_buffer = xtrymalloc (promptsize);
-      if (!prompt_buffer)
-        return gpg_error_from_syserror ();
-      snprintf (prompt_buffer, promptsize, PROMPTSTRING, sigcount);
+    prompt_buffer = strconcat (firstline, "%0A%0A", infoblock, NULL);
+    if (prompt_buffer)
       prompt = prompt_buffer;
-#undef PROMPTSTRING
-    }
-  else
-    prompt = _("||Please enter the PIN");
+    else
+      prompt = firstline;  /* ENOMEM fallback.  */
 
+    xfree (infoblock);
+  }
 
   if (!opt.disable_pinpad
       && !iso7816_check_pinpad (app->slot, ISO7816_VERIFY, &pininfo)
@@ -1961,7 +2211,7 @@ verify_a_chv (app_t app,
       /* Dismiss the prompt. */
       pincb (pincb_arg, NULL, NULL);
 
-      assert (!*pinvalue);
+      log_assert (!*pinvalue);
     }
   else
     {
@@ -1986,8 +2236,9 @@ verify_a_chv (app_t app,
           return gpg_error (GPG_ERR_BAD_PIN);
         }
 
-      rc = iso7816_verify (app->slot, 0x80+chvno,
-                           *pinvalue, strlen (*pinvalue));
+      rc = pin2hash_if_kdf (app, chvno, *pinvalue, pinlen);
+      if (!rc)
+        rc = iso7816_verify (app->slot, 0x80+chvno, *pinvalue, *pinlen);
     }
 
   if (rc)
@@ -2011,11 +2262,12 @@ verify_chv2 (app_t app,
 {
   int rc;
   char *pinvalue;
+  int pinlen;
 
   if (app->did_chv2)
     return 0;  /* We already verified CHV2.  */
 
-  rc = verify_a_chv (app, pincb, pincb_arg, 2, 0, &pinvalue);
+  rc = verify_a_chv (app, pincb, pincb_arg, 2, 0, &pinvalue, &pinlen);
   if (rc)
     return rc;
   app->did_chv2 = 1;
@@ -2026,7 +2278,7 @@ verify_chv2 (app_t app,
          the card is not configured to require a verification before
          each CHV1 controlled operation (force_chv1) and if we are not
          using the pinpad (PINVALUE == NULL). */
-      rc = iso7816_verify (app->slot, 0x81, pinvalue, strlen (pinvalue));
+      rc = iso7816_verify (app->slot, 0x81, pinvalue, pinlen);
       if (gpg_err_code (rc) == GPG_ERR_BAD_PIN)
         rc = gpg_error (GPG_ERR_PIN_NOT_SYNCED);
       if (rc)
@@ -2049,29 +2301,20 @@ verify_chv2 (app_t app,
 static gpg_error_t
 build_enter_admin_pin_prompt (app_t app, char **r_prompt)
 {
-  void *relptr;
-  unsigned char *value;
-  size_t valuelen;
   int remaining;
   char *prompt;
+  char *infoblock;
 
   *r_prompt = NULL;
 
-  relptr = get_one_do (app, 0x00C4, &value, &valuelen, NULL);
-  if (!relptr || valuelen < 7)
-    {
-      log_error (_("error retrieving CHV status from card\n"));
-      xfree (relptr);
-      return gpg_error (GPG_ERR_CARD);
-    }
-  if (value[6] == 0)
+  remaining = get_remaining_tries (app, 1);
+  if (remaining == -1)
+    return gpg_error (GPG_ERR_CARD);
+  if (!remaining)
     {
       log_info (_("card is permanently locked!\n"));
-      xfree (relptr);
       return gpg_error (GPG_ERR_BAD_PIN);
     }
-  remaining = value[6];
-  xfree (relptr);
 
   log_info (ngettext("%d Admin PIN attempt remaining before card"
                      " is permanently locked\n",
@@ -2079,16 +2322,13 @@ build_enter_admin_pin_prompt (app_t app, char **r_prompt)
                      " is permanently locked\n",
                      remaining), remaining);
 
-  if (remaining < 3)
-    {
-      /* TRANSLATORS: Do not translate the "|A|" prefix but keep it at
-         the start of the string.  Use %%0A to force a linefeed.  */
-      prompt = xtryasprintf (_("|A|Please enter the Admin PIN%%0A"
-                               "[remaining attempts: %d]"), remaining);
-    }
-  else
-    prompt = xtrystrdup (_("|A|Please enter the Admin PIN"));
+  infoblock = get_prompt_info (app, 3, 0, remaining < 3? remaining : -1);
 
+  /* TRANSLATORS: Do not translate the "|A|" prefix but keep it at
+     the start of the string.  Use %0A (single percent) for a linefeed.  */
+  prompt = strconcat (_("|A|Please enter the Admin PIN"),
+                      "%0A%0A", infoblock, NULL);
+  xfree (infoblock);
   if (!prompt)
     return gpg_error_from_syserror ();
 
@@ -2148,6 +2388,7 @@ verify_chv3 (app_t app,
       else
         {
           char *pinvalue;
+          int pinlen;
 
           rc = pincb (pincb_arg, prompt, &pinvalue);
           xfree (prompt);
@@ -2167,7 +2408,9 @@ verify_chv3 (app_t app,
               return gpg_error (GPG_ERR_BAD_PIN);
             }
 
-          rc = iso7816_verify (app->slot, 0x83, pinvalue, strlen (pinvalue));
+          rc = pin2hash_if_kdf (app, 3, pinvalue, &pinlen);
+          if (!rc)
+            rc = iso7816_verify (app->slot, 0x83, pinvalue, pinlen);
           xfree (pinvalue);
         }
 
@@ -2218,6 +2461,7 @@ do_setattr (app_t app, const char *name,
     { "SM-KEY-MAC",   0x00D2, 3, 0, 1 },
     { "KEY-ATTR",     0,      0, 3, 1 },
     { "AESKEY",       0x00D5, 3, 0, 1 },
+    { "KDF",          0x00F9, 3, 4, 1 },
     { NULL, 0 }
   };
   int exmode;
@@ -2265,6 +2509,12 @@ do_setattr (app_t app, const char *name,
     app->force_chv1 = (valuelen && *value == 0);
   else if (table[idx].special == 2)
     parse_login_data (app);
+  else if (table[idx].special == 4)
+    {
+      app->did_chv1 = 0;
+      app->did_chv2 = 0;
+      app->did_chv3 = 0;
+    }
 
   return rc;
 }
@@ -2330,6 +2580,8 @@ do_change_pin (app_t app, ctrl_t ctrl,  const char *chvnostr,
   pininfo_t pininfo;
   int use_pinpad = 0;
   int minlen = 6;
+  int pinlen0 = 0;
+  int pinlen = 0;
 
   (void)ctrl;
   memset (&pininfo, 0, sizeof pininfo);
@@ -2497,7 +2749,7 @@ do_change_pin (app_t app, ctrl_t ctrl,  const char *chvnostr,
       rc = pincb (pincb_arg, set_resetcode? _("|RN|New Reset Code") :
                   chvno == 3? _("|AN|New Admin PIN") : _("|N|New PIN"),
                   &pinvalue);
-      if (rc)
+      if (rc || pinvalue == NULL)
         {
           log_error (_("error getting new PIN: %s\n"), gpg_strerror (rc));
           goto leave;
@@ -2514,10 +2766,17 @@ do_change_pin (app_t app, ctrl_t ctrl,  const char *chvnostr,
         rc = gpg_error_from_syserror ();
       else
         {
-          strcpy (stpcpy (buffer, resetcode), pinvalue);
-          rc = iso7816_reset_retry_counter_with_rc (app->slot, 0x81,
-                                                    buffer, strlen (buffer));
-          wipememory (buffer, strlen (buffer));
+          strcpy (buffer, resetcode);
+          rc = pin2hash_if_kdf (app, 0, buffer, &pinlen0);
+          if (!rc)
+            {
+              strcpy (buffer+pinlen0, pinvalue);
+              rc = pin2hash_if_kdf (app, 0, buffer+pinlen0, &pinlen);
+            }
+          if (!rc)
+            rc = iso7816_reset_retry_counter_with_rc (app->slot, 0x81,
+                                                      buffer, pinlen0+pinlen);
+          wipememory (buffer, pinlen0 + pinlen);
           xfree (buffer);
         }
     }
@@ -2529,16 +2788,19 @@ do_change_pin (app_t app, ctrl_t ctrl,  const char *chvnostr,
           rc = gpg_error (GPG_ERR_BAD_PIN);
         }
       else
-        rc = iso7816_put_data (app->slot, 0, 0xD3,
-                               pinvalue, strlen (pinvalue));
+        {
+          rc = pin2hash_if_kdf (app, 0, pinvalue, &pinlen);
+          if (!rc)
+            rc = iso7816_put_data (app->slot, 0, 0xD3, pinvalue, pinlen);
+        }
     }
   else if (reset_mode)
     {
-      rc = iso7816_reset_retry_counter (app->slot, 0x81,
-                                        pinvalue, strlen (pinvalue));
+      rc = pin2hash_if_kdf (app, 1, pinvalue, &pinlen);
+      if (!rc)
+        rc = iso7816_reset_retry_counter (app->slot, 0x81, pinvalue, pinlen);
       if (!rc && !app->app_local->extcap.is_v2)
-        rc = iso7816_reset_retry_counter (app->slot, 0x82,
-                                          pinvalue, strlen (pinvalue));
+        rc = iso7816_reset_retry_counter (app->slot, 0x82, pinvalue, pinlen);
     }
   else if (!app->app_local->extcap.is_v2)
     {
@@ -2579,14 +2841,20 @@ do_change_pin (app_t app, ctrl_t ctrl,  const char *chvnostr,
           pincb (pincb_arg, NULL, NULL); /* Dismiss the prompt. */
         }
       else
-        rc = iso7816_change_reference_data (app->slot, 0x80 + chvno,
-                                            oldpinvalue, strlen (oldpinvalue),
-                                            pinvalue, strlen (pinvalue));
+	{
+          rc = pin2hash_if_kdf (app, chvno, oldpinvalue, &pinlen0);
+          if (!rc)
+	    rc = pin2hash_if_kdf (app, chvno, pinvalue, &pinlen);
+          if (!rc)
+            rc = iso7816_change_reference_data (app->slot, 0x80 + chvno,
+                                                oldpinvalue, pinlen0,
+                                                pinvalue, pinlen);
+        }
     }
 
   if (pinvalue)
     {
-      wipememory (pinvalue, strlen (pinvalue));
+      wipememory (pinvalue, pinlen);
       xfree (pinvalue);
     }
   if (rc)
@@ -2600,7 +2868,7 @@ do_change_pin (app_t app, ctrl_t ctrl,  const char *chvnostr,
     }
   if (oldpinvalue)
     {
-      wipememory (oldpinvalue, strlen (oldpinvalue));
+      wipememory (oldpinvalue, pinlen0);
       xfree (oldpinvalue);
     }
   return rc;
@@ -2963,21 +3231,33 @@ change_rsa_keyattr (app_t app, int keyno, unsigned int nbits,
   relptr = get_one_do (app, 0xC1+keyno, &buf, &buflen, NULL);
   if (!relptr)
     err = gpg_error (GPG_ERR_CARD);
-  else if (buflen < 6 || buf[0] != PUBKEY_ALGO_RSA)
+  else if (buflen < 6)
     {
-      /* Attriutes too short or not an RSA key.  */
+      /* Attributes too short.  */
       xfree (relptr);
       err = gpg_error (GPG_ERR_CARD);
     }
   else
     {
-      /* We only change n_bits and don't touch anything else.  Before we
-         do so, we round up NBITS to a sensible way in the same way as
-         gpg's key generation does it.  This may help to sort out problems
-         with a few bits too short keys.  */
+      /* If key attribute was RSA, we only change n_bits and don't
+         touch anything else.  Before we do so, we round up NBITS to a
+         sensible way in the same way as gpg's key generation does it.
+         This may help to sort out problems with a few bits too short
+         keys.  */
       nbits = ((nbits + 31) / 32) * 32;
       buf[1] = (nbits >> 8);
       buf[2] = nbits;
+
+      /* If it was not RSA, we need to fill other parts.  */
+      if (buf[0] != PUBKEY_ALGO_RSA)
+        {
+          buf[0] = PUBKEY_ALGO_RSA;
+          buf[3] = 0;
+          buf[4] = 32;
+          buf[5] = 0;
+          buflen = 6;
+        }
+
       err = change_keyattr (app, keyno, buf, buflen, pincb, pincb_arg);
       xfree (relptr);
     }
@@ -3197,8 +3477,7 @@ rsa_writekey (app_t app, gpg_error_t (*pincb)(void*, const char *, char **),
   maxbits = app->app_local->keyattr[keyno].rsa.n_bits;
   nbits = rsa_n? count_bits (rsa_n, rsa_n_len) : 0;
   if (opt.verbose)
-    log_info ("RSA modulus size is %u bits (%u bytes)\n",
-              nbits, (unsigned int)rsa_n_len);
+    log_info ("RSA modulus size is %u bits\n", nbits);
   if (nbits && nbits != maxbits
       && app->app_local->extcap.algo_attr_change)
     {
@@ -4104,11 +4383,12 @@ do_sign (app_t app, const char *keyidstr, int hashalgo,
   log_info (_("signatures created so far: %lu\n"), sigcount);
 
   /* Check CHV if needed.  */
-  if (!app->did_chv1 || app->force_chv1 )
+  if (!app->did_chv1 || app->force_chv1)
     {
       char *pinvalue;
+      int pinlen;
 
-      rc = verify_a_chv (app, pincb, pincb_arg, 1, sigcount, &pinvalue);
+      rc = verify_a_chv (app, pincb, pincb_arg, 1, sigcount, &pinvalue, &pinlen);
       if (rc)
         return rc;
 
@@ -4121,7 +4401,7 @@ do_sign (app_t app, const char *keyidstr, int hashalgo,
          pinpad has been used. */
       if (!app->did_chv2 && pinvalue && !app->app_local->extcap.is_v2)
         {
-          rc = iso7816_verify (app->slot, 0x82, pinvalue, strlen (pinvalue));
+          rc = iso7816_verify (app->slot, 0x82, pinvalue, pinlen);
           if (gpg_err_code (rc) == GPG_ERR_BAD_PIN)
             rc = gpg_error (GPG_ERR_PIN_NOT_SYNCED);
           if (rc)
@@ -4151,6 +4431,9 @@ do_sign (app_t app, const char *keyidstr, int hashalgo,
     }
   rc = iso7816_compute_ds (app->slot, exmode, data, datalen, le_value,
                            outdata, outdatalen);
+  if (!rc && app->force_chv1)
+    app->did_chv1 = 0;
+
   return rc;
 }
 
@@ -4405,19 +4688,43 @@ do_decipher (app_t app, const char *keyidstr,
             }
         }
 
-      fixuplen = 7;
+      n = 0;
+      if (indatalen < 128)
+        fixuplen = 7;
+      else
+        fixuplen = 10;
+
       fixbuf = xtrymalloc (fixuplen + indatalen);
       if (!fixbuf)
         return gpg_error_from_syserror ();
 
       /* Build 'Cipher DO' */
-      fixbuf[0] = '\xa6';
-      fixbuf[1] = (char)(indatalen+5);
-      fixbuf[2] = '\x7f';
-      fixbuf[3] = '\x49';
-      fixbuf[4] = (char)(indatalen+2);
-      fixbuf[5] = '\x86';
-      fixbuf[6] = (char)indatalen;
+      fixbuf[n++] = '\xa6';
+      if (indatalen < 128)
+        fixbuf[n++] = (char)(indatalen+5);
+      else
+        {
+          fixbuf[n++] = 0x81;
+          fixbuf[n++] = (char)(indatalen+7);
+        }
+      fixbuf[n++] = '\x7f';
+      fixbuf[n++] = '\x49';
+      if (indatalen < 128)
+        fixbuf[n++] = (char)(indatalen+2);
+      else
+        {
+          fixbuf[n++] = 0x81;
+          fixbuf[n++] = (char)(indatalen+3);
+        }
+      fixbuf[n++] = '\x86';
+      if (indatalen < 128)
+        fixbuf[n++] = (char)indatalen;
+      else
+        {
+          fixbuf[n++] = 0x81;
+          fixbuf[n++] = (char)indatalen;
+        }
+
       if (old_format_len)
         {
           memset (fixbuf+fixuplen, 0, 32 - old_format_len);
@@ -4587,7 +4894,14 @@ do_check_pin (app_t app, const char *keyidstr,
 static void
 show_caps (struct app_local_s *s)
 {
-  log_info ("Version-2 ......: %s\n", s->extcap.is_v2? "yes":"no");
+  log_info ("Version-2+ .....: %s\n", s->extcap.is_v2? "yes":"no");
+  log_info ("Extcap-v3 ......: %s\n", s->extcap.extcap_v3? "yes":"no");
+  log_info ("Button .........: %s\n", s->extcap.has_button? "yes":"no");
+
+  log_info ("SM-Support .....: %s", s->extcap.sm_supported? "yes":"no");
+  if (s->extcap.sm_supported)
+    log_printf (" (%s)", s->extcap.sm_algo==2? "3DES":
+                (s->extcap.sm_algo==2? "AES-128" : "AES-256"));
   log_info ("Get-Challenge ..: %s", s->extcap.get_challenge? "yes":"no");
   if (s->extcap.get_challenge)
     log_printf (" (%u bytes max)", s->extcap.max_get_challenge);
@@ -4595,16 +4909,18 @@ show_caps (struct app_local_s *s)
   log_info ("Change-Force-PW1: %s\n", s->extcap.change_force_chv? "yes":"no");
   log_info ("Private-DOs ....: %s\n", s->extcap.private_dos? "yes":"no");
   log_info ("Algo-Attr-Change: %s\n", s->extcap.algo_attr_change? "yes":"no");
-  log_info ("SM-Support .....: %s", s->extcap.sm_supported? "yes":"no");
-  if (s->extcap.sm_supported)
-    log_printf (" (%s)", s->extcap.sm_algo==2? "3DES":
-                (s->extcap.sm_algo==2? "AES-128" : "AES-256"));
+  log_info ("Symmetric Crypto: %s\n", s->extcap.has_decrypt? "yes":"no");
+  log_info ("KDF-Support ....: %s\n", s->extcap.kdf_do? "yes":"no");
   log_info ("Max-Cert3-Len ..: %u\n", s->extcap.max_certlen_3);
+  if (s->extcap.extcap_v3)
+    {
+      log_info ("PIN-Block-2 ....: %s\n", s->extcap.pin_blk2? "yes":"no");
+      log_info ("MSE-Support ....: %s\n", s->extcap.mse? "yes":"no");
+      log_info ("Max-Special-DOs : %u\n", s->extcap.max_special_do);
+    }
   log_info ("Cmd-Chaining ...: %s\n", s->cardcap.cmd_chaining?"yes":"no");
   log_info ("Ext-Lc-Le ......: %s\n", s->cardcap.ext_lc_le?"yes":"no");
-  log_info ("Status Indicator: %02X\n", s->status_indicator);
-  log_info ("Symmetric crypto: %s\n", s->extcap.has_decrypt? "yes":"no");
-  log_info ("Button..........: %s\n", s->extcap.has_button? "yes":"no");
+  log_info ("Status-Indicator: %02X\n", s->status_indicator);
 
   log_info ("GnuPG-No-Sync ..: %s\n",  s->flags.no_sync? "yes":"no");
   log_info ("GnuPG-Def-PW2 ..: %s\n",  s->flags.def_chv2? "yes":"no");
@@ -4853,6 +5169,8 @@ app_select_openpgp (app_t app)
       if (app->card_version >= 0x0200)
         app->app_local->extcap.is_v2 = 1;
 
+      if (app->card_version >= 0x0300)
+        app->app_local->extcap.extcap_v3 = 1;
 
       /* Read the historical bytes.  */
       relptr = get_one_do (app, 0x5f52, &buffer, &buflen, NULL);
@@ -4895,14 +5213,24 @@ app_select_openpgp (app_t app)
           app->app_local->extcap.private_dos      = !!(*buffer & 0x08);
           app->app_local->extcap.algo_attr_change = !!(*buffer & 0x04);
           app->app_local->extcap.has_decrypt      = !!(*buffer & 0x02);
+          app->app_local->extcap.kdf_do           = !!(*buffer & 0x01);
         }
       if (buflen >= 10)
         {
-          /* Available with v2 cards.  */
+          /* Available with cards of v2 or later.  */
           app->app_local->extcap.sm_algo = buffer[1];
           app->app_local->extcap.max_get_challenge
                                                = (buffer[2] << 8 | buffer[3]);
           app->app_local->extcap.max_certlen_3 = (buffer[4] << 8 | buffer[5]);
+
+          /* Interpretation is different between v2 and v3, unfortunately.  */
+          if (app->app_local->extcap.extcap_v3)
+            {
+              app->app_local->extcap.max_special_do
+                = (buffer[6] << 8 | buffer[7]);
+              app->app_local->extcap.pin_blk2 = !!(buffer[8] & 0x01);
+              app->app_local->extcap.mse= !!(buffer[9] & 0x01);
+            }
         }
       xfree (relptr);
 

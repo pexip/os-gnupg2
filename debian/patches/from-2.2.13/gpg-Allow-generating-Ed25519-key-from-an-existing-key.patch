@@ -1,0 +1,29 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Wed, 30 Jan 2019 11:28:14 +0100
+Subject: gpg: Allow generating Ed25519 key from an existing key.
+
+* g10/misc.c (map_pk_gcry_to_openpgp): Add EdDSA mapping.
+--
+
+Due to this missing mapping a "gpg --export --full-gen-key" with
+selection "13 - Existing key" did not worked for an ed25519 key.
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 346a98fabe03adf2e202e36fc2aa24b1c2571154)
+(cherry picked from commit 31d2a1eecaee766919b18bc42b918d9168f601f8)
+---
+ g10/misc.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/g10/misc.c b/g10/misc.c
+index d9ebf48..8144471 100644
+--- a/g10/misc.c
++++ b/g10/misc.c
+@@ -508,6 +508,7 @@ map_pk_gcry_to_openpgp (enum gcry_pk_algos algo)
+ {
+   switch (algo)
+     {
++    case GCRY_PK_EDDSA:  return PUBKEY_ALGO_EDDSA;
+     case GCRY_PK_ECDSA:  return PUBKEY_ALGO_ECDSA;
+     case GCRY_PK_ECDH:   return PUBKEY_ALGO_ECDH;
+     default: return algo < 110 ? (pubkey_algo_t)algo : 0;

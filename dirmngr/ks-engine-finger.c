@@ -26,7 +26,7 @@
 
 #include "dirmngr.h"
 #include "misc.h"
-#include "userids.h"
+#include "../common/userids.h"
 #include "ks-engine.h"
 
 /* Print a help output for the schemata supported by this module. */
@@ -83,7 +83,10 @@ ks_finger_fetch (ctrl_t ctrl, parsed_uri_t uri, estream_t *r_fp)
   *server++ = 0;
 
   err = http_raw_connect (&http, server, 79,
-                          (opt.use_tor? HTTP_FLAG_FORCE_TOR : 0), NULL);
+                          ((dirmngr_use_tor ()? HTTP_FLAG_FORCE_TOR : 0)
+                           | (opt.disable_ipv4? HTTP_FLAG_IGNORE_IPv4 : 0)
+                           | (opt.disable_ipv6? HTTP_FLAG_IGNORE_IPv6 : 0)),
+                          NULL, ctrl->timeout);
   if (err)
     {
       xfree (name);

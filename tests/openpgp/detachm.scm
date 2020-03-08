@@ -17,7 +17,7 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
-(load (with-path "defs.scm"))
+(load (in-srcdir "tests" "openpgp" "defs.scm"))
 (setup-legacy-environment)
 
 (define files (append plain-files data-files))
@@ -33,4 +33,4 @@
 			      (pipe:open file (logior O_RDONLY O_BINARY))
 			      (pipe:splice sink)))
 			   files)))
-   (pipe:spawn `(,@GPG --yes ,tmp))))
+   (pipe:spawn `(,@GPG --yes --verify ,tmp -))))

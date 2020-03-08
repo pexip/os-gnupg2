@@ -168,13 +168,13 @@ Note that such a comment will be removed if the git commit option
     that the freed variable is not anymore used, explicitly set the
     variable to NULL.
   - New code shall in general use xtrymalloc or xtrycalloc and check
-    for an error (use gpg_error_from_errno()).
+    for an error (use gpg_error_from_syserror()).
   - Init function local variables only if needed so that the compiler
     can do a better job in detecting uninitialized variables which may
     indicate a problem with the code.
   - Never init static or file local variables to 0 to make sure they
     end up in BSS.
-  - But extra parenthesis around terms with binary operators to make
+  - Put extra parenthesis around terms with binary operators to make
     it clear that the binary operator was indeed intended.
   - Use --enable-maintainer-mode with configure so that all suitable
     warnings are enabled.
@@ -224,6 +224,7 @@ Note that such a comment will be removed if the git commit option
   - CVE-id :: CVE id number pertaining to this commit.
   - Regression-due-to :: Commit id of the regression fixed by this commit.
   - Fixes-commit :: Commit id this commit fixes.
+  - Updates-commit :: Commit id this commit updates.
   - Reported-by :: Value is a name or mail address of a bug reporte.
   - Suggested-by :: Value is a name or mail address of someone how
                     suggested this change.
@@ -348,7 +349,7 @@ Note that such a comment will be removed if the git commit option
   - g10/mdfilter.c :: Filter to calculate hashs
   - g10/textfilter.c :: Filter to handle CR/LF and trailing white space
   - g10/cipher.c   :: En-/Decryption filter
-  - g10/misc.c     :: Utlity functions
+  - g10/misc.c     :: Utility functions
   - g10/options.h  :: Structure with all the command line options
                       and related constants
   - g10/openfile.c :: Create/Open Files
@@ -358,7 +359,7 @@ Note that such a comment will be removed if the git commit option
 
   - g10/pubkey-enc.c :: Process a public key encoded packet.
   - g10/seckey-cert.c :: Not anymore used
-  - g10/seskey.c     :: Make sesssion keys etc.
+  - g10/seskey.c     :: Make session keys etc.
   - g10/import.c     :: Import keys into our key storage.
   - g10/export.c     :: Export keys to the OpenPGP format.
   - g10/sign.c       :: Create signature and optionally encrypt.

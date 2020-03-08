@@ -78,7 +78,7 @@ struct dns_addrinfo_s
   int socktype;
   int protocol;
   int addrlen;
-  struct sockaddr addr[1];
+  struct sockaddr_storage addr[1];
 };
 
 
@@ -94,6 +94,14 @@ struct srventry
 
 /* Set verbosity and debug mode for this module. */
 void set_dns_verbose (int verbose, int debug);
+
+/* Set the Disable-IPv4 flag so that the name resolver does not return
+ * A addresses.  */
+void set_dns_disable_ipv4 (int yes);
+
+/* Set the Disable-IPv6 flag so that the name resolver does not return
+ * AAAA addresses.  */
+void set_dns_disable_ipv6 (int yes);
 
 /* Set the timeout for libdns requests to SECONDS.  */
 void set_dns_timeout (int seconds);
@@ -116,6 +124,7 @@ int recursive_resolver_p (void);
 /* Put this module eternally into Tor mode.  When called agained with
  * NEW_CIRCUIT request a new TOR circuit for the next DNS query.  */
 void enable_dns_tormode (int new_circuit);
+void disable_dns_tormode (void);
 
 /* Change the default IP address of the nameserver to IPADDR.  The
    address needs to be a numerical IP address and will be used for the
@@ -133,7 +142,7 @@ gpg_error_t resolve_dns_name (const char *name, unsigned short port,
                               dns_addrinfo_t *r_dai, char **r_canonname);
 
 /* Function similar to getnameinfo.  */
-gpg_error_t resolve_dns_addr (const struct sockaddr *addr, int addrlen,
+gpg_error_t resolve_dns_addr (const struct sockaddr_storage *addr, int addrlen,
                               unsigned int flags, char **r_name);
 
 /* Return true if NAME is a numerical IP address.  */
@@ -145,7 +154,7 @@ int is_onion_address (const char *name);
 /* Get the canonical name for NAME.  */
 gpg_error_t get_dns_cname (const char *name, char **r_cname);
 
-/* Return a CERT record or an arbitray RR.  */
+/* Return a CERT record or an arbitrary RR.  */
 gpg_error_t get_dns_cert (const char *name, int want_certtype,
                           void **r_key, size_t *r_keylen,
                           unsigned char **r_fpr, size_t *r_fprlen,

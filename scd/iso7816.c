@@ -32,8 +32,8 @@
 #include "options.h"
 #include "errors.h"
 #include "memory.h"
-#include "util.h"
-#include "i18n.h"
+#include "../common/util.h"
+#include "../common/i18n.h"
 #else /* GNUPG_MAJOR_VERSION != 1 */
 #include "scdaemon.h"
 #endif /* GNUPG_MAJOR_VERSION != 1 */
@@ -138,8 +138,7 @@ iso7816_select_application (int slot, const char *aid, size_t aidlen,
 
 
 gpg_error_t
-iso7816_select_file (int slot, int tag, int is_dir,
-                     unsigned char **result, size_t *resultlen)
+iso7816_select_file (int slot, int tag, int is_dir)
 {
   int sw, p0, p1;
   unsigned char tagbuf[2];
@@ -147,40 +146,21 @@ iso7816_select_file (int slot, int tag, int is_dir,
   tagbuf[0] = (tag >> 8) & 0xff;
   tagbuf[1] = tag & 0xff;
 
-  if (result || resultlen)
-    {
-      *result = NULL;
-      *resultlen = 0;
-      return gpg_error (GPG_ERR_NOT_IMPLEMENTED);
-    }
-  else
-    {
-      p0 = (tag == 0x3F00)? 0: is_dir? 1:2;
-      p1 = 0x0c; /* No FC return. */
-      sw = apdu_send_simple (slot, 0, 0x00, CMD_SELECT_FILE,
-                             p0, p1, 2, (char*)tagbuf );
-      return map_sw (sw);
-    }
-
-  return 0;
+  p0 = (tag == 0x3F00)? 0: is_dir? 1:2;
+  p1 = 0x0c; /* No FC return. */
+  sw = apdu_send_simple (slot, 0, 0x00, CMD_SELECT_FILE,
+                         p0, p1, 2, (char*)tagbuf );
+  return map_sw (sw);
 }
 
 
 /* Do a select file command with a direct path. */
 gpg_error_t
-iso7816_select_path (int slot, const unsigned short *path, size_t pathlen,
-                     unsigned char **result, size_t *resultlen)
+iso7816_select_path (int slot, const unsigned short *path, size_t pathlen)
 {
   int sw, p0, p1;
   unsigned char buffer[100];
   int buflen;
-
-  if (result || resultlen)
-    {
-      *result = NULL;
-      *resultlen = 0;
-      return gpg_error (GPG_ERR_NOT_IMPLEMENTED);
-    }
 
   if (pathlen/2 >= sizeof buffer)
     return gpg_error (GPG_ERR_TOO_LARGE);
@@ -224,7 +204,7 @@ iso7816_list_directory (int slot, int list_dirs,
 }
 
 
-/* This funcion sends an already formatted APDU to the card.  With
+/* This function sends an already formatted APDU to the card.  With
    HANDLE_MORE set to true a MORE DATA status will be handled
    internally.  The return value is a gpg error code (i.e. a mapped
    status word).  This is basically the same as apdu_send_direct but

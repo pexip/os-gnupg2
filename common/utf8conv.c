@@ -4,8 +4,8 @@
  *
  * This file is part of GnuPG.
  *
- * GnuPG is free software; you can redistribute it and/or modify it
- * under the terms of either
+ * GnuPG is free software; you can redistribute and/or modify this
+ * part of GnuPG under the terms of either
  *
  *   - the GNU Lesser General Public License as published by the Free
  *     Software Foundation; either version 3 of the License, or (at
@@ -160,7 +160,7 @@ set_native_charset (const char *newset)
       const char *aliases;
 
       /* We are a console program thus we need to use the
-         GetConsoleOutputCP function and not the the GetACP which
+         GetConsoleOutputCP function and not the GetACP which
          would give the codepage for a GUI program.  Note this is not
          a bulletproof detection because GetConsoleCP might return a
          different one for console input.  Not sure how to cope with

@@ -1,0 +1,51 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Tue, 5 Mar 2019 12:39:11 +0100
+Subject: gpg: Make invalid primary key algos obvious in key listings.
+
+* g10/keylist.c (print_key_line): Print a warning for invalid algos.
+--
+
+Non-OpenPGP compliant keys now show a warning flag on the sec or pub
+line like in:
+
+  gpg: can't encode a 256 bit MD into a 88 bits frame, algo=8
+  sec   cv25519 2019-01-30 [INVALID_ALGO]
+        4239F3D606A19258E7A88C3F9A3F4F909C5034C5
+  uid           [ultimate] ffffff
+
+Instead of showing the usage flags "[CE]".  Without this patch only
+the error message is printed and the reason for it was not immediately
+obvious (cv25519 is encryption only but we always consider the primary
+key as having the "C" flag).
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit db87132b10664718b7db6ec1dad584b54d1fb265)
+(cherry picked from commit d2a7f9078a4673ec53733e4f69fd17a8f1ac962d)
+---
+ g10/keylist.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/g10/keylist.c b/g10/keylist.c
+index 262ea8d..7b3fde1 100644
+--- a/g10/keylist.c
++++ b/g10/keylist.c
+@@ -2059,10 +2059,18 @@ print_key_line (ctrl_t ctrl, estream_t fp, PKT_public_key *pk, int secret)
+     tty_fprintf (fp, "/%s", keystr_from_pk (pk));
+   tty_fprintf (fp, " %s", datestr_from_pk (pk));
+ 
+-  if ((opt.list_options & LIST_SHOW_USAGE))
++  if (pk->flags.primary
++      && !(openpgp_pk_algo_usage (pk->pubkey_algo)
++           & (PUBKEY_USAGE_CERT| PUBKEY_USAGE_SIG|PUBKEY_USAGE_AUTH)))
++    {
++      /* A primary key which is really not capable to sign.  */
++      tty_fprintf (fp, " [INVALID_ALGO]");
++    }
++  else if ((opt.list_options & LIST_SHOW_USAGE))
+     {
+       tty_fprintf (fp, " [%s]", usagestr_from_pk (pk, 0));
+     }
++
+   if (pk->flags.revoked)
+     {
+       tty_fprintf (fp, " [");

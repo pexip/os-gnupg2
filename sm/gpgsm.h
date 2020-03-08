@@ -33,6 +33,8 @@
 #include "../common/status.h"
 #include "../common/audit.h"
 #include "../common/session-env.h"
+#include "../common/ksba-io-support.h"
+#include "../common/compliance.h"
 
 
 #define MAX_DIGEST_LEN 64
@@ -84,6 +86,7 @@ struct
   int with_keygrip; /* Option --with-keygrip active.  */
 
   int pinentry_mode;
+  int request_origin;
 
   int armor;        /* force base64 armoring (see also ctrl.with_base64) */
   int no_armor;     /* don't try to figure out whether data is base64 armored*/
@@ -143,6 +146,7 @@ struct
      OID per string.  */
   strlist_t ignored_cert_extensions;
 
+  enum gnupg_compliance_mode compliance;
 } opt;
 
 /* Debug values and macros.  */
@@ -205,10 +209,6 @@ struct server_control_s
 };
 
 
-/* Data structure used in base64.c. */
-typedef struct base64_context_s *Base64Context;
-
-
 /* An object to keep a list of certificates. */
 struct certlist_s
 {
@@ -260,19 +260,6 @@ unsigned char *gpgsm_get_keygrip (ksba_cert_t cert, unsigned char *array);
 char *gpgsm_get_keygrip_hexstring (ksba_cert_t cert);
 int  gpgsm_get_key_algo_info (ksba_cert_t cert, unsigned int *nbits);
 char *gpgsm_get_certid (ksba_cert_t cert);
-
-
-/*-- base64.c --*/
-int  gpgsm_create_reader (Base64Context *ctx,
-                          ctrl_t ctrl, estream_t fp, int allow_multi_pem,
-                          ksba_reader_t *r_reader);
-int gpgsm_reader_eof_seen (Base64Context ctx);
-void gpgsm_destroy_reader (Base64Context ctx);
-int  gpgsm_create_writer (Base64Context *ctx,
-                          ctrl_t ctrl, estream_t stream,
-                          ksba_writer_t *r_writer);
-int  gpgsm_finish_writer (Base64Context ctx);
-void gpgsm_destroy_writer (Base64Context ctx);
 
 
 /*-- certdump.c --*/
@@ -342,7 +329,7 @@ int gpgsm_add_to_certlist (ctrl_t ctrl, const char *name, int secret,
                            certlist_t *listaddr, int is_encrypt_to);
 void gpgsm_release_certlist (certlist_t list);
 int gpgsm_find_cert (ctrl_t ctrl, const char *name, ksba_sexp_t keyid,
-                     ksba_cert_t *r_cert);
+                     ksba_cert_t *r_cert, int allow_ambiguous);
 
 /*-- keylist.c --*/
 gpg_error_t gpgsm_list_keys (ctrl_t ctrl, strlist_t names,

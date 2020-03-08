@@ -1,0 +1,63 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Tue, 14 May 2019 00:05:42 -0400
+Subject: agent: correct length for uri and comment on 64-bit big-endian
+ platforms
+
+* agent/findkey.c (agent_public_key_from_file): pass size_t as int to
+gcry_sexp_build_array's %b.
+
+--
+
+This is only a problem on big-endian systems where size_t is not the
+same size as an int.  It was causing failures on debian's s390x,
+powerpc64, and sparc64 platforms.
+
+There may well be other failures with %b on those platforms in the
+codebase, and it probably needs an audit.
+
+Once you have a key in private-keys-v1.d/$KEYGRIP.key with a comment
+or a uri of reasonable length associated with it, this fix can be
+tested with:
+
+   gpg-agent --server <<<"READKEY $KEYGRIP"
+
+On the failing platforms, the printed comment will be of length 0.
+
+Gnupg-bug-id: 4501
+Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+(cherry picked from commit 110932925ba8e0169da18d7774440f8d1fd8a344)
+---
+ agent/findkey.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/agent/findkey.c b/agent/findkey.c
+index 89a18fa..bdb6ab4 100644
+--- a/agent/findkey.c
++++ b/agent/findkey.c
+@@ -1230,6 +1230,7 @@ agent_public_key_from_file (ctrl_t ctrl,
+   gcry_sexp_t uri_sexp, comment_sexp;
+   const char *uri, *comment;
+   size_t uri_length, comment_length;
++  int uri_intlen, comment_intlen;
+   char *format, *p;
+   void *args[2+7+2+2+1]; /* Size is 2 + max. # of elements + 2 for uri + 2
+                             for comment + end-of-list.  */
+@@ -1311,14 +1312,16 @@ agent_public_key_from_file (ctrl_t ctrl,
+     {
+       p = stpcpy (p, "(uri %b)");
+       assert (argidx+1 < DIM (args));
+-      args[argidx++] = (void *)&uri_length;
++      uri_intlen = (int)uri_length;
++      args[argidx++] = (void *)&uri_intlen;
+       args[argidx++] = (void *)&uri;
+     }
+   if (comment)
+     {
+       p = stpcpy (p, "(comment %b)");
+       assert (argidx+1 < DIM (args));
+-      args[argidx++] = (void *)&comment_length;
++      comment_intlen = (int)comment_length;
++      args[argidx++] = (void *)&comment_intlen;
+       args[argidx++] = (void*)&comment;
+     }
+   *p++ = ')';

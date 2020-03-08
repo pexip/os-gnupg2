@@ -27,21 +27,21 @@
 #include <errno.h>
 
 #include "gpg.h"
-#include "iobuf.h"
+#include "../common/iobuf.h"
 #include "filter.h"
 #include "keydb.h"
-#include "status.h"
+#include "../common/status.h"
 #include "exec.h"
 #include "main.h"
-#include "i18n.h"
-#include "ttyio.h"
+#include "../common/i18n.h"
+#include "../common/ttyio.h"
 #include "options.h"
 #include "packet.h"
 #include "trustdb.h"
 #include "keyserver-internal.h"
-#include "util.h"
-#include "membuf.h"
-#include "mbox-util.h"
+#include "../common/util.h"
+#include "../common/membuf.h"
+#include "../common/mbox-util.h"
 #include "call-dirmngr.h"
 
 #ifdef HAVE_W32_SYSTEM
@@ -468,7 +468,7 @@ parse_preferred_keyserver(PKT_signature *sig)
 }
 
 static void
-print_keyrec(int number,struct keyrec *keyrec)
+print_keyrec (ctrl_t ctrl, int number,struct keyrec *keyrec)
 {
   int i;
 
@@ -522,7 +522,7 @@ print_keyrec(int number,struct keyrec *keyrec)
     case KEYDB_SEARCH_MODE_FPR20:
       {
 	u32 kid[2];
-	keyid_from_fingerprint(keyrec->desc.u.fpr,20,kid);
+	keyid_from_fingerprint (ctrl, keyrec->desc.u.fpr,20,kid);
 	es_printf("key %s",keystr(kid));
       }
       break;
@@ -960,7 +960,7 @@ search_line_handler (void *opaque, int special, char *line)
               parm->numlines = 0;
             }
 
-          print_keyrec (parm->nkeys+1, keyrec);
+          print_keyrec (parm->ctrl, parm->nkeys+1, keyrec);
         }
 
       parm->numlines += keyrec->lines;
@@ -1196,9 +1196,11 @@ keyserver_import_keyid (ctrl_t ctrl,
   return keyserver_get (ctrl, &desc, 1, keyserver, quick, NULL, NULL);
 }
 
+
 /* code mostly stolen from do_export_stream */
 static int
-keyidlist(strlist_t users,KEYDB_SEARCH_DESC **klist,int *count,int fakev3)
+keyidlist (ctrl_t ctrl, strlist_t users, KEYDB_SEARCH_DESC **klist,
+           int *count, int fakev3)
 {
   int rc = 0;
   int num = 100;
@@ -1318,12 +1320,12 @@ keyidlist(strlist_t users,KEYDB_SEARCH_DESC **klist,int *count,int fakev3)
 	      PKT_user_id *uid=NULL;
 	      PKT_signature *sig=NULL;
 
-	      merge_keys_and_selfsig(keyblock);
+	      merge_keys_and_selfsig (ctrl, keyblock);
 
 	      for(node=node->next;node;node=node->next)
 		{
 		  if(node->pkt->pkttype==PKT_USER_ID
-		     && node->pkt->pkt.user_id->is_primary)
+		     && node->pkt->pkt.user_id->flags.primary)
 		    uid=node->pkt->pkt.user_id;
 		  else if(node->pkt->pkttype==PKT_SIGNATURE
 			  && node->pkt->pkt.signature->
@@ -1401,7 +1403,7 @@ keyserver_refresh (ctrl_t ctrl, strlist_t users)
 	 ascii_strcasecmp(opt.keyserver->scheme,"mailto")==0))
     fakev3=1;
 
-  err = keyidlist (users, &desc, &numdesc, fakev3);
+  err = keyidlist (ctrl, users, &desc, &numdesc, fakev3);
   if (err)
     return err;
 
@@ -1526,7 +1528,7 @@ keyserver_search (ctrl_t ctrl, strlist_t tokens)
 
   err = gpg_dirmngr_ks_search (ctrl, searchstr, search_line_handler, &parm);
 
-  if (parm.not_found)
+  if (parm.not_found || gpg_err_code (err) == GPG_ERR_NO_DATA)
     {
       if (parm.searchstr_disp)
         log_info (_("key \"%s\" not found on keyserver\n"),
@@ -1537,6 +1539,8 @@ keyserver_search (ctrl_t ctrl, strlist_t tokens)
 
   if (gpg_err_code (err) == GPG_ERR_NO_KEYSERVER)
     log_error (_("no keyserver known (use option --keyserver)\n"));
+  else if (gpg_err_code (err) == GPG_ERR_NO_DATA)
+    err = gpg_error (GPG_ERR_NOT_FOUND);
   else if (err)
     log_error ("error searching keyserver: %s\n", gpg_strerror (err));
 
@@ -1588,11 +1592,12 @@ keyserver_get_chunk (ctrl_t ctrl, KEYDB_SEARCH_DESC *desc, int ndesc,
 {
   gpg_error_t err = 0;
   char **pattern;
-  int idx, npat;
+  int idx, npat, npat_fpr;
   estream_t datastream;
   char *source = NULL;
   size_t linelen;  /* Estimated linelen for KS_GET.  */
   size_t n;
+  int only_fprs;
 
 #define MAX_KS_GET_LINELEN 950  /* Somewhat lower than the real limit.  */
 
@@ -1611,7 +1616,7 @@ keyserver_get_chunk (ctrl_t ctrl, KEYDB_SEARCH_DESC *desc, int ndesc,
      but we are sure that R_NDESC_USED has been updated.  This avoids
      a possible indefinite loop.  */
   linelen = 17; /* "KS_GET --quick --" */
-  for (npat=idx=0; idx < ndesc; idx++)
+  for (npat=npat_fpr=0, idx=0; idx < ndesc; idx++)
     {
       int quiet = 0;
 
@@ -1633,6 +1638,8 @@ keyserver_get_chunk (ctrl_t ctrl, KEYDB_SEARCH_DESC *desc, int ndesc,
                        desc[idx].mode == KEYDB_SEARCH_MODE_FPR20? 20 : 16,
                        pattern[npat]+2);
               npat++;
+              if (desc[idx].mode == KEYDB_SEARCH_MODE_FPR20)
+                npat_fpr++;
             }
         }
       else if(desc[idx].mode == KEYDB_SEARCH_MODE_LONG_KID)
@@ -1714,6 +1721,8 @@ keyserver_get_chunk (ctrl_t ctrl, KEYDB_SEARCH_DESC *desc, int ndesc,
      this is different from NPAT.  */
   *r_ndesc_used = idx;
 
+  only_fprs = (npat && npat == npat_fpr);
+
   err = gpg_dirmngr_ks_get (ctrl, pattern, override_keyserver, quick,
                             &datastream, &source);
   for (idx=0; idx < npat; idx++)
@@ -1744,7 +1753,9 @@ keyserver_get_chunk (ctrl_t ctrl, KEYDB_SEARCH_DESC *desc, int ndesc,
                              r_fpr, r_fprlen,
                              (opt.keyserver_options.import_options
                               | IMPORT_NO_SECKEY),
-                             keyserver_retrieval_screener, &screenerarg);
+                             keyserver_retrieval_screener, &screenerarg,
+                             only_fprs? KEYORG_KS : 0,
+                             source);
     }
   es_fclose (datastream);
   xfree (source);
@@ -1850,7 +1861,7 @@ keyserver_put (ctrl_t ctrl, strlist_t keyspecs)
    that the fetch operation ignores the configured keyservers and
    instead directly retrieves the keys.  */
 int
-keyserver_fetch (ctrl_t ctrl, strlist_t urilist)
+keyserver_fetch (ctrl_t ctrl, strlist_t urilist, int origin)
 {
   gpg_error_t err;
   strlist_t sl;
@@ -1875,7 +1886,7 @@ keyserver_fetch (ctrl_t ctrl, strlist_t urilist)
           stats_handle = import_new_stats_handle();
           import_keys_es_stream (ctrl, datastream, stats_handle, NULL, NULL,
                                  opt.keyserver_options.import_options,
-                                 NULL, NULL);
+                                 NULL, NULL, origin, sl->d);
 
           import_print_stats (stats_handle);
           import_release_stats_handle (stats_handle);
@@ -1923,14 +1934,36 @@ keyserver_import_cert (ctrl_t ctrl, const char *name, int dane_mode,
   else if (key)
     {
       int armor_status=opt.no_armor;
+      import_filter_t save_filt;
 
       /* CERTs and DANE records are always in binary format */
       opt.no_armor=1;
-
-      err = import_keys_es_stream (ctrl, key, NULL, fpr, fpr_len,
-                                   (opt.keyserver_options.import_options
-                                    | IMPORT_NO_SECKEY),
-                                   NULL, NULL);
+      if (dane_mode)
+        {
+          save_filt = save_and_clear_import_filter ();
+          if (!save_filt)
+            err = gpg_error_from_syserror ();
+          else
+            {
+              char *filtstr = es_bsprintf ("keep-uid=mbox = %s", look);
+              err = filtstr? 0 : gpg_error_from_syserror ();
+              if (!err)
+                err = parse_and_set_import_filter (filtstr);
+              xfree (filtstr);
+              if (!err)
+                err = import_keys_es_stream (ctrl, key, NULL, fpr, fpr_len,
+                                             IMPORT_NO_SECKEY,
+                                             NULL, NULL, KEYORG_DANE, NULL);
+              restore_import_filter (save_filt);
+            }
+        }
+      else
+        {
+          err = import_keys_es_stream (ctrl, key, NULL, fpr, fpr_len,
+                                       (opt.keyserver_options.import_options
+                                        | IMPORT_NO_SECKEY),
+                                       NULL, NULL, 0, NULL);
+        }
 
       opt.no_armor=armor_status;
 
@@ -2018,6 +2051,7 @@ keyserver_import_wkd (ctrl_t ctrl, const char *name, int quick,
   gpg_error_t err;
   char *mbox;
   estream_t key;
+  char *url = NULL;
 
   /* We want to work on the mbox.  That is what dirmngr will do anyway
    * and we need the mbox for the import filter anyway.  */
@@ -2030,7 +2064,7 @@ keyserver_import_wkd (ctrl_t ctrl, const char *name, int quick,
       return err;
     }
 
-  err = gpg_dirmngr_wkd_get (ctrl, mbox, quick, &key);
+  err = gpg_dirmngr_wkd_get (ctrl, mbox, quick, &key, &url);
   if (err)
     ;
   else if (key)
@@ -2053,7 +2087,7 @@ keyserver_import_wkd (ctrl_t ctrl, const char *name, int quick,
           if (!err)
             err = import_keys_es_stream (ctrl, key, NULL, fpr, fpr_len,
                                          IMPORT_NO_SECKEY,
-                                         NULL, NULL);
+                                         NULL, NULL, KEYORG_WKD, url);
 
         }
 
@@ -2064,6 +2098,7 @@ keyserver_import_wkd (ctrl_t ctrl, const char *name, int quick,
       key = NULL;
     }
 
+  xfree (url);
   xfree (mbox);
   return err;
 }
