@@ -1,6 +1,7 @@
 gnupg2 (2.2.12-1+deb10u1pexip1) pexip; urgency=medium
 
   * Migrate to Buster
+  * remove gnutls dependancy
 
  -- Vincent Sanders <vince@pexip.com>  Sun, 08 Mar 2020 20:22:16 +0000
 

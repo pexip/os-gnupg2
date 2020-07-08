@@ -48,7 +48,7 @@ override_dh_auto_configure:
 		--enable-wks-tools \
 		--enable-all-tests \
 		--with-agent-s2k-calibration=300 \
-		--enable-symcryptrun --enable-large-secmem
+		--enable-symcryptrun --enable-large-secmem --disable-gnutls
 
 override_dh_auto_build-arch:
 	dh_auto_build --builddirectory=build-gpgv-udeb
