@@ -1,3 +1,9 @@
+gnupg2 (2.2.12-1+deb10u1pexip2) pexip; urgency=medium
+
+  * Rebuild in buster environment
+
+ -- Steve McIntyre <steve.mcintyre@pexip.com>  Wed, 15 Jul 2020 22:27:51 +0000
+
 gnupg2 (2.2.12-1+deb10u1pexip1) pexip; urgency=medium
 
   * Migrate to Buster
