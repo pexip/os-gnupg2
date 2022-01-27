@@ -352,11 +352,12 @@ may use this command to ensure that they are started.  Using "all" for
 
 @item --kill [@var{component}]
 @opindex kill
-Kill the given component.  Components which support killing are
-@command{gpg-agent} and @command{scdaemon}.  Components which don't
-support reloading are ignored.  Using "all" for @var{component} kills
-all components running as daemons.  Note that as of now reload and
-kill have the same effect for @command{scdaemon}.
+Kill the given component that runs as a daemon, including
+@command{gpg-agent}, @command{dirmngr}, and @command{scdaemon}.  A
+@command{component} which does not run as a daemon will be ignored.
+Using "all" for @var{component} kills all components running as
+daemons.  Note that as of now reload and kill have the same effect for
+@command{scdaemon}.
 
 @item --create-socketdir
 @opindex create-socketdir
@@ -391,6 +392,8 @@ extends numerical field values by human-readable descriptions.
 @itemx --quiet
 @opindex quiet
 Try to be as quiet as possible.
+
+@include opt-homedir.texi
 
 @item -n
 @itemx --dry-run
@@ -1561,7 +1564,7 @@ string @code{true} or @code{yes}.  The evaluation is done by passing
   /subst
   /let i 3
   /while $i
-    /echo loop couter is $i
+    /echo loop counter is $i
     /let i $@{- $i 1@}
   /end
 @end smallexample
@@ -1962,7 +1965,7 @@ Extract all files from an encrypted archive.
 
 @item --sign
 @itemx -s
-Make a signed archive from the given files and directories.  Thsi can
+Make a signed archive from the given files and directories.  This can
 be combined with option @option{--encrypt} to create a signed and then
 encrypted archive.
 
@@ -2014,10 +2017,11 @@ Do not actually output the extracted files.
 @item --directory @var{dir}
 @itemx -C @var{dir}
 @opindex directory
-Extract the files into the directory @var{dir}.  The
-default is to take the directory name from
-the input filename.  If no input filename is known a directory named
-@file{GPGARCH} is used.
+Extract the files into the directory @var{dir}.  The default is to
+take the directory name from the input filename.  If no input filename
+is known a directory named @file{GPGARCH} is used.  For tarball
+creation, switch to directory @var{dir} before performing any
+operations.
 
 @item --files-from @var{file}
 @itemx -T @var{file}
@@ -2029,9 +2033,15 @@ line.
 Modify option @option{--files-from} to use a binary nul instead of a
 linefeed to separate file names.
 
+@item --utf8-strings
+@opindex utf8-strings
+Assume that the file names read by @option{--files-from} are UTF-8
+encoded.  This option has an effect only on Windows where the active
+code page is otherwise assumed.
+
 @item --openpgp
 @opindex openpgp
-This option has no effect becuase OpenPGP encryption and signing is
+This option has no effect because OpenPGP encryption and signing is
 the default.
 
 @item --cms

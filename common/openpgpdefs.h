@@ -51,6 +51,7 @@ typedef enum
     PKT_ATTRIBUTE     = 17, /* PGP's attribute packet. */
     PKT_ENCRYPTED_MDC = 18, /* Integrity protected encrypted data. */
     PKT_MDC 	      = 19, /* Manipulation detection code packet. */
+    PKT_ENCRYPTED_AEAD= 20, /* AEAD encrypted data packet. */
     PKT_COMMENT	      = 61, /* new comment packet (GnuPG specific). */
     PKT_GPG_CONTROL   = 63  /* internal control packet (GnuPG specific). */
   }
@@ -115,11 +116,24 @@ typedef enum
     SIGSUBPKT_FEATURES      = 30, /* Feature flags. */
 
     SIGSUBPKT_SIGNATURE     = 32, /* Embedded signature. */
-    SIGSUBPKT_ISSUER_FPR    = 33, /* EXPERIMENTAL: Issuer fingerprint. */
+    SIGSUBPKT_ISSUER_FPR    = 33, /* Issuer fingerprint. */
+    SIGSUBPKT_PREF_AEAD     = 34, /* Preferred AEAD algorithms. */
+
+    SIGSUBPKT_KEY_BLOCK     = 38, /* Entire key used.          */
 
     SIGSUBPKT_FLAG_CRITICAL = 128
   }
 sigsubpkttype_t;
+
+
+/* Note that we encode the AEAD algo in a 3 bit field at some places.  */
+typedef enum
+  {
+    AEAD_ALGO_NONE	    =  0,
+    AEAD_ALGO_EAX	    =  1,
+    AEAD_ALGO_OCB	    =  2
+  }
+aead_algo_t;
 
 
 typedef enum
@@ -183,6 +197,12 @@ typedef enum
     COMPRESS_ALGO_PRIVATE10 = 110
   }
 compress_algo_t;
+
+/* Limits to be used for static arrays.  */
+#define OPENPGP_MAX_NPKEY  5  /* Maximum number of public key parameters. */
+#define OPENPGP_MAX_NSKEY  7  /* Maximum number of secret key parameters. */
+#define OPENPGP_MAX_NSIG   2  /* Maximum number of signature parameters.  */
+#define OPENPGP_MAX_NENC   2  /* Maximum number of encryption parameters. */
 
 
 #endif /*GNUPG_COMMON_OPENPGPDEFS_H*/

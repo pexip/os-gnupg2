@@ -29,6 +29,15 @@
 #define ISO7816_CHANGE_REFERENCE_DATA 0x24
 #define ISO7816_RESET_RETRY_COUNTER   0x2C
 
+/* Error codes returned by iso7816_verify_status.  A non-negative
+ * number gives the number of left tries.
+ * NB: The values are also used by the CHV-STATUS lines and thus are
+ * part of the public interface.  Do not change them.  */
+#define ISO7816_VERIFY_ERROR        (-1)
+#define ISO7816_VERIFY_NO_PIN       (-2)
+#define ISO7816_VERIFY_BLOCKED      (-3)
+#define ISO7816_VERIFY_NULLPIN      (-4)
+#define ISO7816_VERIFY_NOT_NEEDED   (-5)
 
 /* Information to be passed to pinpad equipped readers.  See
    ccid-driver.c for details. */
@@ -51,6 +60,12 @@ gpg_error_t iso7816_map_sw (int sw);
 gpg_error_t iso7816_select_application (int slot,
                                         const char *aid, size_t aidlen,
                                         unsigned int flags);
+gpg_error_t iso7816_select_application_ext (int slot,
+                                            const char *aid, size_t aidlen,
+                                            unsigned int flags,
+                                            unsigned char **result,
+                                            size_t *resultlen);
+gpg_error_t iso7816_select_mf (int slot);
 gpg_error_t iso7816_select_file (int slot, int tag, int is_dir);
 gpg_error_t iso7816_select_path (int slot,
                                  const unsigned short *path, size_t pathlen);
@@ -58,13 +73,14 @@ gpg_error_t iso7816_list_directory (int slot, int list_dirs,
                                     unsigned char **result, size_t *resultlen);
 gpg_error_t iso7816_apdu_direct (int slot,
                                  const void *apdudata, size_t apdudatalen,
-                                 int handle_more,
+                                 int handle_more, unsigned int *r_sw,
                                  unsigned char **result, size_t *resultlen);
 gpg_error_t iso7816_check_pinpad (int slot, int command,
                                   pininfo_t *pininfo);
 gpg_error_t iso7816_verify (int slot,
                             int chvno, const char *chv, size_t chvlen);
 gpg_error_t iso7816_verify_kp (int slot, int chvno, pininfo_t *pininfo);
+int iso7816_verify_status (int slot, int chvno);
 gpg_error_t iso7816_change_reference_data (int slot, int chvno,
                                const char *oldchv, size_t oldchvlen,
                                const char *newchv, size_t newchvlen);
@@ -97,10 +113,19 @@ gpg_error_t iso7816_internal_authenticate (int slot, int extended_mode,
                                    const unsigned char *data, size_t datalen,
                                    int le,
                                    unsigned char **result, size_t *resultlen);
+gpg_error_t iso7816_general_authenticate (int slot, int extended_mode,
+                                          int algoref, int keyref,
+                                          const unsigned char *data,
+                                          size_t datalen,
+                                          int le,
+                                          unsigned char **result,
+                                          size_t *resultlen);
 gpg_error_t iso7816_generate_keypair (int slot, int extended_mode,
-                                    const char *data, size_t datalen,
-                                    int le,
-                                    unsigned char **result, size_t *resultlen);
+                                      int p1, int p2,
+                                      const char *data, size_t datalen,
+                                      int le,
+                                      unsigned char **result,
+                                      size_t *resultlen);
 gpg_error_t iso7816_read_public_key (int slot, int extended_mode,
                                     const char *data, size_t datalen,
                                     int le,
@@ -108,6 +133,9 @@ gpg_error_t iso7816_read_public_key (int slot, int extended_mode,
 gpg_error_t iso7816_get_challenge (int slot,
                                    int length, unsigned char *buffer);
 
+gpg_error_t iso7816_read_binary_ext (int slot, int extended_mode,
+                                     size_t offset, size_t nmax,
+                                     unsigned char **result, size_t *resultlen);
 gpg_error_t iso7816_read_binary (int slot, size_t offset, size_t nmax,
                                  unsigned char **result, size_t *resultlen);
 gpg_error_t iso7816_read_record (int slot, int recno, int reccount,

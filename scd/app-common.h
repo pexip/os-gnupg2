@@ -25,9 +25,13 @@
 #include <npth.h>
 #include <ksba.h>
 
+/* Flags used with app_change_pin.  */
+#define APP_CHANGE_FLAG_RESET    1  /* PIN Reset mode.  */
+#define APP_CHANGE_FLAG_NULLPIN  2  /* NULL PIN mode.  */
+#define APP_CHANGE_FLAG_CLEAR    4  /* Clear the given PIN.  */
 
-#define APP_CHANGE_FLAG_RESET    1
-#define APP_CHANGE_FLAG_NULLPIN  2
+/* Flags used with app_genkey.  */
+#define APP_GENKEY_FLAG_FORCE    1  /* Force overwriting existing key.  */
 
 /* Bit flags set by the decipher function into R_INFO.  */
 #define APP_DECIPHER_INFO_NOPAD  1  /* Padding has been removed.  */
@@ -101,8 +105,8 @@ struct app_ctx_s {
                              void *pincb_arg,
                              const unsigned char *pk, size_t pklen);
     gpg_error_t (*genkey) (app_t app, ctrl_t ctrl,
-                           const char *keynostr, unsigned int flags,
-                           time_t createtime,
+                           const char *keyref, const char *keytype,
+                           unsigned int flags, time_t createtime,
                            gpg_error_t (*pincb)(void*, const char *, char **),
                            void *pincb_arg);
     gpg_error_t (*change_pin) (app_t app, ctrl_t ctrl,
@@ -115,9 +119,26 @@ struct app_ctx_s {
   } fnc;
 };
 
+
+/* Helper to get the slot from an APP object. */
+static inline int
+app_get_slot (app_t app)
+{
+  /* Note that this is a similar function of the one in 2.3 which we
+   * use to make back porting easier.  */
+  if (app)
+    return app->slot;
+  return -1;
+}
+
+
 /*-- app-help.c --*/
 unsigned int app_help_count_bits (const unsigned char *a, size_t len);
-gpg_error_t app_help_get_keygrip_string (ksba_cert_t cert, char *hexkeygrip);
+gpg_error_t app_help_get_keygrip_string_pk (const void *pk, size_t pklen,
+                                            char *hexkeygrip,
+                                            gcry_sexp_t *r_pkey);
+gpg_error_t app_help_get_keygrip_string (ksba_cert_t cert, char *hexkeygrip,
+                                         gcry_sexp_t *r_pkey);
 size_t app_help_read_length_of_cert (int slot, int fid, size_t *r_certoff);
 
 
@@ -173,16 +194,16 @@ gpg_error_t app_writekey (app_t app, ctrl_t ctrl,
                           void *pincb_arg,
                           const unsigned char *keydata, size_t keydatalen);
 gpg_error_t app_genkey (app_t app, ctrl_t ctrl,
-                        const char *keynostr, unsigned int flags,
-                        time_t createtime,
+                        const char *keynostr, const char *keytype,
+                        unsigned int flags, time_t createtime,
                         gpg_error_t (*pincb)(void*, const char *, char **),
                         void *pincb_arg);
 gpg_error_t app_get_challenge (app_t app, ctrl_t ctrl, size_t nbytes,
                                unsigned char *buffer);
 gpg_error_t app_change_pin (app_t app, ctrl_t ctrl,
-                    const char *chvnostr, int reset_mode,
-                    gpg_error_t (*pincb)(void*, const char *, char **),
-                    void *pincb_arg);
+                            const char *chvnostr, unsigned int flags,
+                            gpg_error_t (*pincb)(void*, const char *, char **),
+                            void *pincb_arg);
 gpg_error_t app_check_pin (app_t app, ctrl_t ctrl, const char *keyidstr,
                    gpg_error_t (*pincb)(void*, const char *, char **),
                    void *pincb_arg);

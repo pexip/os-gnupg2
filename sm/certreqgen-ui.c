@@ -138,7 +138,7 @@ gpgsm_gencertreq_tty (ctrl_t ctrl, estream_t output_stream)
   unsigned int nbits;
   int minbits = 1024;
   int maxbits = 4096;
-  int defbits = 2048;
+  int defbits = 3072;
   const char *keyusage;
   char *subject_name;
   membuf_t mb_email, mb_dns, mb_uri, mb_result;
@@ -244,7 +244,49 @@ gpgsm_gencertreq_tty (ctrl_t ctrl, estream_t output_stream)
         {
           tty_printf (_("Available keys:\n"));
           for (count=1,sl=keypairlist; sl; sl = sl->next, count++)
-            tty_printf ("   (%d) %s\n", count, sl->d);
+            {
+              ksba_sexp_t pkey;
+              gcry_sexp_t s_pkey;
+              char *algostr = NULL;
+              const char *keyref;
+              int any = 0;
+
+              keyref = strchr (sl->d, ' ');
+              if (keyref)
+                {
+                  keyref++;
+                  if (!gpgsm_agent_readkey (ctrl, 1, keyref, &pkey))
+                    {
+                      if (!gcry_sexp_new (&s_pkey, pkey, 0, 0))
+                        algostr = pubkey_algo_string (s_pkey, NULL);
+                      gcry_sexp_release (s_pkey);
+                    }
+                  xfree (pkey);
+                }
+              tty_printf ("   (%d) %s %s", count, sl->d, algostr);
+              if ((sl->flags & GCRY_PK_USAGE_CERT))
+                {
+                  tty_printf ("%scert", any?",":" (");
+                  any = 1;
+                }
+              if ((sl->flags & GCRY_PK_USAGE_SIGN))
+                {
+                  tty_printf ("%ssign", any?",":" (");
+                  any = 1;
+                }
+              if ((sl->flags & GCRY_PK_USAGE_AUTH))
+                {
+                  tty_printf ("%sauth", any?",":" (");
+                  any = 1;
+                }
+              if ((sl->flags & GCRY_PK_USAGE_ENCR))
+                {
+                  tty_printf ("%sencr", any?",":" (");
+                  any = 1;
+                }
+              tty_printf ("%s\n", any?")":"");
+              xfree (algostr);
+            }
           xfree (answer);
           answer = tty_get (_("Your selection? "));
           tty_kill_prompt ();

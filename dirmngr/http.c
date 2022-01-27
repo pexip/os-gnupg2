@@ -101,6 +101,7 @@
 #include "../common/i18n.h"
 #include "../common/sysutils.h" /* (gnupg_fd_t) */
 #include "dns-stuff.h"
+#include "dirmngr-status.h"    /* (dirmngr_status_printf)  */
 #include "http.h"
 #include "http-common.h"
 
@@ -578,6 +579,7 @@ http_register_tls_callback (gpg_error_t (*cb)(http_t, http_session_t, int))
 void
 http_register_tls_ca (const char *fname)
 {
+  gpg_err_code_t ec;
   strlist_t sl;
 
   if (!fname)
@@ -589,9 +591,8 @@ http_register_tls_ca (const char *fname)
     {
       /* Warn if we can't access right now, but register it anyway in
          case it becomes accessible later */
-      if (access (fname, F_OK))
-        log_info (_("can't access '%s': %s\n"), fname,
-                  gpg_strerror (gpg_error_from_syserror()));
+      if ((ec = gnupg_access (fname, F_OK)))
+        log_info (_("can't access '%s': %s\n"), fname, gpg_strerror (ec));
       sl = add_to_strlist (&tls_ca_certlist, fname);
       if (*sl->d && !strcmp (sl->d + strlen (sl->d) - 4, ".pem"))
         sl->flags = 1;
@@ -607,6 +608,7 @@ http_register_tls_ca (const char *fname)
 void
 http_register_cfg_ca (const char *fname)
 {
+  gpg_err_code_t ec;
   strlist_t sl;
 
   if (!fname)
@@ -618,9 +620,8 @@ http_register_cfg_ca (const char *fname)
     {
       /* Warn if we can't access right now, but register it anyway in
          case it becomes accessible later */
-      if (access (fname, F_OK))
-        log_info (_("can't access '%s': %s\n"), fname,
-                  gpg_strerror (gpg_error_from_syserror()));
+      if ((ec = gnupg_access (fname, F_OK)))
+        log_info (_("can't access '%s': %s\n"), fname, gpg_strerror (ec));
       sl = add_to_strlist (&cfg_ca_certlist, fname);
       if (*sl->d && !strcmp (sl->d + strlen (sl->d) - 4, ".pem"))
         sl->flags = 1;
@@ -769,10 +770,9 @@ http_session_new (http_session_t *r_session,
                     && !ascii_strcasecmp (intended_hostname,
                                           get_default_keyserver (1)));
 
-    /* If the user has not specified a CA list, and they are looking
-     * for the hkps pool from sks-keyservers.net, then default to
-     * Kristian's certificate authority:  */
-    if (!tls_ca_certlist && is_hkps_pool)
+    /* If we are looking for the hkps pool from sks-keyservers.net,
+     * then forcefully use its dedicated certificate authority.  */
+    if (is_hkps_pool)
       {
         char *pemname = make_filename_try (gnupg_datadir (),
                                            "sks-keyservers.netCA.pem", NULL);
@@ -791,10 +791,13 @@ http_session_new (http_session_t *r_session,
                         pemname, gnutls_strerror (rc));
             xfree (pemname);
           }
+
+        if (is_hkps_pool)
+          add_system_cas = 0;
       }
 
     /* Add configured certificates to the session.  */
-    if ((flags & HTTP_FLAG_TRUST_DEF))
+    if ((flags & HTTP_FLAG_TRUST_DEF) && !is_hkps_pool)
       {
         for (sl = tls_ca_certlist; sl; sl = sl->next)
           {
@@ -805,7 +808,10 @@ http_session_new (http_session_t *r_session,
               log_info ("setting CA from file '%s' failed: %s\n",
                         sl->d, gnutls_strerror (rc));
           }
-        if (!tls_ca_certlist && !is_hkps_pool)
+
+        /* If HKP trust is requested and there are no HKP certificates
+         * configured, also try the standard system certificates.  */
+        if (!tls_ca_certlist)
           add_system_cas = 1;
       }
 
@@ -827,7 +833,7 @@ http_session_new (http_session_t *r_session,
       }
 
     /* Add other configured certificates to the session.  */
-    if ((flags & HTTP_FLAG_TRUST_CFG))
+    if ((flags & HTTP_FLAG_TRUST_CFG) && !is_hkps_pool)
       {
         for (sl = cfg_ca_certlist; sl; sl = sl->next)
           {
@@ -2054,6 +2060,14 @@ send_request (http_t hd, const char *httphost, const char *auth,
 
       while ((err = ntbtls_handshake (hd->session->tls_session)))
         {
+#if NTBTLS_VERSION_NUMBER >= 0x000200
+          unsigned int tlevel, ttype;
+          const char *s = ntbtls_get_last_alert (hd->session->tls_session,
+                                                 &tlevel, &ttype);
+          if (s)
+            log_info ("TLS alert: %s (%u.%u)\n", s, tlevel, ttype);
+#endif
+
           switch (err)
             {
             default:
@@ -2901,7 +2915,7 @@ connect_server (const char *server, unsigned short port,
   unsigned int srvcount = 0;
   int hostfound = 0;
   int anyhostaddr = 0;
-  int srv, connected;
+  int srv, connected, v4_valid, v6_valid;
   gpg_error_t last_err = 0;
   struct srventry *serverlist = NULL;
 
@@ -2910,6 +2924,8 @@ connect_server (const char *server, unsigned short port,
 #if defined(HAVE_W32_SYSTEM) && !defined(HTTP_NO_WSASTARTUP)
   init_sockets ();
 #endif /*Windows*/
+
+  check_inet_support (&v4_valid, &v6_valid);
 
   /* Onion addresses require special treatment.  */
   if (is_onion_address (server))
@@ -2988,9 +3004,11 @@ connect_server (const char *server, unsigned short port,
 
       for (ai = aibuf; ai && !connected; ai = ai->next)
         {
-          if (ai->family == AF_INET && (flags & HTTP_FLAG_IGNORE_IPv4))
+          if (ai->family == AF_INET
+              && ((flags & HTTP_FLAG_IGNORE_IPv4) || !v4_valid))
             continue;
-          if (ai->family == AF_INET6 && (flags & HTTP_FLAG_IGNORE_IPv6))
+          if (ai->family == AF_INET6
+              && ((flags & HTTP_FLAG_IGNORE_IPv6) || !v6_valid))
             continue;
 
           if (sock != ASSUAN_INVALID_FD)
@@ -2998,6 +3016,15 @@ connect_server (const char *server, unsigned short port,
           sock = my_sock_new_for_addr (ai->addr, ai->socktype, ai->protocol);
           if (sock == ASSUAN_INVALID_FD)
             {
+              if (errno == EAFNOSUPPORT)
+                {
+                  if (ai->family == AF_INET)
+                    v4_valid = 0;
+                  if (ai->family == AF_INET6)
+                    v6_valid = 0;
+                  continue;
+                }
+
               err = gpg_err_make (default_errsource,
                                   gpg_err_code_from_syserror ());
               log_error ("error creating socket: %s\n", gpg_strerror (err));
@@ -3514,16 +3541,72 @@ uri_query_lookup (parsed_uri_t uri, const char *key)
 }
 
 
-/* Return true if both URI point to the same host.  */
+/* Return true if both URI point to the same host for the purpose of
+ * redirection check.  A is the original host and B the host given in
+ * the Location header.  As a temporary workaround a fixed list of
+ * exceptions is also consulted.  */
 static int
 same_host_p (parsed_uri_t a, parsed_uri_t b)
 {
-  return a->host && b->host && !ascii_strcasecmp (a->host, b->host);
+  static struct
+  {
+    const char *from;  /* NULL uses the last entry from the table.  */
+    const char *to;
+  } allow[] =
+  {
+    { "protonmail.com", "api.protonmail.com" },
+    { NULL,             "api.protonmail.ch"  },
+    { "protonmail.ch",  "api.protonmail.com" },
+    { NULL,             "api.protonmail.ch"  },
+    { "pm.me",          "api.protonmail.ch"  }
+  };
+  static const char *subdomains[] =
+    {
+      "openpgpkey."
+    };
+  int i;
+  const char *from;
+
+  if (!a->host || !b->host)
+    return 0;
+
+  if (!ascii_strcasecmp (a->host, b->host))
+    return 1;
+
+  from = NULL;
+  for (i=0; i < DIM (allow); i++)
+    {
+      if (allow[i].from)
+        from = allow[i].from;
+      if (!from)
+        continue;
+      if (!ascii_strcasecmp (from, a->host)
+          && !ascii_strcasecmp (allow[i].to, b->host))
+        return 1;
+    }
+
+  /* Also consider hosts the same if they differ only in a subdomain;
+   * in both direction.  This allows to have redirection between the
+   * WKD advanced and direct lookup methods. */
+  for (i=0; i < DIM (subdomains); i++)
+    {
+      const char *subdom = subdomains[i];
+      size_t subdomlen = strlen (subdom);
+
+      if (!ascii_strncasecmp (a->host, subdom, subdomlen)
+          && !ascii_strcasecmp (a->host + subdomlen, b->host))
+        return 1;
+      if (!ascii_strncasecmp (b->host, subdom, subdomlen)
+          && !ascii_strcasecmp (b->host + subdomlen, a->host))
+        return 1;
+    }
+
+  return 0;
 }
 
 
 /* Prepare a new URL for a HTTP redirect.  INFO has flags controlling
- * the operaion, STATUS_CODE is used for diagnostics, LOCATION is the
+ * the operation, STATUS_CODE is used for diagnostics, LOCATION is the
  * value of the "Location" header, and R_URL reveives the new URL on
  * success or NULL or error.  Note that INFO->ORIG_URL is
  * required.  */
@@ -3566,13 +3649,23 @@ http_prepare_redirect (http_redir_info_t *info, unsigned int status_code,
    * https address. */
   if (info->orig_onion && !locuri->onion)
     {
+      dirmngr_status_printf (info->ctrl, "WARNING",
+                             "http_redirect %u"
+                             " redirect from onion to non-onion address"
+                             " rejected",
+                             err);
       http_release_parsed_uri (locuri);
       return gpg_error (GPG_ERR_FORBIDDEN);
     }
   if (!info->allow_downgrade && info->orig_https && !locuri->use_tls)
     {
+      err = gpg_error (GPG_ERR_FORBIDDEN);
+      dirmngr_status_printf (info->ctrl, "WARNING",
+                             "http_redirect %u"
+                             " redirect '%s' to '%s' rejected",
+                             err, info->orig_url, location);
       http_release_parsed_uri (locuri);
-      return gpg_error (GPG_ERR_FORBIDDEN);
+      return err;
     }
 
   if (info->trust_location)
@@ -3594,8 +3687,8 @@ http_prepare_redirect (http_redir_info_t *info, unsigned int status_code,
     }
   else if (same_host_p (origuri, locuri))
     {
-      /* The host is the same and thus we can take the location
-       * verbatim.  */
+      /* The host is the same or on an exception list and thus we can
+       * take the location verbatim.  */
       http_release_parsed_uri (origuri);
       http_release_parsed_uri (locuri);
       newurl = xtrystrdup (location);
@@ -3652,6 +3745,10 @@ http_prepare_redirect (http_redir_info_t *info, unsigned int status_code,
       http_release_parsed_uri (locuri);
       if (!info->silent)
         log_info (_("redirection changed to '%s'\n"), newurl);
+      dirmngr_status_printf (info->ctrl, "WARNING",
+                             "http_redirect_cleanup %u"
+                             " changed from '%s' to '%s'",
+                             0, info->orig_url, newurl);
     }
 
   *r_url = newurl;

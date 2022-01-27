@@ -48,7 +48,7 @@ override_dh_auto_configure:
 		--enable-wks-tools \
 		--enable-all-tests \
 		--with-agent-s2k-calibration=300 \
-		--enable-symcryptrun --enable-large-secmem
+		--enable-large-secmem
 
 override_dh_auto_build-arch:
 	dh_auto_build --builddirectory=build-gpgv-udeb
@@ -72,6 +72,7 @@ override_dh_auto_build-indep:
 	cd build-gpgv-win32/common && $(WIN32_FLAGS) $(MAKE) libgpgrl.a
 	cd build-gpgv-win32/common && $(WIN32_FLAGS) $(MAKE) libsimple-pwquery.a
 	cd build-gpgv-win32/kbx && $(WIN32_FLAGS) $(MAKE) libkeybox.a
+	cd build-gpgv-win32/regexp && $(WIN32_FLAGS) $(MAKE) libregexp.a
 	cd build-gpgv-win32/g10 && $(WIN32_FLAGS) $(MAKE) gpgv.exe
 	strip build-gpgv-win32/g10/gpgv.exe
 

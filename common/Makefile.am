@@ -28,7 +28,11 @@ if !HAVE_W32CE_SYSTEM
 noinst_LIBRARIES += libsimple-pwquery.a
 endif
 noinst_PROGRAMS = $(module_tests) $(module_maint_tests)
+if DISABLE_TESTS
+TESTS =
+else
 TESTS = $(module_tests)
+endif
 
 BUILT_SOURCES = audit-events.h status-codes.h
 
@@ -148,13 +152,13 @@ if MAINTAINER_MODE
 audit-events.h: Makefile.am mkstrtable.awk exaudit.awk audit.h
 	$(AWK) -f $(srcdir)/exaudit.awk $(srcdir)/audit.h \
 	  | $(AWK) -f $(srcdir)/mkstrtable.awk -v textidx=3 -v nogettext=1 \
-		   -v namespace=eventstr_  > $(srcdir)/audit-events.h
+		   -v pkg_namespace=eventstr_  > $(srcdir)/audit-events.h
 
 # Create the status-codes.h include file from status.h
 status-codes.h: Makefile.am mkstrtable.awk exstatus.awk status.h
 	$(AWK) -f $(srcdir)/exstatus.awk $(srcdir)/status.h \
 	  | $(AWK) -f $(srcdir)/mkstrtable.awk -v textidx=3 -v nogettext=1 \
-		   -v namespace=statusstr_  > $(srcdir)/status-codes.h
+		   -v pkg_namespace=statusstr_  > $(srcdir)/status-codes.h
 endif
 
 #
@@ -184,7 +188,7 @@ t_common_cflags = $(KSBA_CFLAGS) $(LIBGCRYPT_CFLAGS) \
                   $(LIBASSUAN_CFLAGS) $(GPG_ERROR_CFLAGS) $(INCICONV)
 t_common_ldadd = libcommon.a \
                  $(LIBGCRYPT_LIBS) $(LIBASSUAN_LIBS) $(GPG_ERROR_LIBS) \
-	         $(LIBINTL) $(LIBICONV)
+	         $(LIBINTL) $(LIBICONV) $(NETLIBS)
 
 
 # Common tests

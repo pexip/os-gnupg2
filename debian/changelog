@@ -1,23 +1,212 @@
-gnupg2 (2.2.12-1+deb10u1) buster; urgency=medium
+gnupg2 (2.2.27-2+deb11u1) bullseye; urgency=medium
 
-  * drop unneeded patch for printing revocation certificates
-  * backport bugfix and stability patches from upstream 2.2.13
-  * backport bugfix and stability patches from upstream 2.2.14
-  * backport documentation, stability, ssh, and WKD patches from upstream 2.2.15
-  * backport documentation and bugfix patches from upstream 2.2.16
-  * import bugfixes and cleanup around secret key handling from 2.2.14
-  * backport bugfixes, documentation, WKD, and keyserver fixes from 2.2.17
-  * import efficiency and security fixes from upstream STABLE-BRANCH-2-2
-  * avoid using SKS pool CA unless the keyserver is hkps.pool.sks-keyservers.net
-  * drop import-clean from default keyserver options, to avoid data loss
-  * use keys.openpgp.org as the default keyserver
-  * enable merging certificate updates even if update has no user ID
-  * update Vcs-Git: to point to debian/buster branch
-  * Adopt migrate-pubring-from-classic-gpg robustness fixes (Closes: #931385)
-  * add new CI test: debian/tests/simple-tests
-  * debian/tests/gpgv-win32: make arch-specific (Closes: #905563)
+  [ Raphaël Hertzog ]
+  * Avoid network interaction in generator. Closes: #993578
 
- -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Thu, 22 Aug 2019 15:11:59 -0400
+  [ Christoph Biedl ]
+  * Backport "Scd: Fix CCID driver for SCM SPR332/SPR532". Closes: #982546
+
+  [ Daniel Kahn Gillmor ]
+  * update git to point to debian/bullseye branch
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Thu, 27 Jan 2022 14:46:11 -0500
+
+gnupg2 (2.2.27-2) unstable; urgency=medium
+
+  * Add a NEWS entry about the end of support for ~/.gnupg/options.
+    Closes: #985158
+
+ -- Christoph Biedl <debian.axhn@manchmal.in-ulm.de>  Thu, 22 Apr 2021 20:40:36 +0200
+
+gnupg2 (2.2.27-1) unstable; urgency=medium
+
+  [ NIIBE Yutaka ]
+  * New upstream release.
+
+  [ Christoph Biedl ]
+  * Tighten libgcrypt and libksba dependency
+
+  [ Daniel Kahn Gillmor ]
+  * change debian packaging branch name to debian/main
+  * refresh patches using gbp pq
+  * point to upstream commit used to improve spawning reliability
+  * Refresh 3072-bit default patch
+  * standards-version: bump to 4.5.1 (no changes needed)
+  * dh: bump to dh 13
+  * clean up lintian overrides
+  * fully drop symcryptrun
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Mon, 08 Feb 2021 17:57:00 -0500
+
+gnupg2 (2.2.26-1) UNRELEASED; urgency=medium
+
+  [ Jeremiah C. Foster ]
+  * debian/scdaemon.udev: Add an entry for Librem Key.
+
+  [ NIIBE Yutaka ]
+  * New upstream release.
+  * refresh patches.
+  * debian/rules: Add build for regexp.
+  * debian/gnupg-utils.install: Remove /usr/bin/symcryptrun.
+    Fix for gpgsplit, which is changed in upstream from 'noinst'.
+  * debian/patches/gpg-change-agent-spawn-2019-07-24-v2.patch: New patch to
+    fix a race condition, backported from master (Closes: #868550, #972525).
+  * debian/scdaemon.udev: Add a generic entry for "Gnuk Token" and another
+    for GnuPG e.V.
+  * org.gnupg.scdaemon.metainfo.xml: Add an entry for GnuPG e.V.
+
+ -- NIIBE Yutaka <gniibe@fsij.org>  Thu, 07 Jan 2021 09:07:21 +0900
+
+gnupg2 (2.2.20-1) unstable; urgency=medium
+
+  * New upstream release
+  * refresh patches
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Mon, 23 Mar 2020 15:05:13 -0400
+
+gnupg2 (2.2.19-3) unstable; urgency=medium
+
+  * d/copyright update years
+  * Avoid errors in systemd environment generator (Closes: #950836)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Mon, 09 Mar 2020 14:27:42 -0400
+
+gnupg2 (2.2.19-2) unstable; urgency=medium
+
+  * clarify that keys.openpgp.org is a debian-specific
+    choice for default keyserver
+  * Standards-version: bump to 4.5.0 (no changes needed)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Thu, 27 Feb 2020 17:35:36 -0500
+
+gnupg2 (2.2.19-1) unstable; urgency=medium
+
+  * New upstream release
+
+  [ Roger Shimizu ]
+  * d/control: Update Build-Depends: libgpg-error-dev (>= 1.35)
+
+  [ Daniel Kahn Gillmor ]
+  * clean up unnecessary whitespace
+  * Ship identifiers for Librem Key (Closes: #932474)
+  * drop extra systemd user service links (Closes: #931954)
+  * update signing key for Werner
+  * fixup patch
+  * drop patches already upstream
+  * refresh patches
+  * cherry-pick fix from upstream
+  * dirmngr-idling: add some commentary about dns housekeeping
+  * bump standards-version to 4.4.1 (no changes needed)
+  * sort scdaemon metainfo.xml modalias
+  * announce librem key in scdaemon metainfo.xml
+  * add lintian overrides for executables shipped by upstream in /usr/lib/gnupg/
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Wed, 08 Jan 2020 10:33:12 -0500
+
+gnupg2 (2.2.17-3) unstable; urgency=medium
+
+  * avoid data loss when using keyservers (see https://dev.gnupg.org/T4628)
+  * avoid O(N^2) operations when listing certificates with many sigs
+  * d/tests/gpgv-win32: make more robust
+  * avoid system CAs for HKPS pool
+  * build-depend on gpgrt-tools for yat2m
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Tue, 16 Jul 2019 20:20:39 -0400
+
+gnupg2 (2.2.17-2) unstable; urgency=medium
+
+  * d/tests/gpgv-win32: depend directly on wine32 (Closes: #905563)
+  * d/tests/gpgv-win32: by default pinentry-mode loopback is allowed upstream
+  * migrate-pubring-from-classic-gpg: make more robust (Closes: #931385)
+  * migrate-pubring-from-classic-gpg: always pass --homedir and --batch
+  * added test of migration script
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Sat, 13 Jul 2019 21:36:24 -0400
+
+gnupg2 (2.2.17-1) unstable; urgency=medium
+
+  * New upstream release
+  * upload to unstable, since buster is released
+
+  [ kwadronaut ]
+  * Specify what new and old keyrings are in migration script
+
+  [ Daniel Kahn Gillmor ]
+  * drop unnecessary patches, including broken patch for printing
+    revocation certificates
+  * use DEP-14 for debian/master
+  * refresh and reorganize patches
+  * only use Kristian's CA for the SKS HKPS pool
+  * switch to hkps://keys.openpgp.org as the default keyserver
+  * added NEWS entry about move to keys.openpgp.org
+  * Standards-Version: bump to 4.4.0 (no changes needed)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Thu, 11 Jul 2019 22:09:21 -0400
+
+gnupg2 (2.2.16-2) experimental; urgency=medium
+
+  * fix HKPS redirections
+  * drop dh_missing --fail-missing (Closes: #930042)
+  * enable cert update without uids (Closes: #930665)
+  * fix upstream spelling of 'arbitrary'
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Tue, 18 Jun 2019 12:59:57 -0400
+
+gnupg2 (2.2.16-1) experimental; urgency=medium
+
+  * clean up logcheck rules for gpg-agent (Closes: #918466)
+  * drop patches already upstream
+  * refresh patches
+  * use upstream manpages for gpg-wks-{client,server} (Closes: #918586)
+  * use distributed form of gpgtar, not build/tools/gpgtar
+  * gnupg: ship every doc that upstream ships
+  * gnupg-l10n: ship basic help.txt as well
+  * explicitly avoid shipping gpgscm without the Scheme library
+  * use dh_missing --fail-missing to catch unshipped files
+  * gbp-import filter: drop m4/iconv.m4 as well
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Tue, 28 May 2019 20:13:01 -0400
+
+gnupg2 (2.2.15-1) experimental; urgency=medium
+
+  * new upstream release (still in experimental, due to freeze)
+  * refresh patches
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Mon, 01 Apr 2019 09:56:09 -0400
+
+gnupg2 (2.2.14-1) experimental; urgency=medium
+
+  * new upstream release (to experimental, due to freeze)
+  * drop patches already upstream
+  * refresh remaining patches
+  * move to debhelper 12
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Wed, 20 Mar 2019 07:19:50 -0400
+
+gnupg2 (2.2.13-2) unstable; urgency=medium
+
+  * Correct gpg-wks-server manpage (Closes: #927431) Thanks, ju xor!
+  * Fix handling private keys with comments (Closes: #928963, #928964)
+  * clean up logcheck rules for gpg-agent (Closes: #918466)
+  * Update gpg-wks-client.1 (Closes: #918586)
+  * cherry-pick more patches from upstream STABLE-BRANCH-2-2
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Tue, 14 May 2019 02:08:47 -0400
+
+gnupg2 (2.2.13-1) unstable; urgency=medium
+
+  * New upstream release (Closes: #919856)
+
+  [ Roger Shimizu ]
+  * add some simple tests for gpg{,v}. Thanks to Julian Andres Klode
+    (Closes: #920892).
+
+  [ Daniel Kahn Gillmor ]
+  * refresh patches
+  * cherry-pick fixes from upstream STABLE-BRANCH-2-2
+  * Standards-Version: bump to 4.3.0 (no changes needed)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Sat, 02 Mar 2019 11:50:15 -0500
 
 gnupg2 (2.2.12-1) unstable; urgency=medium
 
