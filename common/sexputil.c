@@ -577,3 +577,124 @@ get_pk_algo_from_canon_sexp (const unsigned char *keydata, size_t keydatalen)
   gcry_sexp_release (sexp);
   return algo;
 }
+
+
+/* Given the public key S_PKEY, return a new buffer with a descriptive
+ * string for its algorithm.  This function may return NULL on memory
+ * error.  If R_ALGOID is not NULL the gcrypt algo id is stored there. */
+char *
+pubkey_algo_string (gcry_sexp_t s_pkey, enum gcry_pk_algos *r_algoid)
+{
+  const char *prefix;
+  gcry_sexp_t l1;
+  char *algoname;
+  int algo;
+  char *result;
+
+  if (r_algoid)
+    *r_algoid = 0;
+
+  l1 = gcry_sexp_find_token (s_pkey, "public-key", 0);
+  if (!l1)
+    return xtrystrdup ("E_no_key");
+  {
+    gcry_sexp_t l_tmp = gcry_sexp_cadr (l1);
+    gcry_sexp_release (l1);
+    l1 = l_tmp;
+  }
+  algoname = gcry_sexp_nth_string (l1, 0);
+  gcry_sexp_release (l1);
+  if (!algoname)
+    return xtrystrdup ("E_no_algo");
+
+  algo = gcry_pk_map_name (algoname);
+  switch (algo)
+    {
+    case GCRY_PK_RSA: prefix = "rsa"; break;
+    case GCRY_PK_ELG: prefix = "elg"; break;
+    case GCRY_PK_DSA: prefix = "dsa"; break;
+    case GCRY_PK_ECC: prefix = "";  break;
+    default:          prefix = NULL; break;
+    }
+
+  if (prefix && *prefix)
+    result = xtryasprintf ("%s%u", prefix, gcry_pk_get_nbits (s_pkey));
+  else if (prefix)
+    {
+      const char *curve = gcry_pk_get_curve (s_pkey, 0, NULL);
+      const char *name = openpgp_oid_to_curve
+        (openpgp_curve_to_oid (curve, NULL), 0);
+
+      if (name)
+        result = xtrystrdup (name);
+      else if (curve)
+        result = xtryasprintf ("X_%s", curve);
+      else
+        result = xtrystrdup ("E_unknown");
+    }
+  else
+    result = xtryasprintf ("X_algo_%d", algo);
+
+  if (r_algoid)
+    *r_algoid = algo;
+  xfree (algoname);
+  return result;
+}
+
+
+/* Map a pubkey algo id from gcrypt to a string.  This is the same as
+ * gcry_pk_algo_name but makes sure that the ECC algo identifiers are
+ * not all mapped to "ECC".  */
+const char *
+pubkey_algo_to_string (int algo)
+{
+  if (algo == GCRY_PK_ECDSA)
+    return "ECDSA";
+  else if (algo == GCRY_PK_ECDH)
+    return "ECDH";
+  else if (algo == GCRY_PK_EDDSA)
+    return "EdDSA";
+  else
+    return gcry_pk_algo_name (algo);
+}
+
+
+/* Map a hash algo id from gcrypt to a string.  This is the same as
+ * gcry_md_algo_name but the returned string is lower case, as
+ * expected by libksba and it avoids some overhead.  */
+const char *
+hash_algo_to_string (int algo)
+{
+  static const struct
+  {
+    const char *name;
+    int algo;
+  } hashnames[] =
+      {
+       { "sha256",    GCRY_MD_SHA256 },
+       { "sha512",    GCRY_MD_SHA512 },
+       { "sha1",      GCRY_MD_SHA1 },
+       { "sha384",    GCRY_MD_SHA384 },
+       { "sha224",    GCRY_MD_SHA224 },
+       { "sha3-224",  GCRY_MD_SHA3_224 },
+       { "sha3-256",  GCRY_MD_SHA3_256 },
+       { "sha3-384",  GCRY_MD_SHA3_384 },
+       { "sha3-512",  GCRY_MD_SHA3_512 },
+       { "ripemd160", GCRY_MD_RMD160 },
+       { "rmd160",    GCRY_MD_RMD160 },
+       { "md2",       GCRY_MD_MD2 },
+       { "md4",       GCRY_MD_MD4 },
+       { "tiger",     GCRY_MD_TIGER },
+       { "haval",     GCRY_MD_HAVAL },
+#if GCRYPT_VERSION_NUMBER >= 0x010900
+       { "sm3",       GCRY_MD_SM3 },
+#endif
+       { "md5",       GCRY_MD_MD5 }
+      };
+  int i;
+
+  for (i=0; i < DIM (hashnames); i++)
+    if (algo == hashnames[i].algo)
+      return hashnames[i].name;
+  return "?";
+}

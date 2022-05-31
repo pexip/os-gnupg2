@@ -32,6 +32,7 @@
 #define GNUPG_COMMON_HTTP_H
 
 #include <gpg-error.h>
+#include "../common/fwddecl.h"
 
 struct uri_tuple_s
 {
@@ -54,7 +55,8 @@ struct parsed_uri_s
   unsigned int opaque:1;/* Unknown scheme; PATH has the rest.  */
   unsigned int v6lit:1; /* Host was given as a literal v6 address.  */
   unsigned int onion:1; /* .onion address given.  */
-  unsigned int explicit_port :1; /* The port was explicitly specified.  */
+  unsigned int explicit_port:1; /* The port was explicitly specified.  */
+  unsigned int ad_current:1;    /* Use Active Directory's current user.  */
   char *auth;           /* username/password for basic auth.  */
   char *host; 	        /* Host (converted to lowercase). */
   unsigned short port;  /* Port (always set if the host is set). */
@@ -106,6 +108,7 @@ typedef struct http_context_s *http_t;
 struct http_redir_info_s
 {
   unsigned int redirects_left;   /* Number of still possible redirects.    */
+  ctrl_t ctrl;                   /* The usual connection info or NULL.     */
   const char *orig_url;          /* The original requested URL.            */
   unsigned int orig_onion:1;     /* Original request was an onion address. */
   unsigned int orig_https:1;     /* Original request was a http address.   */

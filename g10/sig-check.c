@@ -69,7 +69,7 @@ sig_check_dump_stats (void)
 int
 check_signature (ctrl_t ctrl, PKT_signature *sig, gcry_md_hd_t digest)
 {
-  return check_signature2 (ctrl, sig, digest, NULL, NULL, NULL, NULL);
+  return check_signature2 (ctrl, sig, digest, NULL, NULL, NULL, NULL, NULL);
 }
 
 
@@ -95,6 +95,9 @@ check_signature (ctrl_t ctrl, PKT_signature *sig, gcry_md_hd_t digest)
  * signature data from the version number through the hashed subpacket
  * data (inclusive) is hashed.")
  *
+ * If FORCED_PK is not NULL this public key is used to verify the
+ * signature and no other public key is looked up.
+ *
  * If R_EXPIREDATE is not NULL, R_EXPIREDATE is set to the key's
  * expiry.
  *
@@ -112,7 +115,9 @@ check_signature (ctrl_t ctrl, PKT_signature *sig, gcry_md_hd_t digest)
  * Returns 0 on success.  An error code otherwise.  */
 gpg_error_t
 check_signature2 (ctrl_t ctrl,
-                  PKT_signature *sig, gcry_md_hd_t digest, u32 *r_expiredate,
+                  PKT_signature *sig, gcry_md_hd_t digest,
+                  PKT_public_key *forced_pk,
+                  u32 *r_expiredate,
 		  int *r_expired, int *r_revoked, PKT_public_key **r_pk)
 {
   int rc=0;
@@ -156,10 +161,10 @@ check_signature2 (ctrl_t ctrl,
       log_info(_("WARNING: signature digest conflict in message\n"));
       rc = gpg_error (GPG_ERR_GENERAL);
     }
-  else if (get_pubkey_for_sig (ctrl, pk, sig))
+  else if (get_pubkey_for_sig (ctrl, pk, sig, forced_pk))
     rc = gpg_error (GPG_ERR_NO_PUBKEY);
   else if (!gnupg_pk_is_allowed (opt.compliance, PK_USE_VERIFICATION,
-                                 pk->pubkey_algo, pk->pkey,
+                                 pk->pubkey_algo, 0, pk->pkey,
                                  nbits_from_pk (pk),
                                  NULL))
     {
@@ -452,16 +457,14 @@ check_signature_end_simple (PKT_public_key *pk, PKT_signature *sig,
 {
   gcry_mpi_t result = NULL;
   int rc = 0;
-  const struct weakhash *weak;
 
   if (!opt.flags.allow_weak_digest_algos)
     {
-      for (weak = opt.weak_digests; weak; weak = weak->next)
-        if (sig->digest_algo == weak->algo)
-          {
-            print_digest_rejected_note(sig->digest_algo);
-            return GPG_ERR_DIGEST_ALGO;
-          }
+      if (is_weak_digest (sig->digest_algo))
+        {
+          print_digest_rejected_note (sig->digest_algo);
+          return GPG_ERR_DIGEST_ALGO;
+        }
     }
 
   /* For key signatures check that the key has a cert usage.  We may
@@ -824,6 +827,10 @@ check_signature_over_key_or_uid (ctrl_t ctrl, PKT_public_key *signer,
   PKT_public_key *pripk = kb->pkt->pkt.public_key;
   gcry_md_hd_t md;
   int signer_alloced = 0;
+  int stub_is_selfsig;
+
+  if (!is_selfsig)
+    is_selfsig = &stub_is_selfsig;
 
   rc = openpgp_pk_test_algo (sig->pubkey_algo);
   if (rc)
@@ -857,14 +864,11 @@ check_signature_over_key_or_uid (ctrl_t ctrl, PKT_public_key *signer,
 
   if (signer)
     {
-      if (is_selfsig)
-        {
-          if (signer->keyid[0] == pripk->keyid[0]
-              && signer->keyid[1] == pripk->keyid[1])
-            *is_selfsig = 1;
-          else
-            *is_selfsig = 0;
-        }
+      if (signer->keyid[0] == pripk->keyid[0]
+          && signer->keyid[1] == pripk->keyid[1])
+        *is_selfsig = 1;
+      else
+        *is_selfsig = 0;
     }
   else
     {
@@ -874,8 +878,7 @@ check_signature_over_key_or_uid (ctrl_t ctrl, PKT_public_key *signer,
         {
           /* Issued by the primary key.  */
           signer = pripk;
-          if (is_selfsig)
-            *is_selfsig = 1;
+          *is_selfsig = 1;
         }
       else
         {
@@ -904,8 +907,7 @@ check_signature_over_key_or_uid (ctrl_t ctrl, PKT_public_key *signer,
           if (! signer)
             {
               /* Signer by some other key.  */
-              if (is_selfsig)
-                *is_selfsig = 0;
+              *is_selfsig = 0;
               if (ret_pk)
                 {
                   signer = ret_pk;
@@ -924,7 +926,7 @@ check_signature_over_key_or_uid (ctrl_t ctrl, PKT_public_key *signer,
               if (IS_CERT (sig))
                 signer->req_usage = PUBKEY_USAGE_CERT;
 
-              rc = get_pubkey_for_sig (ctrl, signer, sig);
+              rc = get_pubkey_for_sig (ctrl, signer, sig, NULL);
               if (rc)
                 {
                   xfree (signer);
@@ -966,9 +968,24 @@ check_signature_over_key_or_uid (ctrl_t ctrl, PKT_public_key *signer,
   else if (IS_UID_SIG (sig) || IS_UID_REV (sig))
     {
       log_assert (packet->pkttype == PKT_USER_ID);
-      hash_public_key (md, pripk);
-      hash_uid_packet (packet->pkt.user_id, md, sig);
-      rc = check_signature_end_simple (signer, sig, md);
+      if (sig->digest_algo == DIGEST_ALGO_SHA1 && !*is_selfsig
+          && sig->timestamp > 1547856000
+          && !opt.flags.allow_weak_key_signatures)
+        {
+          /* If the signature was created using SHA-1 we consider this
+           * signature invalid because it makes it possible to mount a
+           * chosen-prefix collision.  We don't do this for
+           * self-signatures or for signatures created before the
+           * somewhat arbitrary cut-off date 2019-01-19.  */
+          print_sha1_keysig_rejected_note ();
+          rc = gpg_error (GPG_ERR_DIGEST_ALGO);
+        }
+      else
+        {
+          hash_public_key (md, pripk);
+          hash_uid_packet (packet->pkt.user_id, md, sig);
+          rc = check_signature_end_simple (signer, sig, md);
+        }
     }
   else
     {

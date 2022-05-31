@@ -79,7 +79,7 @@ ask_for_card (ctrl_t ctrl, const unsigned char *shadow_info, char **r_kid)
       rc = agent_card_serialno (ctrl, &serialno, want_sn);
       if (!rc)
         {
-          log_debug ("detected card with S/N %s\n", serialno);
+          log_info ("detected card with S/N %s\n", serialno);
           i = strcmp (serialno, want_sn);
           xfree (serialno);
           serialno = NULL;
@@ -93,13 +93,13 @@ ask_for_card (ctrl_t ctrl, const unsigned char *shadow_info, char **r_kid)
         }
       else if (gpg_err_code (rc) == GPG_ERR_ENODEV)
         {
-          log_debug ("no device present\n");
+          log_info ("no device present\n");
           rc = 0;
           no_card = 1;
         }
       else if (gpg_err_code (rc) == GPG_ERR_CARD_NOT_PRESENT)
         {
-          log_debug ("no card present\n");
+          log_info ("no card present\n");
           rc = 0;
           no_card = 2;
         }
@@ -169,7 +169,7 @@ encode_md_for_card (const unsigned char *digest, size_t digestlen, int algo,
   memcpy (frame, asn, asnlen);
   memcpy (frame+asnlen, digest, digestlen);
   if (DBG_CRYPTO)
-    log_printhex ("encoded hash:", frame, asnlen+digestlen);
+    log_printhex (frame, asnlen+digestlen, "encoded hash:");
 
   *r_val = frame;
   *r_len = asnlen+digestlen;
@@ -278,25 +278,47 @@ getpin_cb (void *opaque, const char *desc_text, const char *info,
         {
           if (info)
             {
-              char *desc, *desc2;
+              char *desc;
+              const char *desc2;
 
-              if ( asprintf (&desc,
-                             L_("%s%%0A%%0AUse the reader's pinpad for input."),
-                             info) < 0 )
+              if (!strcmp (info, "--ack"))
+                {
+                  desc2 = L_("Push ACK button on card/token.");
+
+                  if (desc_text)
+                    {
+                      desc = strconcat (desc_text,
+                                        has_percent0A_suffix (desc_text)
+                                        ? "%0A" : "%0A%0A",
+                                        desc2, NULL);
+                      desc2 = NULL;
+                    }
+                  else
+                    desc = NULL;
+                }
+              else
+                {
+                  desc2 = NULL;
+
+                  if (desc_text)
+                    desc = strconcat (desc_text,
+                                      has_percent0A_suffix (desc_text)
+                                      ? "%0A" : "%0A%0A",
+                                      info, "%0A%0A",
+                                      L_("Use the reader's pinpad for input."),
+                                      NULL);
+                  else
+                    desc = strconcat (info, "%0A%0A",
+                                      L_("Use the reader's pinpad for input."),
+                                      NULL);
+                }
+
+              if (!desc2 && !desc)
                 rc = gpg_error_from_syserror ();
               else
                 {
-                  /* Prepend DESC_TEXT to INFO.  */
-                  if (desc_text)
-                    desc2 = strconcat (desc_text,
-                                       has_percent0A_suffix (desc_text)
-                                       ? "%0A" : "%0A%0A",
-                                       desc, NULL);
-                  else
-                    desc2 = NULL;
                   rc = agent_popup_message_start (ctrl,
                                                   desc2? desc2:desc, NULL);
-                  xfree (desc2);
                   xfree (desc);
                 }
             }
@@ -414,6 +436,7 @@ getpin_cb (void *opaque, const char *desc_text, const char *info,
 int
 divert_pksign (ctrl_t ctrl, const char *desc_text,
                const unsigned char *digest, size_t digestlen, int algo,
+               const unsigned char *grip,
                const unsigned char *shadow_info, unsigned char **r_sig,
                size_t *r_siglen)
 {
@@ -427,6 +450,22 @@ divert_pksign (ctrl_t ctrl, const char *desc_text,
   rc = ask_for_card (ctrl, shadow_info, &kid);
   if (rc)
     return rc;
+
+  /* For OpenPGP cards we better use the keygrip as key reference.
+   * This has the advantage that app-openpgp can check that the stored
+   * key matches our expectation.  This is important in case new keys
+   * have been created on the same card but the sub file has not been
+   * updated.  In that case we would get a error from our final
+   * signature checking code or, if the pubkey algo is different,
+   * weird errors from the card (Conditions of use not satisfied).  */
+  if (kid && grip && !strncmp (kid, "OPENPGP.", 8))
+    {
+      xfree (kid);
+      kid = bin2hex (grip, KEYGRIP_LEN, NULL);
+      if (!kid)
+        return gpg_error_from_syserror ();
+    }
+
 
   if (algo == MD_USER_TLS_MD5SHA1)
     {
@@ -469,6 +508,7 @@ divert_pksign (ctrl_t ctrl, const char *desc_text,
 int
 divert_pkdecrypt (ctrl_t ctrl, const char *desc_text,
                   const unsigned char *cipher,
+                  const unsigned char *grip,
                   const unsigned char *shadow_info,
                   char **r_buf, size_t *r_len, int *r_padding)
 {
@@ -476,6 +516,7 @@ divert_pkdecrypt (ctrl_t ctrl, const char *desc_text,
   char *kid;
   const unsigned char *s;
   size_t n;
+  int depth;
   const unsigned char *ciphertext;
   size_t ciphertextlen;
   char *plaintext;
@@ -484,7 +525,6 @@ divert_pkdecrypt (ctrl_t ctrl, const char *desc_text,
   (void)desc_text;
 
   *r_padding = -1;
-
   s = cipher;
   if (*s != '(')
     return gpg_error (GPG_ERR_INV_SEXP);
@@ -500,6 +540,21 @@ divert_pkdecrypt (ctrl_t ctrl, const char *desc_text,
   n = snext (&s);
   if (!n)
     return gpg_error (GPG_ERR_INV_SEXP);
+
+  /* First check whether we have a flags parameter and skip it.  */
+  if (smatch (&s, n, "flags"))
+    {
+      depth = 1;
+      if (sskip (&s, &depth) || depth)
+        return gpg_error (GPG_ERR_INV_SEXP);
+      if (*s != '(')
+        return gpg_error (GPG_ERR_INV_SEXP);
+      s++;
+      n = snext (&s);
+      if (!n)
+        return gpg_error (GPG_ERR_INV_SEXP);
+    }
+
   if (smatch (&s, n, "rsa"))
     {
       if (*s != '(')
@@ -547,6 +602,21 @@ divert_pkdecrypt (ctrl_t ctrl, const char *desc_text,
   rc = ask_for_card (ctrl, shadow_info, &kid);
   if (rc)
     return rc;
+
+  /* For OpenPGP cards we better use the keygrip as key reference.
+   * This has the advantage that app-openpgp can check that the stored
+   * key matches our expectation.  This is important in case new keys
+   * have been created on the same card but the sub file has not been
+   * updated.  In that case we would get a error from our final
+   * signature checking code or, if the pubkey algo is different,
+   * weird errors from the card (Conditions of use not satisfied).  */
+  if (kid && grip && !strncmp (kid, "OPENPGP.", 8))
+    {
+      xfree (kid);
+      kid = bin2hex (grip, KEYGRIP_LEN, NULL);
+      if (!kid)
+        return gpg_error_from_syserror ();
+    }
 
   rc = agent_card_pkdecrypt (ctrl, kid, getpin_cb, ctrl, NULL,
                              ciphertext, ciphertextlen,

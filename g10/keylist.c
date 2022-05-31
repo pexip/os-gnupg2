@@ -50,7 +50,7 @@
 static void list_all (ctrl_t, int, int);
 static void list_one (ctrl_t ctrl,
                       strlist_t names, int secret, int mark_secret);
-static void locate_one (ctrl_t ctrl, strlist_t names);
+static void locate_one (ctrl_t ctrl, strlist_t names, int no_local);
 static void print_card_serialno (const char *serialno);
 
 struct keylist_context
@@ -82,10 +82,11 @@ keylist_context_release (struct keylist_context *listctx)
 
 
 /* List the keys.  If list is NULL, all available keys are listed.
-   With LOCATE_MODE set the locate algorithm is used to find a
-   key.  */
+ * With LOCATE_MODE set the locate algorithm is used to find a key; if
+ * in addition NO_LOCAL is set the locate does not look into the local
+ * keyring.  */
 void
-public_key_list (ctrl_t ctrl, strlist_t list, int locate_mode)
+public_key_list (ctrl_t ctrl, strlist_t list, int locate_mode, int no_local)
 {
 #ifndef NO_TRUST_MODELS
   if (opt.with_colons)
@@ -139,7 +140,7 @@ public_key_list (ctrl_t ctrl, strlist_t list, int locate_mode)
 #endif
 
   if (locate_mode)
-    locate_one (ctrl, list);
+    locate_one (ctrl, list, no_local);
   else if (!list)
     list_all (ctrl, 0, opt.with_secret);
   else
@@ -522,11 +523,17 @@ list_all (ctrl_t ctrl, int secret, int mark_secret)
   lastresname = NULL;
   do
     {
+      if (secret)
+        glo_ctrl.silence_parse_warnings++;
       rc = keydb_get_keyblock (hd, &keyblock);
+      if (secret)
+        glo_ctrl.silence_parse_warnings--;
       if (rc)
 	{
           if (gpg_err_code (rc) == GPG_ERR_LEGACY_KEY)
             continue;  /* Skip legacy keys.  */
+          if (gpg_err_code (rc) == GPG_ERR_UNKNOWN_VERSION)
+            continue;  /* Skip keys with unknown versions.  */
 	  log_error ("keydb_get_keyblock failed: %s\n", gpg_strerror (rc));
 	  goto leave;
 	}
@@ -587,6 +594,7 @@ list_one (ctrl_t ctrl, strlist_t names, int secret, int mark_secret)
   int rc = 0;
   KBNODE keyblock = NULL;
   GETKEY_CTX ctx;
+  int any_secret;
   const char *resname;
   const char *keyring_str = _("Keyring");
   int i;
@@ -610,21 +618,38 @@ list_one (ctrl_t ctrl, strlist_t names, int secret, int mark_secret)
     {
       log_error ("error reading key: %s\n", gpg_strerror (rc));
       getkey_end (ctrl, ctx);
+      write_status_error ("keylist.getkey", rc);
       return;
     }
 
   do
     {
-      if ((opt.list_options & LIST_SHOW_KEYRING) && !opt.with_colons)
+      /* getkey_bynames makes sure that only secret keys are returned
+       * if requested, thus we do not need to test again.  With
+       * MARK_SECRET set (ie. option --with-secret) we have to test
+       * for a secret key, though.  */
+      if (secret)
+        any_secret = 1;
+      else if (mark_secret)
+        any_secret = !agent_probe_any_secret_key (NULL, keyblock);
+      else
+        any_secret = 0;
+
+      if (secret && !any_secret)
+        ;/* Secret key listing requested but getkey_bynames failed.  */
+      else
         {
-          resname = keydb_get_resource_name (get_ctx_handle (ctx));
-          es_fprintf (es_stdout, "%s: %s\n", keyring_str, resname);
-          for (i = strlen (resname) + strlen (keyring_str) + 2; i; i--)
-            es_putc ('-', es_stdout);
-          es_putc ('\n', es_stdout);
+          if ((opt.list_options & LIST_SHOW_KEYRING) && !opt.with_colons)
+            {
+              resname = keydb_get_resource_name (get_ctx_handle (ctx));
+              es_fprintf (es_stdout, "%s: %s\n", keyring_str, resname);
+              for (i = strlen (resname) + strlen (keyring_str) + 2; i; i--)
+                es_putc ('-', es_stdout);
+              es_putc ('\n', es_stdout);
+            }
+          list_keyblock (ctrl, keyblock, secret, any_secret,
+                         opt.fingerprint, &listctx);
         }
-      list_keyblock (ctrl,
-                     keyblock, secret, mark_secret, opt.fingerprint, &listctx);
       release_kbnode (keyblock);
     }
   while (!getkey_next (ctrl, ctx, NULL, &keyblock));
@@ -638,7 +663,7 @@ list_one (ctrl_t ctrl, strlist_t names, int secret, int mark_secret)
 
 
 static void
-locate_one (ctrl_t ctrl, strlist_t names)
+locate_one (ctrl_t ctrl, strlist_t names, int no_local)
 {
   int rc = 0;
   strlist_t sl;
@@ -652,7 +677,10 @@ locate_one (ctrl_t ctrl, strlist_t names)
 
   for (sl = names; sl; sl = sl->next)
     {
-      rc = get_best_pubkey_byname (ctrl, &ctx, NULL, sl->d, &keyblock, 1);
+      rc = get_best_pubkey_byname (ctrl,
+                                   no_local? GET_PUBKEY_NO_LOCAL
+                                   /*    */: GET_PUBKEY_NORMAL,
+                                   &ctx, NULL, sl->d, &keyblock, 1);
       if (rc)
 	{
 	  if (gpg_err_code (rc) != GPG_ERR_NO_PUBKEY)
@@ -862,6 +890,51 @@ dump_attribs (const PKT_user_id *uid, PKT_public_key *pk)
       es_fwrite (uid->attribs[i].data, uid->attribs[i].len, 1, attrib_fp);
       es_fflush (attrib_fp);
     }
+}
+
+
+/* Order two signatures.  We first order by keyid and then by creation
+ * time.  This is currently only used in keyedit.c  */
+int
+cmp_signodes (const void *av, const void *bv)
+{
+  const kbnode_t an = *(const kbnode_t *)av;
+  const kbnode_t bn = *(const kbnode_t *)bv;
+  const PKT_signature *a;
+  const PKT_signature *b;
+  int i;
+
+  /* log_assert (an->pkt->pkttype == PKT_SIGNATURE); */
+  /* log_assert (bn->pkt->pkttype == PKT_SIGNATURE); */
+
+  a = an->pkt->pkt.signature;
+  b = bn->pkt->pkt.signature;
+
+  /* Self-signatures are ordered first.  */
+  if ((an->flag & NODFLG_MARK_B) && !(bn->flag & NODFLG_MARK_B))
+    return -1;
+  if (!(an->flag & NODFLG_MARK_B) && (bn->flag & NODFLG_MARK_B))
+    return 1;
+
+  /* then the keyids.  (which are or course the same for self-sigs). */
+  i = keyid_cmp (a->keyid, b->keyid);
+  if (i)
+    return i;
+
+  /* Followed by creation time */
+  if (a->timestamp > b->timestamp)
+    return 1;
+  if (a->timestamp < b->timestamp)
+    return -1;
+
+  /* followed by the class in a way that a rev comes first.  */
+  if (a->sig_class > b->sig_class)
+    return 1;
+  if (a->sig_class < b->sig_class)
+    return -1;
+
+  /* To make the sort stable we compare the entire structure as last resort.  */
+  return memcmp (a, b, sizeof *a);
 }
 
 
@@ -1312,7 +1385,7 @@ print_compliance_flags (PKT_public_key *pk,
       es_fputs (gnupg_status_compliance_flag (CO_GNUPG), es_stdout);
       any++;
     }
-  if (gnupg_pk_is_compliant (CO_DE_VS, pk->pubkey_algo, pk->pkey,
+  if (gnupg_pk_is_compliant (CO_DE_VS, pk->pubkey_algo, 0, pk->pkey,
 			     keylength, curvename))
     {
       es_fprintf (es_stdout, any ? " %s" : "%s",
@@ -2058,10 +2131,18 @@ print_key_line (ctrl_t ctrl, estream_t fp, PKT_public_key *pk, int secret)
     tty_fprintf (fp, "/%s", keystr_from_pk (pk));
   tty_fprintf (fp, " %s", datestr_from_pk (pk));
 
-  if ((opt.list_options & LIST_SHOW_USAGE))
+  if (pk->flags.primary
+      && !(openpgp_pk_algo_usage (pk->pubkey_algo)
+           & (PUBKEY_USAGE_CERT| PUBKEY_USAGE_SIG|PUBKEY_USAGE_AUTH)))
+    {
+      /* A primary key which is really not capable to sign.  */
+      tty_fprintf (fp, " [INVALID_ALGO]");
+    }
+  else if ((opt.list_options & LIST_SHOW_USAGE))
     {
       tty_fprintf (fp, " [%s]", usagestr_from_pk (pk, 0));
     }
+
   if (pk->flags.revoked)
     {
       tty_fprintf (fp, " [");

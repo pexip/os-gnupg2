@@ -71,7 +71,16 @@ enum {
   SW_HOST_NO_READER     = 0x1000c,
   SW_HOST_ABORTED       = 0x1000d,
   SW_HOST_NO_PINPAD     = 0x1000e,
-  SW_HOST_ALREADY_CONNECTED = 0x1000f
+  SW_HOST_ALREADY_CONNECTED = 0x1000f,
+  SW_HOST_CANCELLED     = 0x10010,
+  SW_HOST_DEVICE_ACCESS = 0x10011,
+  SW_HOST_USB_OTHER     = 0x10020,
+  SW_HOST_USB_IO        = 0x10021,
+  SW_HOST_USB_ACCESS    = 0x10023,
+  SW_HOST_USB_NO_DEVICE = 0x10024,
+  SW_HOST_USB_BUSY      = 0x10026,
+  SW_HOST_USB_TIMEOUT   = 0x10027,
+  SW_HOST_USB_OVERFLOW  = 0x10028
 };
 
 struct dev_list;
@@ -116,6 +125,7 @@ int apdu_connect (int slot);
 int apdu_disconnect (int slot);
 
 int apdu_set_progress_cb (int slot, gcry_handler_progress_t cb, void *cb_arg);
+int apdu_set_prompt_cb (int slot, void (*cb) (void *, int), void *cb_arg);
 
 int apdu_reset (int slot);
 int apdu_get_status (int slot, int hang, unsigned int *status);
@@ -136,7 +146,7 @@ int apdu_send_le (int slot, int extended_mode,
                   unsigned char **retbuf, size_t *retbuflen);
 int apdu_send_direct (int slot, size_t extended_length,
                       const unsigned char *apdudata, size_t apdudatalen,
-                      int handle_more,
+                      int handle_more, unsigned int *r_sw,
                       unsigned char **retbuf, size_t *retbuflen);
 const char *apdu_get_reader_name (int slot);
 
