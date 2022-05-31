@@ -36,8 +36,12 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="20a0", ATTR{idProduct}=="4107", ENV{ID_SMARTC
 SUBSYSTEM=="usb", ATTR{idVendor}=="20a0", ATTR{idProduct}=="4108", ENV{ID_SMARTCARD_READER}="1", ENV{ID_SMARTCARD_READER_DRIVER}="gnupg"
 SUBSYSTEM=="usb", ATTR{idVendor}=="20a0", ATTR{idProduct}=="4109", ENV{ID_SMARTCARD_READER}="1", ENV{ID_SMARTCARD_READER_DRIVER}="gnupg"
 SUBSYSTEM=="usb", ATTR{idVendor}=="20a0", ATTR{idProduct}=="4211", ENV{ID_SMARTCARD_READER}="1", ENV{ID_SMARTCARD_READER_DRIVER}="gnupg"
+## Librem Key
+SUBSYSTEM=="usb", ATTR{idVendor}=="316d", ATTR{idProduct}=="4c4b", ENV{ID_SMARTCARD_READER}="1", ENV{ID_SMARTCARD_READER_DRIVER}="gnupg"
 ## Gnuk Token
+SUBSYSTEM=="usb", ATTR{product}=="Gnuk Token", ENV{ID_SMARTCARD_READER}="1", ENV{ID_SMARTCARD_READER_DRIVER}="gnupg"
 SUBSYSTEM=="usb", ATTR{idVendor}=="234b", ATTR{idProduct}=="0000", ENV{ID_SMARTCARD_READER}="1", ENV{ID_SMARTCARD_READER_DRIVER}="gnupg"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1209", ATTR{idProduct}=="2440", ENV{ID_SMARTCARD_READER}="1", ENV{ID_SMARTCARD_READER_DRIVER}="gnupg"
 ## Alcor Micro Corp cardreader (in ThinkPad X250)
 SUBSYSTEM=="usb", ATTR{idVendor}=="058f", ATTR{idProduct}=="9540", ENV{ID_SMARTCARD_READER}="1", ENV{ID_SMARTCARD_READER_DRIVER}="gnupg"
 ## Fujitsu Siemens

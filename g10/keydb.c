@@ -29,6 +29,7 @@
 
 #include "gpg.h"
 #include "../common/util.h"
+#include "../common/sysutils.h"
 #include "options.h"
 #include "main.h" /*try_make_homedir ()*/
 #include "packet.h"
@@ -293,6 +294,7 @@ keyblock_cache_clear (struct keydb_handle *hd)
 static gpg_error_t
 maybe_create_keyring_or_box (char *filename, int is_box, int force_create)
 {
+  gpg_err_code_t ec;
   dotlock_t lockhd = NULL;
   IOBUF iobuf;
   int rc;
@@ -303,8 +305,8 @@ maybe_create_keyring_or_box (char *filename, int is_box, int force_create)
   int save_slash;
 
   /* A quick test whether the filename already exists. */
-  if (!access (filename, F_OK))
-    return !access (filename, R_OK)? 0 : gpg_error (GPG_ERR_EACCES);
+  if (!gnupg_access (filename, F_OK))
+    return !gnupg_access (filename, R_OK)? 0 : gpg_error (GPG_ERR_EACCES);
 
   /* If we don't want to create a new file at all, there is no need to
      go any further - bail out right here.  */
@@ -330,7 +332,7 @@ maybe_create_keyring_or_box (char *filename, int is_box, int force_create)
                                            not happen though.  */
   save_slash = *last_slash_in_filename;
   *last_slash_in_filename = 0;
-  if (access(filename, F_OK))
+  if (gnupg_access(filename, F_OK))
     {
       static int tried;
 
@@ -339,9 +341,9 @@ maybe_create_keyring_or_box (char *filename, int is_box, int force_create)
           tried = 1;
           try_make_homedir (filename);
         }
-      if (access (filename, F_OK))
+      if ((ec = gnupg_access (filename, F_OK)))
         {
-          rc = gpg_error_from_syserror ();
+          rc = gpg_error (ec);
           *last_slash_in_filename = save_slash;
           goto leave;
         }
@@ -398,12 +400,12 @@ maybe_create_keyring_or_box (char *filename, int is_box, int force_create)
   if (rc)
     goto leave;
 
-  if (!access (filename, F_OK))
+  if (!gnupg_access (filename, F_OK))
     {
       rc = 0;  /* Okay, we may access the file now.  */
       goto leave;
     }
-  if (!access (bak_fname, F_OK) && !access (tmp_fname, F_OK))
+  if (!gnupg_access (bak_fname, F_OK) && !gnupg_access (tmp_fname, F_OK))
     {
       /* Very likely another process is updating a pubring.gpg and we
          should not create a pubring.kbx.  */
@@ -442,13 +444,13 @@ maybe_create_keyring_or_box (char *filename, int is_box, int force_create)
      that the detection magic will work the next time it is used.  */
   if (is_box)
     {
-      FILE *fp = fopen (filename, "wb");
+      estream_t fp = es_fopen (filename, "wb");
       if (!fp)
         rc = gpg_error_from_syserror ();
       else
         {
           rc = _keybox_write_header_blob (fp, 1);
-          fclose (fp);
+          es_fclose (fp);
         }
       if (rc)
         {
@@ -502,7 +504,7 @@ rt_from_file (const char *filename, int *r_found, int *r_openpgp)
   KeydbResourceType rt = KEYDB_RESOURCE_TYPE_NONE;
 
   *r_found = *r_openpgp = 0;
-  fp = fopen (filename, "rb");
+  fp = gnupg_fopen (filename, "rb");
   if (fp)
     {
       *r_found = 1;
@@ -812,14 +814,27 @@ keydb_add_resource (const char *url, unsigned int flags)
               err = gpg_error (GPG_ERR_RESOURCE_LIMIT);
             else
               {
+                KEYBOX_HANDLE kbxhd;
+
                 if ((flags & KEYDB_RESOURCE_FLAG_PRIMARY))
                   primary_keydb = token;
                 all_resources[used_resources].type = rt;
                 all_resources[used_resources].u.kb = NULL; /* Not used here */
                 all_resources[used_resources].token = token;
 
-                /* FIXME: Do a compress run if needed and no other
-                   user is currently using the keybox. */
+                /* Do a compress run if needed and no other user is
+                 * currently using the keybox. */
+                kbxhd = keybox_new_openpgp (token, 0);
+                if (kbxhd)
+                  {
+                    if (!keybox_lock (kbxhd, 1, 0))
+                      {
+                        keybox_compress (kbxhd);
+                        keybox_lock (kbxhd, 0, 0);
+                      }
+
+                    keybox_release (kbxhd);
+                  }
 
                 used_resources++;
               }
@@ -1083,7 +1098,7 @@ lock_all (KEYDB_HANDLE hd)
           rc = keyring_lock (hd->active[i].u.kr, 1);
           break;
         case KEYDB_RESOURCE_TYPE_KEYBOX:
-          rc = keybox_lock (hd->active[i].u.kb, 1);
+          rc = keybox_lock (hd->active[i].u.kb, 1, -1);
           break;
         }
     }
@@ -1101,7 +1116,7 @@ lock_all (KEYDB_HANDLE hd)
               keyring_lock (hd->active[i].u.kr, 0);
               break;
             case KEYDB_RESOURCE_TYPE_KEYBOX:
-              keybox_lock (hd->active[i].u.kb, 0);
+              keybox_lock (hd->active[i].u.kb, 0, 0);
               break;
             }
         }
@@ -1134,7 +1149,7 @@ unlock_all (KEYDB_HANDLE hd)
           keyring_lock (hd->active[i].u.kr, 0);
           break;
         case KEYDB_RESOURCE_TYPE_KEYBOX:
-          keybox_lock (hd->active[i].u.kb, 0);
+          keybox_lock (hd->active[i].u.kb, 0, 0);
           break;
         }
     }
@@ -1249,9 +1264,19 @@ parse_keyblock_image (iobuf_t iobuf, int pk_no, int uid_no,
 	}
       if (err)
         {
+          es_fflush (es_stdout);
           log_error ("parse_keyblock_image: read error: %s\n",
                      gpg_strerror (err));
-          err = gpg_error (GPG_ERR_INV_KEYRING);
+          if (gpg_err_code (err) == GPG_ERR_INV_PACKET)
+            {
+              free_packet (pkt, &parsectx);
+              init_packet (pkt);
+              continue;
+            }
+          /* Unknown version maybe due to v5 keys - we treat this
+           * error different.  */
+          if (gpg_err_code (err) != GPG_ERR_UNKNOWN_VERSION)
+            err = gpg_error (GPG_ERR_INV_KEYRING);
           break;
         }
 
@@ -1955,7 +1980,9 @@ keydb_search (KEYDB_HANDLE hd, KEYDB_SEARCH_DESC *desc,
             rc = keybox_search (hd->active[hd->current].u.kb, desc,
                                 ndesc, KEYBOX_BLOBTYPE_PGP,
                                 descindex, &hd->skipped_long_blobs);
-          while (rc == GPG_ERR_LEGACY_KEY);
+          while (gpg_err_code (rc) == GPG_ERR_LEGACY_KEY
+                 || gpg_err_code (rc) == GPG_ERR_UNKNOWN_VERSION)
+            ;
           break;
         }
 

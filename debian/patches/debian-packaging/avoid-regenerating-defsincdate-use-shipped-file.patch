@@ -14,14 +14,14 @@ debian/patches/) might result in different dates on the files than we
 expect after they're applied by dpkg or quilt or whatever, which makes
 the datestamp unreproducible.
 ---
- doc/Makefile.am | 7 -------
- 1 file changed, 7 deletions(-)
+ doc/Makefile.am | 9 ---------
+ 1 file changed, 9 deletions(-)
 
 diff --git a/doc/Makefile.am b/doc/Makefile.am
-index d47d83e..c0a81b0 100644
+index 2b882c3..6be571b 100644
 --- a/doc/Makefile.am
 +++ b/doc/Makefile.am
-@@ -177,13 +177,6 @@ $(myman_pages) gnupg.7 : yat2m-stamp defs.inc
+@@ -178,15 +178,6 @@ $(myman_pages) gnupg.7 : yat2m-stamp defs.inc
  
  dist-hook: defsincdate
  
@@ -30,6 +30,8 @@ index d47d83e..c0a81b0 100644
 -	if test -e $(top_srcdir)/.git; then \
 -	  (cd $(srcdir) && git log -1 --format='%ct' \
 -               -- $(gnupg_TEXINFOS) 2>/dev/null) >>defsincdate; \
+-        elif test x"$$SOURCE_DATE_EPOCH" != x; then   \
+-	   echo "$$SOURCE_DATE_EPOCH" >>defsincdate ; \
 -	fi
 -
  defs.inc : defsincdate Makefile mkdefsinc

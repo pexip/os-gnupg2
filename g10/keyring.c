@@ -228,7 +228,7 @@ keyring_is_writable (void *token)
 {
   KR_RESOURCE r = token;
 
-  return r? (r->read_only || !access (r->fname, W_OK)) : 0;
+  return r? (r->read_only || !gnupg_access (r->fname, W_OK)) : 0;
 }
 
 
@@ -473,11 +473,14 @@ keyring_get_keyblock (KEYRING_HANDLE hd, KBNODE *ret_kb)
         }
 
         in_cert = 1;
-        node = lastnode = new_kbnode (pkt);
+        node = new_kbnode (pkt);
         if (!keyblock)
-          keyblock = node;
+          keyblock = lastnode = node;
         else
-          add_kbnode (keyblock, node);
+          {
+            lastnode->next = node;
+            lastnode = node;
+          }
         switch (pkt->pkttype)
           {
           case PKT_PUBLIC_KEY:
@@ -1368,7 +1371,7 @@ rename_tmp_file (const char *bakfname, const char *tmpfname, const char *fname)
 
     statbuf.st_mode=S_IRUSR | S_IWUSR;
 
-    if (!stat (bakfname, &statbuf) && !chmod (fname, statbuf.st_mode))
+    if (!gnupg_stat (bakfname, &statbuf) && !chmod (fname, statbuf.st_mode))
       ;
     else
       log_error ("WARNING: unable to restore permissions to '%s': %s",
@@ -1476,6 +1479,8 @@ keyring_rebuild_cache (ctrl_t ctrl, void *token, int noisy)
         {
           if (gpg_err_code (rc) == GPG_ERR_LEGACY_KEY)
             continue;  /* Skip legacy keys.  */
+          if (gpg_err_code (rc) == GPG_ERR_UNKNOWN_VERSION)
+            continue;  /* Skip keys with unknown version.  */
           log_error ("keyring_get_keyblock failed: %s\n", gpg_strerror (rc));
           goto leave;
         }
@@ -1601,6 +1606,7 @@ static int
 do_copy (int mode, const char *fname, KBNODE root,
          off_t start_offset, unsigned int n_packets )
 {
+    gpg_err_code_t ec;
     IOBUF fp, newfp;
     int rc=0;
     char *bakfname = NULL;
@@ -1608,8 +1614,8 @@ do_copy (int mode, const char *fname, KBNODE root,
 
     /* Open the source file. Because we do a rename, we have to check the
        permissions of the file */
-    if (access (fname, W_OK))
-      return gpg_error_from_syserror ();
+    if ((ec = gnupg_access (fname, W_OK)))
+      return gpg_error (ec);
 
     fp = iobuf_open (fname);
     if (mode == 1 && !fp && errno == ENOENT) {

@@ -67,6 +67,7 @@ lock_app (app_t app, ctrl_t ctrl)
     }
 
   apdu_set_progress_cb (app->slot, print_progress_line, ctrl);
+  apdu_set_prompt_cb (app->slot, popup_prompt, ctrl);
 
   return 0;
 }
@@ -76,6 +77,7 @@ static void
 unlock_app (app_t app)
 {
   apdu_set_progress_cb (app->slot, NULL, NULL);
+  apdu_set_prompt_cb (app->slot, NULL, NULL);
 
   if (npth_mutex_unlock (&app->lock))
     {
@@ -117,6 +119,9 @@ static gpg_error_t
 check_conflict (app_t app, const char *name)
 {
   if (!app || !name || (app->apptype && !ascii_strcasecmp (app->apptype, name)))
+    return 0;
+
+  if (app->apptype && !strcmp (app->apptype, "UNDEFINED"))
     return 0;
 
   log_info ("application '%s' in use - can't switch\n",
@@ -863,8 +868,8 @@ app_writekey (app_t app, ctrl_t ctrl,
 
 /* Perform a SETATTR operation.  */
 gpg_error_t
-app_genkey (app_t app, ctrl_t ctrl, const char *keynostr, unsigned int flags,
-            time_t createtime,
+app_genkey (app_t app, ctrl_t ctrl, const char *keynostr,
+            const char *keytype, unsigned int flags, time_t createtime,
             gpg_error_t (*pincb)(void*, const char *, char **),
             void *pincb_arg)
 {
@@ -879,7 +884,7 @@ app_genkey (app_t app, ctrl_t ctrl, const char *keynostr, unsigned int flags,
   err = lock_app (app, ctrl);
   if (err)
     return err;
-  err = app->fnc.genkey (app, ctrl, keynostr, flags,
+  err = app->fnc.genkey (app, ctrl, keynostr, keytype, flags,
                          createtime, pincb, pincb_arg);
   unlock_app (app);
   if (opt.verbose)
@@ -912,7 +917,8 @@ app_get_challenge (app_t app, ctrl_t ctrl, size_t nbytes, unsigned char *buffer)
 
 /* Perform a CHANGE REFERENCE DATA or RESET RETRY COUNTER operation.  */
 gpg_error_t
-app_change_pin (app_t app, ctrl_t ctrl, const char *chvnostr, int reset_mode,
+app_change_pin (app_t app, ctrl_t ctrl, const char *chvnostr,
+                unsigned int flags,
                 gpg_error_t (*pincb)(void*, const char *, char **),
                 void *pincb_arg)
 {
@@ -927,8 +933,7 @@ app_change_pin (app_t app, ctrl_t ctrl, const char *chvnostr, int reset_mode,
   err = lock_app (app, ctrl);
   if (err)
     return err;
-  err = app->fnc.change_pin (app, ctrl, chvnostr, reset_mode,
-                             pincb, pincb_arg);
+  err = app->fnc.change_pin (app, ctrl, chvnostr, flags, pincb, pincb_arg);
   unlock_app (app);
   if (opt.verbose)
     log_info ("operation change_pin result: %s\n", gpg_strerror (err));
@@ -936,7 +941,7 @@ app_change_pin (app_t app, ctrl_t ctrl, const char *chvnostr, int reset_mode,
 }
 
 
-/* Perform a VERIFY operation without doing anything lese.  This may
+/* Perform a VERIFY operation without doing anything else.  This may
    be used to initialize a the PIN cache for long lasting other
    operations.  Its use is highly application dependent. */
 gpg_error_t
@@ -968,18 +973,18 @@ report_change (int slot, int old_status, int cur_status)
   char *homestr, *envstr;
   char *fname;
   char templ[50];
-  FILE *fp;
+  estream_t fp;
 
   snprintf (templ, sizeof templ, "reader_%d.status", slot);
   fname = make_filename (gnupg_homedir (), templ, NULL );
-  fp = fopen (fname, "w");
+  fp = es_fopen (fname, "w");
   if (fp)
     {
-      fprintf (fp, "%s\n",
+      es_fprintf (fp, "%s\n",
                (cur_status & 1)? "USABLE":
                (cur_status & 4)? "ACTIVE":
                (cur_status & 2)? "PRESENT": "NOCARD");
-      fclose (fp);
+      es_fclose (fp);
     }
   xfree (fname);
 

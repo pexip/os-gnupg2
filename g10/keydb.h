@@ -52,12 +52,13 @@ typedef struct getkey_ctx_s *getkey_ctx_t;
  * This structure is also used to bind arbitrary packets together.
  */
 
-struct kbnode_struct {
-    KBNODE next;
-    PACKET *pkt;
-    int flag;
-    int private_flag;
-    ulong recno;  /* used while updating the trustdb */
+struct kbnode_struct
+{
+  kbnode_t next;
+  PACKET *pkt;
+  int flag;          /* Local use during keyblock processing (not cloned).*/
+  unsigned int tag;  /* Ditto. */
+  int private_flag;
 };
 
 #define is_deleted_kbnode(a)  ((a)->private_flag & 1)
@@ -127,9 +128,10 @@ struct pubkey_find_info {
 
 
 /* Helper type for preference functions. */
-union pref_hint
+struct pref_hint
 {
-  int digest_length;
+  int digest_length;  /* We want at least this digest length.  */
+  int exact;          /* We need to use exactly this length.   */
 };
 
 
@@ -261,9 +263,9 @@ gpg_error_t find_and_check_key (ctrl_t ctrl,
                                 pk_list_t *pk_list_addr);
 
 int  algo_available( preftype_t preftype, int algo,
-		     const union pref_hint *hint );
+		     const struct pref_hint *hint );
 int  select_algo_from_prefs( PK_LIST pk_list, int preftype,
-			     int request, const union pref_hint *hint);
+			     int request, const struct pref_hint *hint);
 int  select_mdc_from_pklist (PK_LIST pk_list);
 void warn_missing_mdc_from_pklist (PK_LIST pk_list);
 void warn_missing_aes_from_pklist (PK_LIST pk_list);
@@ -314,7 +316,8 @@ void getkey_disable_caches(void);
 
 /* Return the public key used for signature SIG and store it at PK.  */
 gpg_error_t get_pubkey_for_sig (ctrl_t ctrl,
-                                PKT_public_key *pk, PKT_signature *sig);
+                                PKT_public_key *pk, PKT_signature *sig,
+                                PKT_public_key *forced_pk);
 
 /* Return the public key with the key id KEYID and store it at PK.  */
 int get_pubkey (ctrl_t ctrl, PKT_public_key *pk, u32 *keyid);
@@ -344,16 +347,25 @@ typedef struct pubkey_s *pubkey_t;
 /* Free a list of public keys.  */
 void pubkeys_free (pubkey_t keys);
 
+
+/* Mode flags for get_pubkey_byname.  */
+enum get_pubkey_modes
+  {
+   GET_PUBKEY_NORMAL = 0,
+   GET_PUBKEY_NO_AKL = 1,
+   GET_PUBKEY_NO_LOCAL = 2
+  };
+
 /* Find a public key identified by NAME.  */
-int get_pubkey_byname (ctrl_t ctrl,
+int get_pubkey_byname (ctrl_t ctrl, enum get_pubkey_modes mode,
                        GETKEY_CTX *retctx, PKT_public_key *pk,
 		       const char *name,
                        KBNODE *ret_keyblock, KEYDB_HANDLE *ret_kdbhd,
-		       int include_unusable, int no_akl );
+		       int include_unusable);
 
 /* Likewise, but only return the best match if NAME resembles a mail
  * address.  */
-gpg_error_t get_best_pubkey_byname (ctrl_t ctrl,
+gpg_error_t get_best_pubkey_byname (ctrl_t ctrl, enum get_pubkey_modes mode,
                                     GETKEY_CTX *retctx, PKT_public_key *pk,
                                     const char *name, KBNODE *ret_keyblock,
                                     int include_unusable);
@@ -361,6 +373,11 @@ gpg_error_t get_best_pubkey_byname (ctrl_t ctrl,
 /* Get a public key directly from file FNAME.  */
 gpg_error_t get_pubkey_fromfile (ctrl_t ctrl,
                                  PKT_public_key *pk, const char *fname);
+
+/* Get a public key from a buffer.  */
+gpg_error_t get_pubkey_from_buffer (ctrl_t ctrl, PKT_public_key *pkbuf,
+                                    const void *buffer, size_t buflen,
+                                    u32 *want_keyid, kbnode_t *r_keyblock);
 
 /* Return the public key with the key id KEYID iff the secret key is
  * available and store it at PK.  */
@@ -439,6 +456,7 @@ char *get_user_id_byfpr (ctrl_t ctrl, const byte *fpr, size_t *rn);
 char *get_user_id_byfpr_native (ctrl_t ctrl, const byte *fpr);
 
 void release_akl(void);
+int akl_empty_or_only_local (void);
 int parse_auto_key_locate(const char *options);
 int parse_key_origin (char *string);
 const char *key_origin_string (int origin);

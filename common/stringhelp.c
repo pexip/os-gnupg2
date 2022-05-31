@@ -213,6 +213,36 @@ trim_spaces( char *str )
     return str ;
 }
 
+
+/* Same as trim_spaces but only condider, space, tab, cr and lf as space.  */
+char *
+ascii_trim_spaces (char *str)
+{
+  char *string, *p, *mark;
+
+  string = str;
+
+  /* Find first non-ascii space character.  */
+  for (p=string; *p && ascii_isspace (*p); p++)
+    ;
+  /* Move characters.  */
+  for (mark=NULL; (*string = *p); string++, p++ )
+    {
+      if (ascii_isspace (*p))
+        {
+          if (!mark)
+            mark = string;
+        }
+      else
+        mark = NULL ;
+    }
+  if (mark)
+    *mark = '\0' ;  /* Remove trailing spaces. */
+
+  return str ;
+}
+
+
 /****************
  * remove trailing white spaces
  */
@@ -759,6 +789,12 @@ w32_strerror (int ec)
   FormatMessage (FORMAT_MESSAGE_FROM_SYSTEM, NULL, ec,
                  MAKELANGID (LANG_NEUTRAL, SUBLANG_DEFAULT),
                  strerr, DIM (strerr)-1, NULL);
+  {
+    /* Strip the CR,LF - we want just the string.  */
+    size_t n = strlen (strerr);
+    if (n > 2 && strerr[n-2] == '\r' && strerr[n-1] == '\n' )
+      strerr[n-2] = 0;
+  }
 #endif
   return strerr;
 }
@@ -806,6 +842,19 @@ ascii_strlwr (char *s)
   for (p=s; *p; p++ )
     if (isascii (*p) && *p >= 'A' && *p <= 'Z')
       *p |= 0x20;
+
+  return s;
+}
+
+/* Upcase all ASCII characters in S.  */
+char *
+ascii_strupr (char *s)
+{
+  char *p = s;
+
+  for (p=s; *p; p++ )
+    if (isascii (*p) && *p >= 'a' && *p <= 'z')
+      *p &= ~0x20;
 
   return s;
 }

@@ -67,7 +67,7 @@
 #include "ccid-driver.h"
 
 struct dev_list {
-  struct ccid_dev_table *ccid_table;
+  void *table;
   const char *portstr;
   int idx;
   int idx_max;
@@ -105,6 +105,7 @@ struct reader_table_s {
   int (*check_pinpad)(int, int, pininfo_t *);
   void (*dump_status_reader)(int);
   int (*set_progress_cb)(int, gcry_handler_progress_t, void*);
+  int (*set_prompt_cb)(int, void (*) (void *, int), void*);
   int (*pinpad_verify)(int, int, int, int, int, pininfo_t *);
   int (*pinpad_modify)(int, int, int, int, int, pininfo_t *);
 
@@ -444,6 +445,7 @@ new_reader_slot (void)
   reader_table[reader].check_pinpad = check_pcsc_pinpad;
   reader_table[reader].dump_status_reader = NULL;
   reader_table[reader].set_progress_cb = NULL;
+  reader_table[reader].set_prompt_cb = NULL;
   reader_table[reader].pinpad_verify = pcsc_pinpad_verify;
   reader_table[reader].pinpad_modify = pcsc_pinpad_modify;
 
@@ -473,7 +475,7 @@ dump_reader_status (int slot)
   if (reader_table[slot].atrlen)
     {
       log_info ("slot %d: ATR=", slot);
-      log_printhex ("", reader_table[slot].atr, reader_table[slot].atrlen);
+      log_printhex (reader_table[slot].atr, reader_table[slot].atrlen, "");
     }
 }
 
@@ -499,6 +501,14 @@ host_sw_string (long err)
     case SW_HOST_ABORTED: return "aborted";
     case SW_HOST_NO_PINPAD: return "no pinpad";
     case SW_HOST_ALREADY_CONNECTED: return "already connected";
+    case SW_HOST_CANCELLED: return "cancelled";
+    case SW_HOST_USB_OTHER:    return "USB general error";
+    case SW_HOST_USB_IO:       return "USB I/O error";
+    case SW_HOST_USB_ACCESS:   return "USB permission denied";
+    case SW_HOST_USB_NO_DEVICE:return "USB no device";
+    case SW_HOST_USB_BUSY:     return "USB busy";
+    case SW_HOST_USB_TIMEOUT:  return "USB timeout";
+    case SW_HOST_USB_OVERFLOW: return "USB overflow";
     default: return "unknown host status error";
     }
 }
@@ -605,7 +615,7 @@ pcsc_error_to_sw (long ec)
     {
     case 0:  rc = 0; break;
 
-    case PCSC_E_CANCELLED:           rc = SW_HOST_ABORTED; break;
+    case PCSC_E_CANCELLED:           rc = SW_HOST_CANCELLED; break;
     case PCSC_E_NO_MEMORY:           rc = SW_HOST_OUT_OF_CORE; break;
     case PCSC_E_TIMEOUT:             rc = SW_HOST_CARD_IO_ERROR; break;
     case PCSC_E_NO_SERVICE:
@@ -672,7 +682,7 @@ pcsc_get_status (int slot, unsigned int *status, int on_wire)
     reader_table[slot].pcsc.current_state =
       (rdrstates[0].event_state & ~PCSC_STATE_CHANGED);
 
-  if (DBG_CARD_IO)
+  if (DBG_READER)
     log_debug
       ("pcsc_get_status_change: %s%s%s%s%s%s%s%s%s%s\n",
        (rdrstates[0].event_state & PCSC_STATE_IGNORE)? " ignore":"",
@@ -736,7 +746,7 @@ pcsc_send_apdu (int slot, unsigned char *apdu, size_t apdulen,
     return err;
 
   if (DBG_CARD_IO)
-    log_printhex ("  PCSC_data:", apdu, apdulen);
+    log_printhex (apdu, apdulen, "  PCSC_data:");
 
   if ((reader_table[slot].pcsc.protocol & PCSC_PROTOCOL_T1))
       send_pci.protocol = PCSC_PROTOCOL_T1;
@@ -1403,6 +1413,14 @@ set_progress_cb_ccid_reader (int slot, gcry_handler_progress_t cb, void *cb_arg)
   return ccid_set_progress_cb (slotp->ccid.handle, cb, cb_arg);
 }
 
+static int
+set_prompt_cb_ccid_reader (int slot, void (*cb) (void *, int ), void *cb_arg)
+{
+  reader_table_t slotp = reader_table + slot;
+
+  return ccid_set_prompt_cb (slotp->ccid.handle, cb, cb_arg);
+}
+
 
 static int
 get_status_ccid (int slot, unsigned int *status, int on_wire)
@@ -1442,7 +1460,7 @@ send_apdu_ccid (int slot, unsigned char *apdu, size_t apdulen,
     return err;
 
   if (DBG_CARD_IO)
-    log_printhex (" raw apdu:", apdu, apdulen);
+    log_printhex (apdu, apdulen, " raw apdu:");
 
   maxbuflen = *buflen;
   if (pininfo)
@@ -1516,7 +1534,7 @@ open_ccid_reader (struct dev_list *dl)
     return -1;
   slotp = reader_table + slot;
 
-  err = ccid_open_reader (dl->portstr, dl->idx, dl->ccid_table,
+  err = ccid_open_reader (dl->portstr, dl->idx, dl->table,
                           &slotp->ccid.handle, &slotp->rdrname);
   if (!err)
     {
@@ -1542,6 +1560,7 @@ open_ccid_reader (struct dev_list *dl)
   reader_table[slot].check_pinpad = check_ccid_pinpad;
   reader_table[slot].dump_status_reader = dump_ccid_reader_status;
   reader_table[slot].set_progress_cb = set_progress_cb_ccid_reader;
+  reader_table[slot].set_prompt_cb = set_prompt_cb_ccid_reader;
   reader_table[slot].pinpad_verify = ccid_pinpad_operation;
   reader_table[slot].pinpad_modify = ccid_pinpad_operation;
   /* Our CCID reader code does not support T=0 at all, thus reset the
@@ -1711,7 +1730,7 @@ my_rapdu_send_apdu (int slot, unsigned char *apdu, size_t apdulen,
 
   *buflen = 0;
   if (DBG_CARD_IO)
-    log_printhex ("  APDU_data:", apdu, apdulen);
+    log_printhex (apdu, apdulen, "  APDU_data:");
 
   if (apdulen < 4)
     {
@@ -1874,14 +1893,14 @@ apdu_dev_list_start (const char *portstr, struct dev_list **l_p)
 #ifdef HAVE_LIBUSB
   if (opt.disable_ccid)
     {
-      dl->ccid_table = NULL;
+      dl->table = NULL;
       dl->idx_max = 1;
     }
   else
     {
       gpg_error_t err;
 
-      err = ccid_dev_scan (&dl->idx_max, &dl->ccid_table);
+      err = ccid_dev_scan (&dl->idx_max, &dl->table);
       if (err)
         return err;
 
@@ -1903,7 +1922,7 @@ apdu_dev_list_start (const char *portstr, struct dev_list **l_p)
         }
     }
 #else
-  dl->ccid_table = NULL;
+  dl->table = NULL;
   dl->idx_max = 1;
 #endif /* HAVE_LIBUSB */
 
@@ -1915,8 +1934,8 @@ void
 apdu_dev_list_finish (struct dev_list *dl)
 {
 #ifdef HAVE_LIBUSB
-  if (dl->ccid_table)
-    ccid_dev_scan_finish (dl->ccid_table, dl->idx_max);
+  if (dl->table)
+    ccid_dev_scan_finish (dl->table, dl->idx_max);
 #endif
   xfree (dl);
   npth_mutex_unlock (&reader_table_lock);
@@ -2032,7 +2051,7 @@ apdu_open_reader (struct dev_list *dl, int app_empty)
   int slot;
 
 #ifdef HAVE_LIBUSB
-  if (dl->ccid_table)
+  if (dl->table)
     { /* CCID readers.  */
       int readerno;
 
@@ -2069,7 +2088,7 @@ apdu_open_reader (struct dev_list *dl, int app_empty)
 
       while (dl->idx < dl->idx_max)
         {
-          unsigned int bai = ccid_get_BAI (dl->idx, dl->ccid_table);
+          unsigned int bai = ccid_get_BAI (dl->idx, dl->table);
 
           if (DBG_READER)
             log_debug ("apdu_open_reader: BAI=%x\n", bai);
@@ -2372,6 +2391,29 @@ apdu_set_progress_cb (int slot, gcry_handler_progress_t cb, void *cb_arg)
       if (!sw)
         {
           sw = reader_table[slot].set_progress_cb (slot, cb, cb_arg);
+          unlock_slot (slot);
+        }
+    }
+  else
+    sw = 0;
+  return sw;
+}
+
+
+int
+apdu_set_prompt_cb (int slot, void (*cb) (void *, int), void *cb_arg)
+{
+  int sw;
+
+  if (slot < 0 || slot >= MAX_READER || !reader_table[slot].used )
+    return SW_HOST_NO_DRIVER;
+
+  if (reader_table[slot].set_prompt_cb)
+    {
+      sw = lock_slot (slot);
+      if (!sw)
+        {
+          sw = reader_table[slot].set_prompt_cb (slot, cb, cb_arg);
           unlock_slot (slot);
         }
     }
@@ -2844,7 +2886,7 @@ send_le (int slot, int class, int ins, int p0, int p1,
       log_debug (" response: sw=%04X  datalen=%d\n",
                  sw, (unsigned int)resultlen);
       if ( !retbuf && (sw == SW_SUCCESS || (sw & 0xff00) == SW_MORE_DATA))
-        log_printhex ("    dump: ", result, resultlen);
+        log_printhex (result, resultlen, "    dump: ");
     }
 
   if (sw == SW_SUCCESS || sw == SW_EOF_REACHED)
@@ -2917,7 +2959,7 @@ send_le (int slot, int class, int ins, int p0, int p1,
               log_debug ("     more: sw=%04X  datalen=%d\n",
                          sw, (unsigned int)resultlen);
               if (!retbuf && (sw==SW_SUCCESS || (sw&0xff00)==SW_MORE_DATA))
-                log_printhex ("     dump: ", result, resultlen);
+                log_printhex (result, resultlen, "     dump: ");
             }
 
           if ((sw & 0xff00) == SW_MORE_DATA
@@ -2963,7 +3005,7 @@ send_le (int slot, int class, int ins, int p0, int p1,
   xfree (result_buffer);
 
   if (DBG_CARD_IO && retbuf && sw == SW_SUCCESS)
-    log_printhex ("      dump: ", *retbuf, *retbuflen);
+    log_printhex (*retbuf, *retbuflen, "      dump: ");
 
   return sw;
 }
@@ -3028,19 +3070,25 @@ apdu_send_simple (int slot, int extended_mode,
 
 
 /* This is a more generic version of the apdu sending routine.  It
-   takes an already formatted APDU in APDUDATA or length APDUDATALEN
-   and returns with an APDU including the status word.  With
-   HANDLE_MORE set to true this function will handle the MORE DATA
-   status and return all APDUs concatenated with one status word at
-   the end.  If EXTENDED_LENGTH is != 0 extended lengths are allowed
-   with a max. result data length of EXTENDED_LENGTH bytes.  The
-   function does not return a regular status word but 0 on success.
-   If the slot is locked, the function returns immediately with an
-   error.  */
+ * takes an already formatted APDU in APDUDATA or length APDUDATALEN
+ * and returns with an APDU including the status word.  With
+ * HANDLE_MORE set to true this function will handle the MORE DATA
+ * status and return all APDUs concatenated with one status word at
+ * the end.  If EXTENDED_LENGTH is != 0 extended lengths are allowed
+ * with a max. result data length of EXTENDED_LENGTH bytes.  The
+ * function does not return a regular status word but 0 on success.
+ * If the slot is locked, the function returns immediately with an
+ * error.
+ *
+ * Out of historical reasons the function returns 0 on success and
+ * outs the status word at the end of the result to be able to get the
+ * status word in the case of a not provided RETBUF, R_SW can be used
+ * to store the SW.  But note that R_SW qill only be set if the
+ * function returns 0. */
 int
 apdu_send_direct (int slot, size_t extended_length,
                   const unsigned char *apdudata, size_t apdudatalen,
-                  int handle_more,
+                  int handle_more, unsigned int *r_sw,
                   unsigned char **retbuf, size_t *retbuflen)
 {
 #define SHORT_RESULT_BUFFER_SIZE 258
@@ -3123,7 +3171,7 @@ apdu_send_direct (int slot, size_t extended_length,
       log_debug (" response: sw=%04X  datalen=%d\n",
                  sw, (unsigned int)resultlen);
       if ( !retbuf && (sw == SW_SUCCESS || (sw & 0xff00) == SW_MORE_DATA))
-        log_printhex ("     dump: ", result, resultlen);
+        log_printhex (result, resultlen, "     dump: ");
     }
 
   if (handle_more && (sw & 0xff00) == SW_MORE_DATA)
@@ -3179,7 +3227,7 @@ apdu_send_direct (int slot, size_t extended_length,
               log_debug ("     more: sw=%04X  datalen=%d\n",
                          sw, (unsigned int)resultlen);
               if (!retbuf && (sw==SW_SUCCESS || (sw&0xff00)==SW_MORE_DATA))
-                log_printhex ("     dump: ", result, resultlen);
+                log_printhex (result, resultlen, "     dump: ");
             }
 
           if ((sw & 0xff00) == SW_MORE_DATA
@@ -3247,8 +3295,12 @@ apdu_send_direct (int slot, size_t extended_length,
       (*retbuf)[(*retbuflen)++] = sw;
     }
 
+  if (r_sw)
+    *r_sw = sw;
+
   if (DBG_CARD_IO && retbuf)
-    log_printhex ("      dump: ", *retbuf, *retbuflen);
+    log_printhex (*retbuf, *retbuflen, "      dump: ");
+
 
   return 0;
 }

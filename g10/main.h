@@ -22,9 +22,9 @@
 
 #include "../common/types.h"
 #include "../common/iobuf.h"
+#include "../common/util.h"
 #include "keydb.h"
 #include "keyedit.h"
-#include "../common/util.h"
 
 /* It could be argued that the default cipher should be 3DES rather
    than AES128, and the default compression should be 0
@@ -91,9 +91,11 @@ void print_pubkey_algo_note (pubkey_algo_t algo);
 void print_cipher_algo_note (cipher_algo_t algo);
 void print_digest_algo_note (digest_algo_t algo);
 void print_digest_rejected_note (enum gcry_md_algos algo);
+void print_sha1_keysig_rejected_note (void);
 void print_reported_error (gpg_error_t err, gpg_err_code_t skip_if_ec);
 void print_further_info (const char *format, ...) GPGRT_ATTR_PRINTF(1,2);
 void additional_weak_digest (const char* digestname);
+int  is_weak_digest (digest_algo_t algo);
 
 /*-- armor.c --*/
 char *make_radix64_string( const byte *data, size_t len );
@@ -120,6 +122,12 @@ enum gcry_cipher_algos map_cipher_openpgp_to_gcry (cipher_algo_t algo);
 int openpgp_cipher_blocklen (cipher_algo_t algo);
 int openpgp_cipher_test_algo(cipher_algo_t algo);
 const char *openpgp_cipher_algo_name (cipher_algo_t algo);
+
+gpg_error_t openpgp_aead_test_algo (aead_algo_t algo);
+const char *openpgp_aead_algo_name (aead_algo_t algo);
+gpg_error_t openpgp_aead_algo_info (aead_algo_t algo,
+                                    enum gcry_cipher_modes *r_mode,
+                                    unsigned int *r_noncelen);
 
 pubkey_algo_t map_pk_gcry_to_openpgp (enum gcry_pk_algos algo);
 int openpgp_pk_test_algo (pubkey_algo_t algo);
@@ -222,7 +230,7 @@ int  cpr_get_answer_okay_cancel (const char *keyword,
 void display_online_help( const char *keyword );
 
 /*-- encode.c --*/
-int setup_symkey (STRING2KEY **symkey_s2k,DEK **symkey_dek);
+gpg_error_t setup_symkey (STRING2KEY **symkey_s2k,DEK **symkey_dek);
 void encrypt_seskey (DEK *dek, DEK **seskey, byte *enckey);
 int use_mdc (pk_list_t pk_list,int algo);
 int encrypt_symmetric (const char *filename );
@@ -350,8 +358,10 @@ gpg_error_t parse_and_set_import_filter (const char *string);
 import_filter_t save_and_clear_import_filter (void);
 void            restore_import_filter (import_filter_t filt);
 
-gpg_error_t read_key_from_file (ctrl_t ctrl, const char *fname,
-                                kbnode_t *r_keyblock);
+gpg_error_t read_key_from_file_or_buffer (ctrl_t ctrl, const char *fname,
+                                          const void *buffer, size_t buflen,
+                                          kbnode_t *r_keyblock);
+gpg_error_t import_included_key_block (ctrl_t ctrl, kbnode_t keyblock);
 void import_keys (ctrl_t ctrl, char **fnames, int nnames,
 		  import_stats_t stats_hd, unsigned int options,
                   int origin, const char *url);
@@ -370,11 +380,13 @@ struct impex_filter_parm_s
 {
   ctrl_t ctrl;
   kbnode_t node;
+  char hexfpr[2*MAX_FINGERPRINT_LEN + 1];
 };
 
 const char *impex_filter_getval (void *cookie, const char *propname);
 gpg_error_t transfer_secret_keys (ctrl_t ctrl, struct import_stats_s *stats,
-                                  kbnode_t sec_keyblock, int batch, int force);
+                                  kbnode_t sec_keyblock, int batch, int force,
+                                  int only_marked);
 
 int collapse_uids( KBNODE *keyblock );
 
@@ -392,6 +404,10 @@ void export_print_stats (export_stats_t stats);
 
 int parse_export_options(char *str,unsigned int *options,int noisy);
 gpg_error_t parse_and_set_export_filter (const char *string);
+void push_export_filters (void);
+void pop_export_filters (void);
+
+int exact_subkey_match_p (KEYDB_SEARCH_DESC *desc, kbnode_t node);
 
 int export_pubkeys (ctrl_t ctrl, strlist_t users, unsigned int options,
                     export_stats_t stats);
@@ -402,6 +418,7 @@ int export_secsubkeys (ctrl_t ctrl, strlist_t users, unsigned int options,
 
 gpg_error_t export_pubkey_buffer (ctrl_t ctrl, const char *keyspec,
                                   unsigned int options,
+                                  const void *prefix, size_t prefixlen,
                                   export_stats_t stats,
                                   kbnode_t *r_keyblock,
                                   void **r_data, size_t *r_datalen);
@@ -431,16 +448,19 @@ int gen_desig_revoke (ctrl_t ctrl, const char *uname, strlist_t locusr);
 int revocation_reason_build_cb( PKT_signature *sig, void *opaque );
 struct revocation_reason_info *
 		ask_revocation_reason( int key_rev, int cert_rev, int hint );
-struct revocation_reason_info * get_default_uid_revocation_reason(void);
-void release_revocation_reason_info( struct revocation_reason_info *reason );
+struct revocation_reason_info * get_default_uid_revocation_reason (void);
+struct revocation_reason_info * get_default_sig_revocation_reason (void);
+void release_revocation_reason_info (struct revocation_reason_info *reason);
 
 /*-- keylist.c --*/
-void public_key_list (ctrl_t ctrl, strlist_t list, int locate_mode );
+void public_key_list (ctrl_t ctrl, strlist_t list,
+                      int locate_mode, int no_local);
 void secret_key_list (ctrl_t ctrl, strlist_t list );
 void print_subpackets_colon(PKT_signature *sig);
 void reorder_keyblock (KBNODE keyblock);
 void list_keyblock_direct (ctrl_t ctrl, kbnode_t keyblock, int secret,
                            int has_secret, int fpr, int no_validity);
+int  cmp_signodes (const void *av, const void *bv);
 void print_fingerprint (ctrl_t ctrl, estream_t fp,
                         PKT_public_key *pk, int mode);
 void print_revokers (estream_t fp, PKT_public_key *pk);
