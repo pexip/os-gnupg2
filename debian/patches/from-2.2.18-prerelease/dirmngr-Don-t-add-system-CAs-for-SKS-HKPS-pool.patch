@@ -1,0 +1,32 @@
+From: NIIBE Yutaka <gniibe@fsij.org>
+Date: Tue, 16 Jul 2019 10:10:52 +0900
+Subject: dirmngr: Don't add system CAs for SKS HKPS pool.
+
+* dirmngr/http.c [HTTP_USE_GNUTLS] (http_session_new): Clear
+add_system_cas.
+
+--
+
+Cherry-picking the master commit of:
+	75e0ec65170b7053743406e3f3b605febcf7312a
+
+GnuPG-bug-id: 4594
+Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
+(cherry picked from commit 58e234fbeb6cc5908b69a73e50428f02e584e504)
+---
+ dirmngr/http.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/dirmngr/http.c b/dirmngr/http.c
+index d2456c6..1ba8e79 100644
+--- a/dirmngr/http.c
++++ b/dirmngr/http.c
+@@ -791,6 +791,8 @@ http_session_new (http_session_t *r_session,
+                         pemname, gnutls_strerror (rc));
+             xfree (pemname);
+           }
++
++        add_system_cas = 0;
+       }
+ 
+     /* Add configured certificates to the session.  */

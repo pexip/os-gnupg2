@@ -16,7 +16,6 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
- * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 #include <config.h>
@@ -26,7 +25,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#define INCLUDED_BY_MAIN_MODULE 1
 #include "../common/util.h"
 #include "../common/status.h"
 #include "../common/i18n.h"
@@ -63,8 +61,6 @@ enum cmd_and_opt_values
     aRead,
     aInstallKey,
     aRemoveKey,
-    aPrintWKDHash,
-    aPrintWKDURL,
 
     oGpgProgram,
     oSend,
@@ -94,10 +90,6 @@ static ARGPARSE_OPTS opts[] = {
               "install a key into a directory"),
   ARGPARSE_c (aRemoveKey, "remove-key",
               "remove a key from a directory"),
-  ARGPARSE_c (aPrintWKDHash, "print-wkd-hash",
-              "Print the WKD identifier for the given user ids"),
-  ARGPARSE_c (aPrintWKDURL, "print-wkd-url",
-              "Print the WKD URL for the given user id"),
 
   ARGPARSE_group (301, ("@\nOptions:\n ")),
 
@@ -137,8 +129,6 @@ const char *fake_submission_addr;
 
 
 static void wrong_args (const char *text) GPGRT_ATTR_NORETURN;
-static gpg_error_t proc_userid_from_stdin (gpg_error_t (*func)(const char *),
-                                           const char *text);
 static gpg_error_t command_supported (char *userid);
 static gpg_error_t command_check (char *userid);
 static gpg_error_t command_send (const char *fingerprint, const char *userid);
@@ -160,11 +150,9 @@ my_strusage( int level )
 
   switch (level)
     {
-    case  9: p = "LGPL-2.1-or-later"; break;
     case 11: p = "gpg-wks-client"; break;
     case 12: p = "@GNUPG@"; break;
     case 13: p = VERSION; break;
-    case 14: p = GNUPG_DEF_COPYRIGHT_LINE; break;
     case 17: p = PRINTABLE_OS_NAME; break;
     case 19: p = ("Please report bugs to <@EMAIL@>.\n"); break;
 
@@ -199,7 +187,7 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
   enum cmd_and_opt_values cmd = 0;
   int no_more_options = 0;
 
-  while (!no_more_options && gnupg_argparse (NULL, pargs, popts))
+  while (!no_more_options && optfile_parse (NULL, NULL, NULL, pargs, popts))
     {
       switch (pargs->r_opt)
         {
@@ -242,12 +230,10 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
         case aCheck:
         case aInstallKey:
         case aRemoveKey:
-        case aPrintWKDHash:
-        case aPrintWKDURL:
           cmd = pargs->r_opt;
           break;
 
-        default: pargs->err = ARGPARSE_PRINT_ERROR; break;
+        default: pargs->err = 2; break;
 	}
     }
 
@@ -260,7 +246,7 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
 int
 main (int argc, char **argv)
 {
-  gpg_error_t err, delayed_err;
+  gpg_error_t err;
   ARGPARSE_ARGS pargs;
   enum cmd_and_opt_values cmd;
 
@@ -280,7 +266,6 @@ main (int argc, char **argv)
   pargs.argv  = &argv;
   pargs.flags = ARGPARSE_FLAG_KEEP;
   cmd = parse_arguments (&pargs, opts);
-  gnupg_argparse (NULL, &pargs, NULL);
 
   if (log_get_errorcount (0))
     exit (2);
@@ -311,7 +296,7 @@ main (int argc, char **argv)
     {
       struct stat sb;
 
-      if (gnupg_stat (opt.directory, &sb))
+      if (stat (opt.directory, &sb))
         {
           err = gpg_error_from_syserror ();
           log_error ("error accessing directory '%s': %s\n",
@@ -392,39 +377,6 @@ main (int argc, char **argv)
       err = wks_cmd_remove_key (*argv);
       break;
 
-    case aPrintWKDHash:
-    case aPrintWKDURL:
-      if (!argc)
-        {
-          if (cmd == aPrintWKDHash)
-            err = proc_userid_from_stdin (wks_cmd_print_wkd_hash,
-                                          "printing WKD hash");
-          else
-            err = proc_userid_from_stdin (wks_cmd_print_wkd_url,
-                                          "printing WKD URL");
-        }
-      else
-        {
-          for (err = delayed_err = 0; !err && argc; argc--, argv++)
-            {
-              if (cmd == aPrintWKDHash)
-                err = wks_cmd_print_wkd_hash (*argv);
-              else
-                err = wks_cmd_print_wkd_url (*argv);
-              if (gpg_err_code (err) == GPG_ERR_INV_USER_ID)
-                {
-                  /* Diagnostic already printed.  */
-                  delayed_err = err;
-                  err = 0;
-                }
-              else if (err)
-                log_error ("printing hash failed: %s\n", gpg_strerror (err));
-            }
-          if (!err)
-            err = delayed_err;
-        }
-      break;
-
     default:
       usage (1);
       err = 0;
@@ -438,61 +390,8 @@ main (int argc, char **argv)
     wks_write_status (STATUS_FAILURE, "- %u", GPG_ERR_GENERAL);
   else
     wks_write_status (STATUS_SUCCESS, NULL);
-  return (err || log_get_errorcount (0))? 1:0;
+  return log_get_errorcount (0)? 1:0;
 }
-
-
-/* Read user ids from stdin and call FUNC for each user id.  TEXT is
- * used for error messages.  */
-static gpg_error_t
-proc_userid_from_stdin (gpg_error_t (*func)(const char *), const char *text)
-{
-  gpg_error_t err = 0;
-  gpg_error_t delayed_err = 0;
-  char line[2048];
-  size_t n = 0;
-
-  /* If we are on a terminal disable buffering to get direct response.  */
-  if (gnupg_isatty (es_fileno (es_stdin))
-      && gnupg_isatty (es_fileno (es_stdout)))
-    {
-      es_setvbuf (es_stdin, NULL, _IONBF, 0);
-      es_setvbuf (es_stdout, NULL, _IOLBF, 0);
-    }
-
-  while (es_fgets (line, sizeof line - 1, es_stdin))
-    {
-      n = strlen (line);
-      if (!n || line[n-1] != '\n')
-        {
-          err = gpg_error (*line? GPG_ERR_LINE_TOO_LONG
-                           : GPG_ERR_INCOMPLETE_LINE);
-          log_error ("error reading stdin: %s\n", gpg_strerror (err));
-          break;
-        }
-      trim_spaces (line);
-      err = func (line);
-      if (gpg_err_code (err) == GPG_ERR_INV_USER_ID)
-        {
-          delayed_err = err;
-          err = 0;
-        }
-      else if (err)
-        log_error ("%s failed: %s\n", text, gpg_strerror (err));
-    }
-  if (es_ferror (es_stdin))
-    {
-      err = gpg_error_from_syserror ();
-      log_error ("error reading stdin: %s\n", gpg_strerror (err));
-      goto leave;
-    }
-
- leave:
-  if (!err)
-    err = delayed_err;
-  return err;
-}
-
 
 
 
@@ -1252,7 +1151,6 @@ encrypt_response (estream_t *r_output, estream_t input, const char *addrspec,
   ccparray_put (&ccp, "--status-fd=2");
   ccparray_put (&ccp, "--always-trust");
   ccparray_put (&ccp, "--armor");
-  ccparray_put (&ccp, "-z0");  /* No compression for improved robustness.  */
   if (fake_submission_addr)
     ccparray_put (&ccp, "--auto-key-locate=clear,local");
   else

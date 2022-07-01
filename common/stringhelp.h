@@ -42,7 +42,6 @@ char *has_leading_keyword (const char *string, const char *keyword);
 const char *memistr (const void *buf, size_t buflen, const char *sub);
 char *mem2str( char *, const void *, size_t);
 char *trim_spaces( char *string );
-char *ascii_trim_spaces (char *string);
 char *trim_trailing_spaces( char *string );
 unsigned int trim_trailing_chars( unsigned char *line, unsigned len,
 					      const char *trimchars);
@@ -77,7 +76,6 @@ int ascii_islower (int c);
 int ascii_toupper (int c);
 int ascii_tolower (int c);
 char *ascii_strlwr (char *s);
-char *ascii_strupr (char *s);
 int ascii_strcasecmp( const char *a, const char *b );
 int ascii_strncasecmp (const char *a, const char *b, size_t n);
 int ascii_memcasecmp( const void *a, const void *b, size_t n );

@@ -835,8 +835,8 @@ cmd_pkdecrypt (assuan_context_t ctx, char *line)
 
 
 static const char hlp_genkey[] =
-  "GENKEY [--no-protection] [--preset] [--timestamp=<isodate>]\n"
-  "       [--inq-passwd] [--passwd-nonce=<s>] [<cache_nonce>]\n"
+  "GENKEY [--no-protection] [--preset] [--inq-passwd]\n"
+  "       [--passwd-nonce=<s>] [<cache_nonce>]\n"
   "\n"
   "Generate a new key, store the secret part and return the public\n"
   "part.  Here is an example transaction:\n"
@@ -849,13 +849,11 @@ static const char hlp_genkey[] =
   "  S: D   (rsa (n 326487324683264) (e 10001)))\n"
   "  S: OK key created\n"
   "\n"
-  "If the --preset option is used the passphrase for the generated\n"
-  "key will be added to the cache.  If --inq-passwd is used an inquire\n"
+  "When the --preset option is used the passphrase for the generated\n"
+  "key will be added to the cache.  When --inq-passwd is used an inquire\n"
   "with the keyword NEWPASSWD is used to request the passphrase for the\n"
-  "new key.  If a --passwd-nonce is used, the corresponding cached\n"
-  "passphrase is used to protect the new key.  If --timestamp is given\n"
-  "its value is recorded as the key's creation time; the value is\n"
-  "expected in ISO format (e.g. \"20030316T120000\").";
+  "new key.  When a --passwd-nonce is used, the corresponding cached\n"
+  "passphrase is used to protect the new key.";
 static gpg_error_t
 cmd_genkey (assuan_context_t ctx, char *line)
 {
@@ -872,8 +870,6 @@ cmd_genkey (assuan_context_t ctx, char *line)
   int opt_inq_passwd;
   size_t n;
   char *p, *pend;
-  const char *s;
-  time_t opt_timestamp;
   int c;
 
   if (ctrl->restricted)
@@ -897,22 +893,6 @@ cmd_genkey (assuan_context_t ctx, char *line)
           goto leave;
         }
     }
-  if ((s=has_option_name (line, "--timestamp")))
-    {
-      if (*s != '=')
-        {
-          rc = set_error (GPG_ERR_ASS_PARAMETER, "missing value for option");
-          goto leave;
-        }
-      opt_timestamp = isotime2epoch (s+1);
-      if (opt_timestamp < 1)
-        {
-          rc = set_error (GPG_ERR_ASS_PARAMETER, "invalid time value");
-          goto leave;
-        }
-    }
-  else
-    opt_timestamp = 0;
   line = skip_options (line);
 
   for (p=line; *p && *p != ' ' && *p != '\t'; p++)
@@ -952,8 +932,7 @@ cmd_genkey (assuan_context_t ctx, char *line)
   else if (passwd_nonce)
     newpasswd = agent_get_cache (ctrl, passwd_nonce, CACHE_MODE_NONCE);
 
-  rc = agent_genkey (ctrl, cache_nonce, opt_timestamp,
-                     (char*)value, valuelen, no_protection,
+  rc = agent_genkey (ctrl, cache_nonce, (char*)value, valuelen, no_protection,
                      newpasswd, opt_preset, &outbuf);
 
  leave:
@@ -1069,7 +1048,7 @@ cmd_readkey (assuan_context_t ctx, char *line)
 
 
 static const char hlp_keyinfo[] =
-  "KEYINFO [--[ssh-]list] [--data] [--ssh-fpr[=algo]] [--with-ssh] <keygrip>\n"
+  "KEYINFO [--[ssh-]list] [--data] [--ssh-fpr] [--with-ssh] <keygrip>\n"
   "\n"
   "Return information about the key specified by the KEYGRIP.  If the\n"
   "key is not available GPG_ERR_NOT_FOUND is returned.  If the option\n"
@@ -1105,9 +1084,7 @@ static const char hlp_keyinfo[] =
   "    '-' - Unknown protection.\n"
   "\n"
   "FPR returns the formatted ssh-style fingerprint of the key.  It is only\n"
-  "    printed if the option --ssh-fpr has been used.  If ALGO is not given\n"
-  "    to that option the default ssh fingerprint algo is used.  Without the\n"
-  "    option a '-' is printed.\n"
+  "    printed if the option --ssh-fpr has been used.  It defaults to '-'.\n"
   "\n"
   "TTL is the TTL in seconds for that key or '-' if n/a.\n"
   "\n"
@@ -1194,7 +1171,7 @@ do_one_keyinfo (ctrl_t ctrl, const unsigned char *grip, assuan_context_t ctx,
 
       if (!agent_raw_key_from_file (ctrl, grip, &key))
         {
-          ssh_get_fingerprint_string (key, with_ssh_fpr, &fpr);
+          ssh_get_fingerprint_string (key, GCRY_MD_MD5, &fpr);
           gcry_sexp_release (key);
         }
     }
@@ -1252,15 +1229,15 @@ do_one_keyinfo (ctrl_t ctrl, const unsigned char *grip, assuan_context_t ctx,
 }
 
 
-/* Entry into the command KEYINFO.  This function handles the
- * command option processing.  For details see hlp_keyinfo above.  */
+/* Entry int for the command KEYINFO.  This function handles the
+   command option processing.  For details see hlp_keyinfo above.  */
 static gpg_error_t
 cmd_keyinfo (assuan_context_t ctx, char *line)
 {
   ctrl_t ctrl = assuan_get_pointer (ctx);
   int err;
   unsigned char grip[20];
-  gnupg_dir_t dir = NULL;
+  DIR *dir = NULL;
   int list_mode;
   int opt_data, opt_ssh_fpr, opt_with_ssh;
   ssh_control_file_t cf = NULL;
@@ -1275,21 +1252,7 @@ cmd_keyinfo (assuan_context_t ctx, char *line)
   else
     list_mode = has_option (line, "--list");
   opt_data = has_option (line, "--data");
-
-  if (has_option_name (line, "--ssh-fpr"))
-    {
-      if (has_option (line, "--ssh-fpr=md5"))
-        opt_ssh_fpr = GCRY_MD_MD5;
-      else if (has_option (line, "--ssh-fpr=sha1"))
-        opt_ssh_fpr = GCRY_MD_SHA1;
-      else if (has_option (line, "--ssh-fpr=sha256"))
-        opt_ssh_fpr = GCRY_MD_SHA256;
-      else
-        opt_ssh_fpr = opt.ssh_fingerprint_digest;
-    }
-  else
-    opt_ssh_fpr = 0;
-
+  opt_ssh_fpr = has_option (line, "--ssh-fpr");
   opt_with_ssh = has_option (line, "--with-ssh");
   line = skip_options (line);
 
@@ -1316,7 +1279,7 @@ cmd_keyinfo (assuan_context_t ctx, char *line)
   else if (list_mode)
     {
       char *dirname;
-      gnupg_dirent_t dir_entry;
+      struct dirent *dir_entry;
 
       dirname = make_filename_try (gnupg_homedir (),
                                    GNUPG_PRIVATE_KEYS_DIR, NULL);
@@ -1325,7 +1288,7 @@ cmd_keyinfo (assuan_context_t ctx, char *line)
           err = gpg_error_from_syserror ();
           goto leave;
         }
-      dir = gnupg_opendir (dirname);
+      dir = opendir (dirname);
       if (!dir)
         {
           err = gpg_error_from_syserror ();
@@ -1334,7 +1297,7 @@ cmd_keyinfo (assuan_context_t ctx, char *line)
         }
       xfree (dirname);
 
-      while ( (dir_entry = gnupg_readdir (dir)) )
+      while ( (dir_entry = readdir (dir)) )
         {
           if (strlen (dir_entry->d_name) != 44
               || strcmp (dir_entry->d_name + 40, ".key"))
@@ -1385,7 +1348,8 @@ cmd_keyinfo (assuan_context_t ctx, char *line)
 
  leave:
   ssh_close_control_file (cf);
-  gnupg_closedir (dir);
+  if (dir)
+    closedir (dir);
   if (err && gpg_err_code (err) != GPG_ERR_NOT_FOUND)
     leave_cmd (ctx, err);
   return err;
@@ -1420,22 +1384,9 @@ send_back_passphrase (assuan_context_t ctx, int via_data, const char *pw)
 }
 
 
-/* Callback function to compare the first entered PIN with the one
-   currently being entered. */
-static gpg_error_t
-reenter_passphrase_cmp_cb (struct pin_entry_info_s *pi)
-{
-  const char *pin1 = pi->check_cb_arg;
-
-  if (!strcmp (pin1, pi->pin))
-    return 0; /* okay */
-  return gpg_error (GPG_ERR_BAD_PASSPHRASE);
-}
-
-
 static const char hlp_get_passphrase[] =
   "GET_PASSPHRASE [--data] [--check] [--no-ask] [--repeat[=N]]\n"
-  "               [--qualitybar] [--newsymkey] <cache_id>\n"
+  "               [--qualitybar] <cache_id>\n"
   "               [<error_message> <prompt> <description>]\n"
   "\n"
   "This function is usually used to ask for a passphrase to be used\n"
@@ -1457,9 +1408,6 @@ static const char hlp_get_passphrase[] =
   "cache the user will not be asked to enter a passphrase but the error\n"
   "code GPG_ERR_NO_DATA is returned.  \n"
   "\n"
-  "If the option\"--newsymkey\" is used the agent asks for a new passphrase\n"
-  "to be used in symmetric-only encryption.  This must not be empty.\n"
-  "\n"
   "If the option \"--qualitybar\" is used a visual indication of the\n"
   "entered passphrase quality is shown.  (Unless no minimum passphrase\n"
   "length has been configured.)";
@@ -1469,19 +1417,13 @@ cmd_get_passphrase (assuan_context_t ctx, char *line)
   ctrl_t ctrl = assuan_get_pointer (ctx);
   int rc;
   char *pw;
-  char *response = NULL;
-  char *response2 = NULL;
-  char *cacheid = NULL;  /* May point into LINE.  */
-  char *desc = NULL;     /* Ditto  */
-  char *prompt = NULL;   /* Ditto  */
-  char *errtext = NULL;  /* Ditto  */
+  char *response;
+  char *cacheid = NULL, *desc = NULL, *prompt = NULL, *errtext = NULL;
   const char *desc2 = _("Please re-enter this passphrase");
   char *p;
-  int opt_data, opt_check, opt_no_ask, opt_qualbar, opt_newsymkey;
+  int opt_data, opt_check, opt_no_ask, opt_qualbar;
   int opt_repeat = 0;
   char *entry_errtext = NULL;
-  struct pin_entry_info_s *pi = NULL;
-  struct pin_entry_info_s *pi2 = NULL;
 
   if (ctrl->restricted)
     return leave_cmd (ctx, gpg_error (GPG_ERR_FORBIDDEN));
@@ -1498,7 +1440,6 @@ cmd_get_passphrase (assuan_context_t ctx, char *line)
 	opt_repeat = 1;
     }
   opt_qualbar = has_option (line, "--qualitybar");
-  opt_newsymkey = has_option (line, "--newsymkey");
   line = skip_options (line);
 
   cacheid = line;
@@ -1548,125 +1489,26 @@ cmd_get_passphrase (assuan_context_t ctx, char *line)
     {
       rc = send_back_passphrase (ctx, opt_data, pw);
       xfree (pw);
-      goto leave;
     }
   else if (opt_no_ask)
-    {
-      rc = gpg_error (GPG_ERR_NO_DATA);
-      goto leave;
-    }
-
-  /* Note, that we only need to replace the + characters and should
-   * leave the other escaping in place because the escaped string is
-   * send verbatim to the pinentry which does the unescaping (but not
-   * the + replacing) */
-  if (errtext)
-    plus_to_blank (errtext);
-  if (prompt)
-    plus_to_blank (prompt);
-  if (desc)
-    plus_to_blank (desc);
-
-  /* If opt_repeat is 2 or higher we can't use our pin_entry_info_s
-   * based method but fallback to the old simple method.  It is
-   * anyway questionable whether this extra repeat count makes any
-   * real sense.  */
-  if (opt_newsymkey && opt_repeat < 2)
-    {
-      /* We do not want to break any existing usage of this command
-       * and thus we introduced the option --newsymkey to make this
-       * command more useful to query the passphrase for symmetric
-       * encryption.  */
-      pi = gcry_calloc_secure (1, sizeof (*pi) + MAX_PASSPHRASE_LEN + 1);
-      if (!pi)
-        {
-          rc = gpg_error_from_syserror ();
-          goto leave;
-        }
-      pi2 = gcry_calloc_secure (1, sizeof (*pi2) + MAX_PASSPHRASE_LEN + 1);
-      if (!pi2)
-        {
-          rc = gpg_error_from_syserror ();
-          goto leave;
-        }
-      pi->max_length = MAX_PASSPHRASE_LEN + 1;
-      pi->max_tries = 3;
-      pi->with_qualitybar = opt_qualbar;
-      pi->with_repeat = opt_repeat;
-      pi2->max_length = MAX_PASSPHRASE_LEN + 1;
-      pi2->max_tries = 3;
-      pi2->check_cb = reenter_passphrase_cmp_cb;
-      pi2->check_cb_arg = pi->pin;
-
-      for (;;) /* (degenerated for-loop) */
-        {
-          xfree (response);
-          response = NULL;
-          rc = agent_get_passphrase (ctrl, &response,
-                                     desc,
-                                     prompt,
-                                     entry_errtext? entry_errtext:errtext,
-                                     opt_qualbar, cacheid, CACHE_MODE_USER,
-                                     pi);
-          if (rc)
-            goto leave;
-          xfree (entry_errtext);
-          entry_errtext = NULL;
-          /* We don't allow an empty passpharse in this mode.  */
-          if (check_passphrase_constraints (ctrl, pi->pin, 1, &entry_errtext))
-            {
-              pi->failed_tries = 0;
-              pi2->failed_tries = 0;
-              continue;
-            }
-          if (*pi->pin && !pi->repeat_okay
-              && ctrl->pinentry_mode != PINENTRY_MODE_LOOPBACK
-              && opt_repeat)
-            {
-              /* The passphrase is empty and the pinentry did not
-               * already run the repetition check, do it here.  This
-               * is only called when using an old and simple pinentry.
-               * It is neither called in loopback mode because the
-               * caller does any passphrase repetition by herself nor if
-               * no repetition was requested. */
-              xfree (response);
-              response = NULL;
-              rc = agent_get_passphrase (ctrl, &response,
-                                         L_("Please re-enter this passphrase"),
-                                         prompt,
-                                         entry_errtext? entry_errtext:errtext,
-                                         opt_qualbar, cacheid, CACHE_MODE_USER,
-                                         pi2);
-              if (gpg_err_code (rc) == GPG_ERR_BAD_PASSPHRASE)
-                { /* The re-entered passphrase one did not match and
-                   * the user did not hit cancel. */
-                  entry_errtext = xtrystrdup (L_("does not match - try again"));
-                  if (!entry_errtext)
-                    {
-                      rc = gpg_error_from_syserror ();
-                      goto leave;
-                    }
-                  continue;
-                }
-            }
-          break;
-        }
-      if (!rc && *pi->pin)
-        {
-          /* Return the passphrase. */
-          if (cacheid)
-            agent_put_cache (ctrl, cacheid, CACHE_MODE_USER, pi->pin, 0);
-          rc = send_back_passphrase (ctx, opt_data, pi->pin);
-        }
-    }
+    rc = gpg_error (GPG_ERR_NO_DATA);
   else
     {
+      /* Note, that we only need to replace the + characters and
+         should leave the other escaping in place because the escaped
+         string is send verbatim to the pinentry which does the
+         unescaping (but not the + replacing) */
+      if (errtext)
+        plus_to_blank (errtext);
+      if (prompt)
+        plus_to_blank (prompt);
+      if (desc)
+        plus_to_blank (desc);
+
     next_try:
-      xfree (response);
-      response = NULL;
       rc = agent_get_passphrase (ctrl, &response, desc, prompt,
                                  entry_errtext? entry_errtext:errtext,
-                                 opt_qualbar, cacheid, CACHE_MODE_USER, NULL);
+                                 opt_qualbar, cacheid, CACHE_MODE_USER);
       xfree (entry_errtext);
       entry_errtext = NULL;
       if (!rc)
@@ -1674,24 +1516,27 @@ cmd_get_passphrase (assuan_context_t ctx, char *line)
           int i;
 
           if (opt_check
-	      && check_passphrase_constraints (ctrl, response,0,&entry_errtext))
+	      && check_passphrase_constraints (ctrl, response, &entry_errtext))
             {
+              xfree (response);
               goto next_try;
             }
           for (i = 0; i < opt_repeat; i++)
             {
+              char *response2;
+
               if (ctrl->pinentry_mode == PINENTRY_MODE_LOOPBACK)
                 break;
 
-              xfree (response2);
-              response2 = NULL;
               rc = agent_get_passphrase (ctrl, &response2, desc2, prompt,
                                          errtext, 0,
-					 cacheid, CACHE_MODE_USER, NULL);
+					 cacheid, CACHE_MODE_USER);
               if (rc)
                 break;
               if (strcmp (response2, response))
                 {
+                  xfree (response2);
+                  xfree (response);
                   entry_errtext = try_percent_escape
                     (_("does not match - try again"), NULL);
                   if (!entry_errtext)
@@ -1701,6 +1546,7 @@ cmd_get_passphrase (assuan_context_t ctx, char *line)
                     }
                   goto next_try;
                 }
+              xfree (response2);
             }
           if (!rc)
             {
@@ -1708,15 +1554,10 @@ cmd_get_passphrase (assuan_context_t ctx, char *line)
                 agent_put_cache (ctrl, cacheid, CACHE_MODE_USER, response, 0);
               rc = send_back_passphrase (ctx, opt_data, response);
             }
+          xfree (response);
         }
     }
 
- leave:
-  xfree (response);
-  xfree (response2);
-  xfree (entry_errtext);
-  xfree (pi2);
-  xfree (pi);
   return leave_cmd (ctx, rc);
 }
 
@@ -1727,24 +1568,19 @@ static const char hlp_clear_passphrase[] =
   "may be used to invalidate the cache entry for a passphrase.  The\n"
   "function returns with OK even when there is no cached passphrase.\n"
   "The --mode=normal option is used to clear an entry for a cacheid\n"
-  "added by the agent.  The --mode=ssh option is used for a cacheid\n"
-  "added for ssh.\n";
+  "added by the agent.\n";
 static gpg_error_t
 cmd_clear_passphrase (assuan_context_t ctx, char *line)
 {
   ctrl_t ctrl = assuan_get_pointer (ctx);
   char *cacheid = NULL;
   char *p;
-  cache_mode_t cache_mode = CACHE_MODE_USER;
+  int opt_normal;
 
   if (ctrl->restricted)
     return leave_cmd (ctx, gpg_error (GPG_ERR_FORBIDDEN));
 
-  if (has_option (line, "--mode=normal"))
-    cache_mode = CACHE_MODE_NORMAL;
-  else if (has_option (line, "--mode=ssh"))
-    cache_mode = CACHE_MODE_SSH;
-
+  opt_normal = has_option (line, "--mode=normal");
   line = skip_options (line);
 
   /* parse the stuff */
@@ -1757,9 +1593,12 @@ cmd_clear_passphrase (assuan_context_t ctx, char *line)
   if (!*cacheid || strlen (cacheid) > 50)
     return set_error (GPG_ERR_ASS_PARAMETER, "invalid length of cacheID");
 
-  agent_put_cache (ctrl, cacheid, cache_mode, NULL, 0);
+  agent_put_cache (ctrl, cacheid,
+                   opt_normal ? CACHE_MODE_NORMAL : CACHE_MODE_USER,
+                   NULL, 0);
 
-  agent_clear_passphrase (ctrl, cacheid, cache_mode);
+  agent_clear_passphrase (ctrl, cacheid,
+			  opt_normal ? CACHE_MODE_NORMAL : CACHE_MODE_USER);
 
   return 0;
 }
@@ -2196,8 +2035,7 @@ cmd_keywrap_key (assuan_context_t ctx, char *line)
 
 
 static const char hlp_import_key[] =
-  "IMPORT_KEY [--unattended] [--force] [--timestamp=<isodate>]\n"
-  "           [<cache_nonce>]\n"
+  "IMPORT_KEY [--unattended] [--force] [<cache_nonce>]\n"
   "\n"
   "Import a secret key into the key store.  The key is expected to be\n"
   "encrypted using the current session's key wrapping key (cf. command\n"
@@ -2205,16 +2043,13 @@ static const char hlp_import_key[] =
   "no arguments but uses the inquiry \"KEYDATA\" to ask for the actual\n"
   "key data.  The unwrapped key must be a canonical S-expression.  The\n"
   "option --unattended tries to import the key as-is without any\n"
-  "re-encryption.  An existing key can be overwritten with --force.\n"
-  "If --timestamp is given its value is recorded as the key's creation\n"
-  "time; the value is expected in ISO format (e.g. \"20030316T120000\").";
+  "re-encryption.  Existing key can be overwritten with --force.";
 static gpg_error_t
 cmd_import_key (assuan_context_t ctx, char *line)
 {
   ctrl_t ctrl = assuan_get_pointer (ctx);
   gpg_error_t err;
   int opt_unattended;
-  time_t opt_timestamp;
   int force;
   unsigned char *wrappedkey = NULL;
   size_t wrappedkeylen;
@@ -2228,7 +2063,6 @@ cmd_import_key (assuan_context_t ctx, char *line)
   gcry_sexp_t openpgp_sexp = NULL;
   char *cache_nonce = NULL;
   char *p;
-  const char *s;
 
   if (ctrl->restricted)
     return leave_cmd (ctx, gpg_error (GPG_ERR_FORBIDDEN));
@@ -2241,22 +2075,6 @@ cmd_import_key (assuan_context_t ctx, char *line)
 
   opt_unattended = has_option (line, "--unattended");
   force = has_option (line, "--force");
-  if ((s=has_option_name (line, "--timestamp")))
-    {
-      if (*s != '=')
-        {
-          err = set_error (GPG_ERR_ASS_PARAMETER, "missing value for option");
-          goto leave;
-        }
-      opt_timestamp = isotime2epoch (s+1);
-      if (opt_timestamp < 1)
-        {
-          err = set_error (GPG_ERR_ASS_PARAMETER, "invalid time value");
-          goto leave;
-        }
-    }
-  else
-    opt_timestamp = 0;
   line = skip_options (line);
 
   for (p=line; *p && *p != ' ' && *p != '\t'; p++)
@@ -2328,6 +2146,7 @@ cmd_import_key (assuan_context_t ctx, char *line)
         goto leave; /* Note that ERR is still set.  */
     }
 
+
   if (openpgp_sexp)
     {
       /* In most cases the key is encrypted and thus the conversion
@@ -2391,12 +2210,10 @@ cmd_import_key (assuan_context_t ctx, char *line)
       err = agent_protect (key, passphrase, &finalkey, &finalkeylen,
                            ctrl->s2k_count, -1);
       if (!err)
-        err = agent_write_private_key (grip, finalkey, finalkeylen, force,
-                                       opt_timestamp);
+        err = agent_write_private_key (grip, finalkey, finalkeylen, force);
     }
   else
-    err = agent_write_private_key (grip, key, realkeylen, force,
-                                   opt_timestamp);
+    err = agent_write_private_key (grip, key, realkeylen, force);
 
  leave:
   gcry_sexp_release (openpgp_sexp);
@@ -3052,7 +2869,7 @@ cmd_getinfo (assuan_context_t ctx, char *line)
                 {
                   cmdopt = line;
                   if (!command_has_option (cmd, cmdopt))
-                    rc = gpg_error (GPG_ERR_FALSE);
+                    rc = gpg_error (GPG_ERR_GENERAL);
                 }
             }
         }
@@ -3066,7 +2883,7 @@ cmd_getinfo (assuan_context_t ctx, char *line)
     }
   else if (!strcmp (line, "restricted"))
     {
-      rc = ctrl->restricted? 0 : gpg_error (GPG_ERR_FALSE);
+      rc = ctrl->restricted? 0 : gpg_error (GPG_ERR_GENERAL);
     }
   else if (ctrl->restricted)
     {
@@ -3100,7 +2917,7 @@ cmd_getinfo (assuan_context_t ctx, char *line)
     }
   else if (!strcmp (line, "scd_running"))
     {
-      rc = agent_scd_check_running ()? 0 : gpg_error (GPG_ERR_FALSE);
+      rc = agent_scd_check_running ()? 0 : gpg_error (GPG_ERR_GENERAL);
     }
   else if (!strcmp (line, "std_env_names"))
     {
@@ -3172,6 +2989,7 @@ cmd_getinfo (assuan_context_t ctx, char *line)
     }
   else if (!strcmp (line, "jent_active"))
     {
+#if GCRYPT_VERSION_NUMBER >= 0x010800
       char *buf;
       char *fields[5];
 
@@ -3183,6 +3001,9 @@ cmd_getinfo (assuan_context_t ctx, char *line)
       else
         rc = gpg_error (GPG_ERR_FALSE);
       gcry_free (buf);
+#else
+      rc = gpg_error (GPG_ERR_FALSE);
+#endif
     }
   else if (!strcmp (line, "s2k_count_cal"))
     {
@@ -3394,9 +3215,7 @@ command_has_option (const char *cmd, const char *cmdopt)
   if (!strcmp (cmd, "GET_PASSPHRASE"))
     {
       if (!strcmp (cmdopt, "repeat"))
-        return 1;
-      if (!strcmp (cmdopt, "newsymkey"))
-        return 1;
+          return 1;
     }
 
   return 0;

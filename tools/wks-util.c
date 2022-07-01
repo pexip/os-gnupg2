@@ -21,7 +21,6 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 #include "../common/util.h"
 #include "../common/status.h"
@@ -750,12 +749,9 @@ write_to_file (estream_t src, const char *fname)
 
 
 /* Return the filename and optionally the addrspec for USERID at
- * R_FNAME and R_ADDRSPEC.  R_ADDRSPEC might also be set on error.  If
- * HASH_ONLY is set only the has is returned at R_FNAME and no file is
- * created.  */
+ * R_FNAME and R_ADDRSPEC.  R_ADDRSPEC might also be set on error.  */
 gpg_error_t
-wks_fname_from_userid (const char *userid, int hash_only,
-                       char **r_fname, char **r_addrspec)
+wks_fname_from_userid (const char *userid, char **r_fname, char **r_addrspec)
 {
   gpg_error_t err;
   char *addrspec = NULL;
@@ -771,7 +767,7 @@ wks_fname_from_userid (const char *userid, int hash_only,
   addrspec = mailbox_from_userid (userid);
   if (!addrspec)
     {
-      if (opt.verbose || hash_only)
+      if (opt.verbose)
         log_info ("\"%s\" is not a proper mail address\n", userid);
       err = gpg_error (GPG_ERR_INV_USER_ID);
       goto leave;
@@ -792,20 +788,11 @@ wks_fname_from_userid (const char *userid, int hash_only,
       goto leave;
     }
 
-  if (hash_only)
-    {
-      *r_fname = hash;
-      hash = NULL;
-      err = 0;
-    }
+  *r_fname = make_filename_try (opt.directory, domain, "hu", hash, NULL);
+  if (!*r_fname)
+    err = gpg_error_from_syserror ();
   else
-    {
-      *r_fname = make_filename_try (opt.directory, domain, "hu", hash, NULL);
-      if (!*r_fname)
-        err = gpg_error_from_syserror ();
-      else
-        err = 0;
-    }
+    err = 0;
 
  leave:
   if (r_addrspec && addrspec)
@@ -843,13 +830,13 @@ wks_compute_hu_fname (char **r_fname, const char *addrspec)
 
   /* Try to create missing directories below opt.directory.  */
   fname = make_filename_try (opt.directory, domain, NULL);
-  if (fname && gnupg_stat (fname, &sb)
+  if (fname && stat (fname, &sb)
       && gpg_err_code_from_syserror () == GPG_ERR_ENOENT)
     if (!gnupg_mkdir (fname, "-rwxr--r--") && opt.verbose)
       log_info ("directory '%s' created\n", fname);
   xfree (fname);
   fname = make_filename_try (opt.directory, domain, "hu", NULL);
-  if (fname && gnupg_stat (fname, &sb)
+  if (fname && stat (fname, &sb)
       && gpg_err_code_from_syserror () == GPG_ERR_ENOENT)
     if (!gnupg_mkdir (fname, "-rwxr--r--") && opt.verbose)
       log_info ("directory '%s' created\n", fname);
@@ -867,82 +854,6 @@ wks_compute_hu_fname (char **r_fname, const char *addrspec)
   return err;
 }
 
-
-/* Make sure that a policy file exists for addrspec.  Directories must
- * already exist.  */
-static gpg_error_t
-ensure_policy_file (const char *addrspec)
-{
-  gpg_err_code_t ec;
-  gpg_error_t err;
-  const char *domain;
-  char *fname;
-  estream_t fp;
-
-  domain = strchr (addrspec, '@');
-  if (!domain || !domain[1] || domain == addrspec)
-    return gpg_error (GPG_ERR_INV_ARG);
-  domain++;
-
-  /* Create the filename.  */
-  fname = make_filename_try (opt.directory, domain, "policy", NULL);
-  err = fname? 0 : gpg_error_from_syserror ();
-  if (err)
-    goto leave;
-
-  /* First a quick check whether it already exists.  */
-  if (!(ec = gnupg_access (fname, F_OK)))
-    {
-      err = 0; /* File already exists.  */
-      goto leave;
-    }
-  err = gpg_error (ec);
-  if (gpg_err_code (err) == GPG_ERR_ENOENT)
-    err = 0;
-  else
-    {
-      log_error ("domain %s: problem with '%s': %s\n",
-                 domain, fname, gpg_strerror (err));
-      goto leave;
-    }
-
-  /* Now create the file.  */
-  fp = es_fopen (fname, "wxb");
-  if (!fp)
-    {
-      err = gpg_error_from_syserror ();
-      if (gpg_err_code (err) == GPG_ERR_EEXIST)
-        err = 0; /* Was created between the gnupg_access() and es_fopen().  */
-      else
-        log_error ("domain %s: error creating '%s': %s\n",
-                   domain, fname, gpg_strerror (err));
-      goto leave;
-    }
-
-  es_fprintf (fp, "# Policy flags for domain %s\n", domain);
-  if (es_ferror (fp) || es_fclose (fp))
-    {
-      err = gpg_error_from_syserror ();
-      log_error ("error writing '%s': %s\n", fname, gpg_strerror (err));
-      goto leave;
-    }
-
-  if (opt.verbose)
-    log_info ("policy file '%s' created\n", fname);
-
-  /* Make sure the policy file world readable.  */
-  if (gnupg_chmod (fname, "-rw-r--r--"))
-    {
-      err = gpg_error_from_syserror ();
-      log_error ("can't set permissions of '%s': %s\n",
-                 fname, gpg_strerror (err));
-      goto leave;
-    }
-
- leave:
-  xfree (fname);
-  return err;
-}
 
 
 /* Helper form wks_cmd_install_key.  */
@@ -1117,12 +1028,6 @@ wks_cmd_install_key (const char *fname, const char *userid)
   if (err)
     goto leave;
 
-  /* Now that wks_compute_hu_fname has created missing directories we
-   * can create a policy file if it does not exist.  */
-  err = ensure_policy_file (addrspec);
-  if (err)
-    goto leave;
-
   /* Publish.  */
   err = write_to_file (fp, huname);
   if (err)
@@ -1132,13 +1037,12 @@ wks_cmd_install_key (const char *fname, const char *userid)
     }
 
   /* Make sure it is world readable.  */
-  if (gnupg_chmod (huname, "-rw-r--r--"))
+  if (gnupg_chmod (huname, "-rwxr--r--"))
     log_error ("can't set permissions of '%s': %s\n",
                huname, gpg_strerror (gpg_err_code_from_syserror()));
 
   if (!opt.quiet)
     log_info ("key %s published for '%s'\n", fpr, addrspec);
-
 
  leave:
   xfree (huname);
@@ -1158,7 +1062,7 @@ wks_cmd_remove_key (const char *userid)
   char *addrspec = NULL;
   char *fname = NULL;
 
-  err = wks_fname_from_userid (userid, 0, &fname, &addrspec);
+  err = wks_fname_from_userid (userid, &fname, &addrspec);
   if (err)
     goto leave;
 
@@ -1182,50 +1086,6 @@ wks_cmd_remove_key (const char *userid)
   err = 0;
 
  leave:
-  xfree (fname);
-  xfree (addrspec);
-  return err;
-}
-
-
-/* Print the WKD hash for the user id to stdout.  */
-gpg_error_t
-wks_cmd_print_wkd_hash (const char *userid)
-{
-  gpg_error_t err;
-  char *addrspec, *fname;
-
-  err = wks_fname_from_userid (userid, 1, &fname, &addrspec);
-  if (err)
-    return err;
-
-  es_printf ("%s %s\n", fname, addrspec);
-
-  xfree (fname);
-  xfree (addrspec);
-  return err;
-}
-
-
-/* Print the WKD URL for the user id to stdout.  */
-gpg_error_t
-wks_cmd_print_wkd_url (const char *userid)
-{
-  gpg_error_t err;
-  char *addrspec, *fname;
-  char *domain;
-
-  err = wks_fname_from_userid (userid, 1, &fname, &addrspec);
-  if (err)
-    return err;
-
-  domain = strchr (addrspec, '@');
-  if (domain)
-    *domain++ = 0;
-
-  es_printf ("https://openpgpkey.%s/.well-known/openpgpkey/%s/hu/%s?l=%s\n",
-             domain, domain, fname, addrspec);
-
   xfree (fname);
   xfree (addrspec);
   return err;

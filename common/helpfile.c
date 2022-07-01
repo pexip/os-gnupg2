@@ -41,14 +41,14 @@ static char *
 findkey_fname (const char *key, const char *fname)
 {
   gpg_error_t err = 0;
-  estream_t fp;
+  FILE *fp;
   int lnr = 0;
   int c;
   char *p, line[256];
   int in_item = 0;
   membuf_t mb = MEMBUF_ZERO;
 
-  fp = es_fopen (fname, "r");
+  fp = fopen (fname, "r");
   if (!fp)
     {
       if (errno != ENOENT)
@@ -59,14 +59,14 @@ findkey_fname (const char *key, const char *fname)
       return NULL;
     }
 
-  while (es_fgets (line, DIM(line)-1, fp))
+  while (fgets (line, DIM(line)-1, fp))
     {
       lnr++;
 
       if (!*line || line[strlen(line)-1] != '\n')
         {
           /* Eat until end of line. */
-          while ((c = es_getc (fp)) != EOF && c != '\n')
+          while ( (c=getc (fp)) != EOF && c != '\n')
             ;
           err = gpg_error (*line? GPG_ERR_LINE_TOO_LONG
                            : GPG_ERR_INCOMPLETE_LINE);
@@ -130,14 +130,14 @@ findkey_fname (const char *key, const char *fname)
         }
 
     }
-  if ( !err && es_ferror (fp) )
+  if ( !err && ferror (fp) )
     {
       err = gpg_error_from_syserror ();
       log_error (_("error reading '%s', line %d: %s\n"),
                  fname, lnr, gpg_strerror (err));
     }
 
-  es_fclose (fp);
+  fclose (fp);
   if (is_membuf_ready (&mb))
     {
       /* We have collected something.  */

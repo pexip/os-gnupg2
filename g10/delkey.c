@@ -1,7 +1,7 @@
 /* delkey.c - delete keys
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2004,
  *               2005, 2006 Free Software Foundation, Inc.
- * Copyright (C) 2014, 2019 Werner Koch
+ * Copyright (C) 2014 Werner Koch
  *
  * This file is part of GnuPG.
  *
@@ -38,7 +38,6 @@
 #include "filter.h"
 #include "../common/ttyio.h"
 #include "../common/i18n.h"
-#include "../common/shareddefs.h"
 #include "call-agent.h"
 
 
@@ -54,15 +53,13 @@ do_delete_key (ctrl_t ctrl, const char *username, int secret, int force,
   gpg_error_t err;
   kbnode_t keyblock = NULL;
   kbnode_t node, kbctx;
-  kbnode_t targetnode;
   KEYDB_HANDLE hd;
   PKT_public_key *pk = NULL;
   u32 keyid[2];
   int okay=0;
   int yes;
   KEYDB_SEARCH_DESC desc;
-  int exactmatch;  /* True if key was found by fingerprint.  */
-  int thiskeyonly; /* 0 = false, 1 = is primary key, 2 = is a subkey.  */
+  int exactmatch;
 
   *r_sec_avail = 0;
 
@@ -75,7 +72,6 @@ do_delete_key (ctrl_t ctrl, const char *username, int secret, int force,
   exactmatch = (desc.mode == KEYDB_SEARCH_MODE_FPR
                 || desc.mode == KEYDB_SEARCH_MODE_FPR16
                 || desc.mode == KEYDB_SEARCH_MODE_FPR20);
-  thiskeyonly = desc.exact;
   if (!err)
     err = keydb_search (hd, &desc, 1, NULL);
   if (err)
@@ -101,35 +97,7 @@ do_delete_key (ctrl_t ctrl, const char *username, int secret, int force,
       err = gpg_error (GPG_ERR_GENERAL);
       goto leave;
     }
-
-  /* If an operation only on a subkey is requested, find that subkey
-   * now.  */
-  if (thiskeyonly)
-    {
-      kbnode_t tmpnode;
-
-      for (kbctx=NULL; (tmpnode = walk_kbnode (keyblock, &kbctx, 0)); )
-        {
-          if (!(tmpnode->pkt->pkttype == PKT_PUBLIC_KEY
-                || tmpnode->pkt->pkttype == PKT_PUBLIC_SUBKEY))
-            continue;
-          if (exact_subkey_match_p (&desc, tmpnode))
-            break;
-        }
-      if (!tmpnode)
-        {
-          log_error ("Oops; requested subkey not found anymore!\n");
-          err = gpg_error (GPG_ERR_GENERAL);
-          goto leave;
-        }
-      /* Set NODE to this specific subkey or primary key.  */
-      thiskeyonly = node == tmpnode? 1 : 2;
-      targetnode = tmpnode;
-    }
-  else
-    targetnode = node;
-
-  pk = targetnode->pkt->pkt.public_key;
+  pk = node->pkt->pkt.public_key;
   keyid_from_pk (pk, keyid);
 
   if (!secret && !force)
@@ -175,32 +143,6 @@ do_delete_key (ctrl_t ctrl, const char *username, int secret, int force,
         print_pubkey_info (ctrl, NULL, pk );
       tty_printf( "\n" );
 
-      if (thiskeyonly == 1 && !secret)
-        {
-          /* We need to delete the entire public key despite the use
-           * of the thiskeyonly request.  */
-          tty_printf (_("Note: The public primary key and all its subkeys"
-                        " will be deleted.\n"));
-        }
-      else if (thiskeyonly == 2 && !secret)
-        {
-          tty_printf (_("Note: Only the shown public subkey"
-                        " will be deleted.\n"));
-        }
-      if (thiskeyonly == 1 && secret)
-        {
-          tty_printf (_("Note: Only the secret part of the shown primary"
-                        " key will be deleted.\n"));
-        }
-      else if (thiskeyonly == 2 && secret)
-        {
-          tty_printf (_("Note: Only the secret part of the shown subkey"
-                        " will be deleted.\n"));
-        }
-
-      if (thiskeyonly)
-        tty_printf ("\n");
-
       yes = cpr_get_answer_is_yes
         (secret? "delete_key.secret.okay": "delete_key.okay",
          _("Delete this key from the keyring? (y/N) "));
@@ -236,9 +178,6 @@ do_delete_key (ctrl_t ctrl, const char *username, int secret, int force,
                     || node->pkt->pkttype == PKT_PUBLIC_SUBKEY))
                 continue;
 
-              if (thiskeyonly && targetnode != node)
-                continue;
-
               if (agent_probe_secret_key (NULL, node->pkt->pkt.public_key))
                 continue;  /* No secret key for that public (sub)key.  */
 
@@ -251,7 +190,7 @@ do_delete_key (ctrl_t ctrl, const char *username, int secret, int force,
                * pre-caution is that since 2.1 the secret key may also
                * be used for other protocols and thus deleting it from
                * the gpg would also delete the key for other tools. */
-              if (!err && !opt.dry_run)
+              if (!err)
                 err = agent_delete_key (NULL, hexgrip, prompt,
                                         opt.answer_yes);
               xfree (prompt);
@@ -280,26 +219,6 @@ do_delete_key (ctrl_t ctrl, const char *username, int secret, int force,
           if (firsterr)
             goto leave;
 	}
-      else if (thiskeyonly == 2)
-        {
-          /* Delete the specified public subkey.  */
-          for (kbctx=NULL; (node = walk_kbnode (keyblock, &kbctx, 0)); )
-            if (targetnode == node)
-              break;
-          log_assert (node);
-          delete_kbnode (node);
-          while ((node = walk_kbnode (keyblock, &kbctx, 0))
-                 && node->pkt->pkttype == PKT_SIGNATURE)
-            delete_kbnode (node);
-
-          commit_kbnode (&keyblock);
-          err = keydb_update_keyblock (ctrl, hd, keyblock);
-          if (err)
-            {
-              log_error (_("update failed: %s\n"), gpg_strerror (err));
-              goto leave;
-            }
-        }
       else
 	{
 	  err = keydb_delete_keyblock (hd);
@@ -315,8 +234,7 @@ do_delete_key (ctrl_t ctrl, const char *username, int secret, int force,
 	 revalidation_mark().  This makes sense - only deleting keys
 	 that have ownertrust set should trigger this. */
 
-      if (!secret && pk && !opt.dry_run && thiskeyonly != 2
-          && clear_ownertrusts (ctrl, pk))
+      if (!secret && pk && clear_ownertrusts (ctrl, pk))
         {
           if (opt.verbose)
             log_info (_("ownertrust information cleared\n"));
@@ -329,8 +247,7 @@ do_delete_key (ctrl_t ctrl, const char *username, int secret, int force,
   return err;
 }
 
-
-/*
+/****************
  * Delete a public or secret key from a keyring.
  */
 gpg_error_t
@@ -369,11 +286,6 @@ delete_keys (ctrl_t ctrl, strlist_t names, int secret, int allow_both)
         {
           log_error ("%s: delete key failed: %s\n",
                      names->d, gpg_strerror (err));
-          if (gpg_err_code (err) == GPG_ERR_NO_PIN_ENTRY
-              && opt.batch && secret
-              && opt.pinentry_mode == PINENTRY_MODE_LOOPBACK)
-            log_info ("(try option \"--yes\" to delete anyway)\n");
-
           return err;
         }
     }

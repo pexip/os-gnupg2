@@ -1,4 +1,8 @@
-debian/tmp/usr/share/doc/gnupg/*
 NEWS
+README
 THANKS
 TODO
+doc/DETAILS
+doc/FAQ
+doc/HACKING
+doc/OpenPGP

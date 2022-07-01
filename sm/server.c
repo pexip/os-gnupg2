@@ -1162,14 +1162,14 @@ cmd_getinfo (assuan_context_t ctx, char *line)
                 {
                   cmdopt = line;
                   if (!command_has_option (cmd, cmdopt))
-                    rc = gpg_error (GPG_ERR_FALSE);
+                    rc = gpg_error (GPG_ERR_GENERAL);
                 }
             }
         }
     }
   else if (!strcmp (line, "offline"))
     {
-      rc = ctrl->offline? 0 : gpg_error (GPG_ERR_FALSE);
+      rc = ctrl->offline? 0 : gpg_error (GPG_ERR_GENERAL);
     }
   else
     rc = set_error (GPG_ERR_ASS_PARAMETER, "unknown value for WHAT");

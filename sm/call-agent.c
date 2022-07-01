@@ -445,7 +445,7 @@ gpgsm_agent_pkdecrypt (ctrl_t ctrl, const char *keygrip, const char *desc,
 {
   int rc;
   char line[ASSUAN_LINELENGTH];
-  membuf_t data;
+   membuf_t data;
   struct cipher_parm_s cipher_parm;
   size_t n, len;
   char *p, *buf, *endp;
@@ -496,8 +496,7 @@ gpgsm_agent_pkdecrypt (ctrl_t ctrl, const char *keygrip, const char *desc,
       return rc;
     }
 
-  /* Make sure it is 0 terminated so we can invoke strtoul safely.  */
-  put_membuf (&data, "", 1);
+  put_membuf (&data, "", 1); /* Make sure it is 0 terminated. */
   buf = get_membuf (&data, &len);
   if (!buf)
     return gpg_error (GPG_ERR_ENOMEM);
@@ -507,20 +506,14 @@ gpgsm_agent_pkdecrypt (ctrl_t ctrl, const char *keygrip, const char *desc,
     {
       if (len < 13 || memcmp (buf, "(5:value", 8) ) /* "(5:valueN:D)\0" */
         return gpg_error (GPG_ERR_INV_SEXP);
-      /* Trim any spurious trailing Nuls: */
-      while (buf[len-1] == 0)
-        len--;
-      if (buf[len-1] != ')')
-        return gpg_error (GPG_ERR_INV_SEXP);
-      len--; /* Drop the final close-paren: */
-      p = buf + 8; /* Skip leading parenthesis and the value tag.  */
-      len -= 8; /* Count only the data of the second part.  */
+      len -= 11;   /* Count only the data of the second part. */
+      p = buf + 8; /* Skip leading parenthesis and the value tag. */
     }
   else
     {
       /* For compatibility with older gpg-agents handle the old style
-         incomplete S-exps.  */
-      len--;      /* Do not count the Nul.  */
+         incomplete S-exps. */
+      len--;      /* Do not count the Nul. */
       p = buf;
     }
 
@@ -528,8 +521,8 @@ gpgsm_agent_pkdecrypt (ctrl_t ctrl, const char *keygrip, const char *desc,
   if (!n || *endp != ':')
     return gpg_error (GPG_ERR_INV_SEXP);
   endp++;
-  if (endp-p+n != len)
-    return gpg_error (GPG_ERR_INV_SEXP); /* Oops: Inconsistent S-Exp.  */
+  if (endp-p+n > len)
+    return gpg_error (GPG_ERR_INV_SEXP); /* Oops: Inconsistent S-Exp. */
 
   memmove (buf, endp, n);
 
@@ -565,7 +558,7 @@ inq_genkey_parms (void *opaque, const char *line)
 
 
 
-/* Call the agent to generate a new key */
+/* Call the agent to generate a newkey */
 int
 gpgsm_agent_genkey (ctrl_t ctrl,
                     ksba_const_sexp_t keyparms, ksba_sexp_t *r_pubkey)
@@ -575,8 +568,6 @@ gpgsm_agent_genkey (ctrl_t ctrl,
   membuf_t data;
   size_t len;
   unsigned char *buf;
-  gnupg_isotime_t timebuf;
-  char line[ASSUAN_LINELENGTH];
 
   *r_pubkey = NULL;
   rc = start_agent (ctrl);
@@ -594,9 +585,7 @@ gpgsm_agent_genkey (ctrl_t ctrl,
   gk_parm.sexplen = gcry_sexp_canon_len (keyparms, 0, NULL, NULL);
   if (!gk_parm.sexplen)
     return gpg_error (GPG_ERR_INV_VALUE);
-  gnupg_get_isotime (timebuf);
-  snprintf (line, sizeof line, "GENKEY --timestamp=%s", timebuf);
-  rc = assuan_transact (agent_ctx, line,
+  rc = assuan_transact (agent_ctx, "GENKEY",
                         put_membuf_cb, &data,
                         inq_genkey_parms, &gk_parm, NULL, NULL);
   if (rc)
@@ -764,9 +753,9 @@ scd_keypairinfo_status_cb (void *opaque, const char *line)
     {
       sl = append_to_strlist (listaddr, line);
       p = sl->d;
-      /* Make sure that we only have two tokens so that future
-       * extensions of the format won't change the format expected by
-       * the caller.  */
+      /* Make sure that we only have two tokes so that future
+         extensions of the format won't change the format expected by
+         the caller.  */
       while (*p && !spacep (p))
         p++;
       if (*p)
@@ -775,22 +764,7 @@ scd_keypairinfo_status_cb (void *opaque, const char *line)
             p++;
           while (*p && !spacep (p))
             p++;
-          if (*p)
-            {
-              *p++ = 0;
-              while (spacep (p))
-                p++;
-              while (*p && !spacep (p))
-                {
-                  switch (*p++)
-                    {
-                    case 'c': sl->flags |= GCRY_PK_USAGE_CERT; break;
-                    case 's': sl->flags |= GCRY_PK_USAGE_SIGN; break;
-                    case 'e': sl->flags |= GCRY_PK_USAGE_ENCR; break;
-                    case 'a': sl->flags |= GCRY_PK_USAGE_AUTH; break;
-                    }
-                }
-            }
+          *p = 0;
         }
     }
 
@@ -800,7 +774,7 @@ scd_keypairinfo_status_cb (void *opaque, const char *line)
 
 /* Call the agent to read the keypairinfo lines of the current card.
    The list is returned as a string made up of the keygrip, a space
-   and the keyid.  The flags of the string carry the usage bits.  */
+   and the keyid.  */
 int
 gpgsm_agent_scd_keypairinfo (ctrl_t ctrl, strlist_t *r_list)
 {
@@ -815,7 +789,7 @@ gpgsm_agent_scd_keypairinfo (ctrl_t ctrl, strlist_t *r_list)
   inq_parm.ctrl = ctrl;
   inq_parm.ctx = agent_ctx;
 
-  rc = assuan_transact (agent_ctx, "SCD LEARN --keypairinfo",
+  rc = assuan_transact (agent_ctx, "SCD LEARN --force",
                         NULL, NULL,
                         default_inq_cb, &inq_parm,
                         scd_keypairinfo_status_cb, &list);
@@ -1252,7 +1226,7 @@ gpgsm_agent_ask_passphrase (ctrl_t ctrl, const char *desc_msg, int repeat,
     return gpg_error_from_syserror ();
 
   snprintf (line, DIM(line), "GET_PASSPHRASE --data%s -- X X X %s",
-            repeat? " --repeat=1 --check":"",
+            repeat? " --repeat=1 --check --qualitybar":"",
             arg4);
   xfree (arg4);
 
@@ -1348,8 +1322,6 @@ gpgsm_agent_import_key (ctrl_t ctrl, const void *key, size_t keylen)
 {
   gpg_error_t err;
   struct import_key_parm_s parm;
-  gnupg_isotime_t timebuf;
-  char line[ASSUAN_LINELENGTH];
 
   err = start_agent (ctrl);
   if (err)
@@ -1360,9 +1332,7 @@ gpgsm_agent_import_key (ctrl_t ctrl, const void *key, size_t keylen)
   parm.key    = key;
   parm.keylen = keylen;
 
-  gnupg_get_isotime (timebuf);
-  snprintf (line, sizeof line, "IMPORT_KEY --timestamp=%s", timebuf);
-  err = assuan_transact (agent_ctx, line,
+  err = assuan_transact (agent_ctx, "IMPORT_KEY",
                          NULL, NULL, inq_import_key_parms, &parm, NULL, NULL);
   return err;
 }

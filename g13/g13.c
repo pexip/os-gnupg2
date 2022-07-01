@@ -15,7 +15,6 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
- * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include <config.h>
@@ -28,7 +27,6 @@
 #include <fcntl.h>
 #include <npth.h>
 
-#define INCLUDED_BY_MAIN_MODULE 1
 #include "g13.h"
 
 #include <gcrypt.h>
@@ -139,7 +137,7 @@ static ARGPARSE_OPTS opts[] = {
 
   ARGPARSE_s_n (oDryRun, "dry-run", N_("do not make any changes")),
 
-  ARGPARSE_conffile (oOptions, "options", N_("|FILE|read options from FILE")),
+  ARGPARSE_s_s (oOptions, "options", N_("|FILE|read options from FILE")),
 
   ARGPARSE_s_s (oDebug, "debug", "@"),
   ARGPARSE_s_s (oDebugLevel, "debug-level",
@@ -164,7 +162,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oNoVerbose, "no-verbose", "@"),
   ARGPARSE_s_n (oNoSecmemWarn, "no-secmem-warning", "@"),
   ARGPARSE_s_n (oNoGreeting, "no-greeting", "@"),
-  ARGPARSE_noconffile (oNoOptions, "no-options", "@"),
+  ARGPARSE_s_n (oNoOptions, "no-options", "@"),
   ARGPARSE_s_s (oHomedir, "homedir", "@"),
   ARGPARSE_s_s (oAgentProgram, "agent-program", "@"),
   ARGPARSE_s_s (oGpgProgram, "gpg-program", "@"),
@@ -236,11 +234,9 @@ my_strusage( int level )
 
   switch (level)
     {
-    case  9: p = "GPL-3.0-or-later"; break;
     case 11: p = "@G13@ (@GNUPG@)";
       break;
     case 13: p = VERSION; break;
-    case 14: p = GNUPG_DEF_COPYRIGHT_LINE; break;
     case 17: p = PRINTABLE_OS_NAME; break;
     case 19: p = _("Please report bugs to <" PACKAGE_BUGREPORT ">.\n");
       break;
@@ -346,10 +342,12 @@ main ( int argc, char **argv)
   gpg_error_t err = 0;
   /* const char *fname; */
   int may_coredump;
-  char *last_configname = NULL;
-  const char *configname = NULL;
-  int debug_argparser = 0;
+  FILE *configfp = NULL;
+  char *configname = NULL;
+  unsigned configlineno;
+  int parse_debug = 0;
   int no_more_options = 0;
+  int default_config =1;
   char *logfile = NULL;
   int greeting = 0;
   int nogreeting = 0;
@@ -360,6 +358,8 @@ main ( int argc, char **argv)
   enum cmd_and_opt_values cmd = 0;
   struct server_control_s ctrl;
   strlist_t recipients = NULL;
+
+  /*mtrace();*/
 
   early_system_init ();
   gnupg_reopen_std (G13_NAME);
@@ -394,31 +394,29 @@ main ( int argc, char **argv)
   pargs.argc = &argc;
   pargs.argv = &argv;
   pargs.flags= 1|(1<<6);  /* Do not remove the args, ignore version.  */
-  pargs.flags= (ARGPARSE_FLAG_KEEP | ARGPARSE_FLAG_NOVERSION);
-  while (gnupg_argparse (NULL, &pargs, opts))
+  while (arg_parse( &pargs, opts))
     {
-      switch (pargs.r_opt)
-        {
-        case oDebug:
-        case oDebugAll:
-          debug_argparser++;
-          break;
-
-        case oHomedir:
-          gnupg_set_homedir (pargs.r.ret_str);
-          break;
-        }
+      if (pargs.r_opt == oDebug || pargs.r_opt == oDebugAll)
+        parse_debug++;
+      else if (pargs.r_opt == oOptions)
+        { /* Yes, there is one, so we do not try the default one but
+             read the config file when it is encountered at the
+             commandline.  */
+          default_config = 0;
+	}
+      else if (pargs.r_opt == oNoOptions)
+        default_config = 0; /* --no-options */
+      else if (pargs.r_opt == oHomedir)
+        gnupg_set_homedir (pargs.r.ret_str);
     }
-  /* Reset the flags.  */
-  pargs.flags &= ~(ARGPARSE_FLAG_KEEP | ARGPARSE_FLAG_NOVERSION);
 
   /* Initialize the secure memory. */
   gcry_control (GCRYCTL_INIT_SECMEM, 16384, 0);
   maybe_setuid = 0;
 
   /*
-   * Now we are now working under our real uid
-   */
+     Now we are now working under our real uid
+  */
 
   /* Setup malloc hooks. */
   {
@@ -441,39 +439,47 @@ main ( int argc, char **argv)
   ctrl.no_server = 1;
   ctrl.status_fd = -1; /* No status output. */
 
-  /* The configuraton directories for use by gpgrt_argparser.  */
-  gnupg_set_confdir (GNUPG_CONFDIR_SYS, gnupg_sysconfdir ());
-  gnupg_set_confdir (GNUPG_CONFDIR_USER, gnupg_homedir ());
+  /* Set the default option file */
+  if (default_config )
+    configname = make_filename (gnupg_homedir (), G13_NAME".conf", NULL);
 
   argc        = orig_argc;
   argv        = orig_argv;
   pargs.argc  = &argc;
   pargs.argv  = &argv;
-  pargs.flags |=  (ARGPARSE_FLAG_RESET
-                   | ARGPARSE_FLAG_KEEP
-                   | ARGPARSE_FLAG_SYS
-                   | ARGPARSE_FLAG_USER);
+  pargs.flags =  1;  /* Do not remove the args.  */
+
+ next_pass:
+  if (configname)
+    {
+      configlineno = 0;
+      configfp = fopen (configname, "r");
+      if (!configfp)
+        {
+          if (default_config)
+            {
+              if (parse_debug)
+                log_info (_("Note: no default option file '%s'\n"), configname);
+            }
+          else
+            {
+              log_error (_("option file '%s': %s\n"),
+                         configname, strerror(errno));
+              g13_exit(2);
+            }
+          xfree (configname);
+          configname = NULL;
+        }
+      if (parse_debug && configname)
+        log_info (_("reading options from '%s'\n"), configname);
+      default_config = 0;
+    }
+
   while (!no_more_options
-         && gnupg_argparser (&pargs, opts, G13_NAME EXTSEP_S "conf"))
+         && optfile_parse (configfp, configname, &configlineno, &pargs, opts))
     {
       switch (pargs.r_opt)
         {
-        case ARGPARSE_CONFFILE:
-          {
-            if (debug_argparser)
-              log_info (_("reading options from '%s'\n"),
-                        pargs.r_type? pargs.r.ret_str: "[cmdline]");
-            if (pargs.r_type)
-              {
-                xfree (last_configname);
-                last_configname = xstrdup (pargs.r.ret_str);
-                configname = last_configname;
-              }
-            else
-              configname = NULL;
-          }
-          break;
-
 	case aGPGConfList:
 	case aGPGConfTest:
           set_cmd (&cmd, pargs.r_opt);
@@ -531,6 +537,17 @@ main ( int argc, char **argv)
         case oStatusFD: ctrl.status_fd = pargs.r.ret_int; break;
         case oLoggerFD: log_set_fd (pargs.r.ret_int ); break;
 
+        case oNoOptions: break; /* no-options */
+        case oOptions:
+          /* Config files may not be nested (silently ignore them).  */
+          if (!configfp)
+            {
+              xfree(configname);
+              configname = xstrdup (pargs.r.ret_str);
+              goto next_pass;
+	    }
+          break;
+
         case oHomedir: gnupg_set_homedir (pargs.r.ret_str); break;
 
         case oAgentProgram: opt.agent_program = pargs.r.ret_str;  break;
@@ -574,16 +591,12 @@ main ( int argc, char **argv)
           break;
 
         default:
-          if (configname)
-            pargs.err = ARGPARSE_PRINT_WARNING;
-          else
-            pargs.err = ARGPARSE_PRINT_ERROR;
+          pargs.err = configfp? ARGPARSE_PRINT_WARNING:ARGPARSE_PRINT_ERROR;
           break;
 	}
     }
-  gnupg_argparse (NULL, &pargs, NULL);  /* Release internal state.  */
 
-  /* Construct GPG arguments.  */
+  /* XXX Construct GPG arguments.  */
   {
     strlist_t last;
     last = append_to_strlist (&opt.gpg_arguments, "-z");
@@ -593,15 +606,21 @@ main ( int argc, char **argv)
     (void) last;
   }
 
-  if (!last_configname)
-    opt.config_filename = make_filename (gnupg_homedir (),
-                                         G13_NAME EXTSEP_S "conf",
-                                         NULL);
-  else
+  if (configfp)
     {
-      opt.config_filename = last_configname;
-      last_configname = NULL;
+      fclose (configfp);
+      configfp = NULL;
+      /* Keep a copy of the config filename. */
+      opt.config_filename = configname;
+      configname = NULL;
+      goto next_pass;
     }
+  xfree (configname);
+  configname = NULL;
+
+  if (!opt.config_filename)
+    opt.config_filename = make_filename (gnupg_homedir (),
+                                         G13_NAME".conf", NULL);
 
   if (log_get_errorcount(0))
     g13_exit(2);
@@ -639,9 +658,7 @@ main ( int argc, char **argv)
   if (logfile)
     {
       log_set_file (logfile);
-      log_set_prefix (NULL, (GPGRT_LOG_WITH_PREFIX
-                             | GPGRT_LOG_WITH_TIME
-                             | GPGRT_LOG_WITH_PID ));
+      log_set_prefix (NULL, GPGRT_LOG_WITH_PREFIX | GPGRT_LOG_WITH_TIME | GPGRT_LOG_WITH_PID);
     }
 
   if (gnupg_faked_time_p ())

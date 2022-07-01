@@ -71,14 +71,14 @@ fseeko (FILE * stream, off_t newpos, int whence)
 
 static int
 create_tmp_file (const char *template,
-                 char **r_bakfname, char **r_tmpfname, estream_t *r_fp)
+                 char **r_bakfname, char **r_tmpfname, FILE **r_fp)
 {
   gpg_error_t err;
 
   err = keybox_tmp_names (template, 0, r_bakfname, r_tmpfname);
   if (!err)
     {
-      *r_fp = es_fopen (*r_tmpfname, "wb");
+      *r_fp = fopen (*r_tmpfname, "wb");
       if (!*r_fp)
         {
           err = gpg_error_from_syserror ();
@@ -161,9 +161,8 @@ static int
 blob_filecopy (int mode, const char *fname, KEYBOXBLOB blob,
                int secret, int for_openpgp, off_t start_offset)
 {
-  gpg_err_code_t ec;
-  estream_t fp, newfp;
-  int rc = 0;
+  FILE *fp, *newfp;
+  int rc=0;
   char *bakfname = NULL;
   char *tmpfname = NULL;
   char buffer[4096];  /* (Must be at least 32 bytes) */
@@ -171,33 +170,33 @@ blob_filecopy (int mode, const char *fname, KEYBOXBLOB blob,
 
   /* Open the source file. Because we do a rename, we have to check the
      permissions of the file */
-  if ((ec = gnupg_access (fname, W_OK)))
-    return gpg_error (ec);
+  if (access (fname, W_OK))
+    return gpg_error_from_syserror ();
 
-  fp = es_fopen (fname, "rb");
+  fp = fopen (fname, "rb");
   if (mode == FILECOPY_INSERT && !fp && errno == ENOENT)
     {
       /* Insert mode but file does not exist:
          Create a new keybox file. */
-      newfp = es_fopen (fname, "wb");
+      newfp = fopen (fname, "wb");
       if (!newfp )
         return gpg_error_from_syserror ();
 
       rc = _keybox_write_header_blob (newfp, for_openpgp);
       if (rc)
         {
-          es_fclose (newfp);
+          fclose (newfp);
           return rc;
         }
 
-      rc = _keybox_write_blob (blob, newfp, NULL);
+      rc = _keybox_write_blob (blob, newfp);
       if (rc)
         {
-          es_fclose (newfp);
+          fclose (newfp);
           return rc;
         }
 
-      if ( es_fclose (newfp) )
+      if ( fclose (newfp) )
         return gpg_error_from_syserror ();
 
 /*        if (chmod( fname, S_IRUSR | S_IWUSR )) */
@@ -218,7 +217,7 @@ blob_filecopy (int mode, const char *fname, KEYBOXBLOB blob,
   rc = create_tmp_file (fname, &bakfname, &tmpfname, &newfp);
   if (rc)
     {
-      es_fclose (fp);
+      fclose (fp);
       goto leave;
     }
 
@@ -230,7 +229,7 @@ blob_filecopy (int mode, const char *fname, KEYBOXBLOB blob,
       /* Copy everything to the new file.  If this is for OpenPGP, we
          make sure that the openpgp flag is set in the header.  (We
          failsafe the blob type.) */
-      while ( (nread = es_fread (buffer, 1, DIM(buffer), fp)) > 0 )
+      while ( (nread = fread (buffer, 1, DIM(buffer), fp)) > 0 )
         {
           if (first_record && for_openpgp
               && buffer[4] == KEYBOX_BLOBTYPE_HEADER)
@@ -239,19 +238,19 @@ blob_filecopy (int mode, const char *fname, KEYBOXBLOB blob,
               buffer[7] |= 0x02; /* OpenPGP data may be available.  */
             }
 
-          if (es_fwrite (buffer, nread, 1, newfp) != 1)
+          if (fwrite (buffer, nread, 1, newfp) != 1)
             {
               rc = gpg_error_from_syserror ();
-              es_fclose (fp);
-              es_fclose (newfp);
+              fclose (fp);
+              fclose (newfp);
               goto leave;
             }
         }
-      if (es_ferror (fp))
+      if (ferror (fp))
         {
           rc = gpg_error_from_syserror ();
-          es_fclose (fp);
-          es_fclose (newfp);
+          fclose (fp);
+          fclose (newfp);
           goto leave;
         }
     }
@@ -267,24 +266,24 @@ blob_filecopy (int mode, const char *fname, KEYBOXBLOB blob,
           nbytes = DIM(buffer);
           if (current + nbytes > start_offset)
               nbytes = start_offset - current;
-          nread = es_fread (buffer, 1, nbytes, fp);
+          nread = fread (buffer, 1, nbytes, fp);
           if (!nread)
             break;
           current += nread;
 
-          if (es_fwrite (buffer, nread, 1, newfp) != 1)
+          if (fwrite (buffer, nread, 1, newfp) != 1)
             {
               rc = gpg_error_from_syserror ();
-              es_fclose (fp);
-              es_fclose (newfp);
+              fclose (fp);
+              fclose (newfp);
               goto leave;
             }
         }
-      if (es_ferror (fp))
+      if (ferror (fp))
         {
           rc = gpg_error_from_syserror ();
-          es_fclose (fp);
-          es_fclose (newfp);
+          fclose (fp);
+          fclose (newfp);
           goto leave;
         }
 
@@ -292,8 +291,8 @@ blob_filecopy (int mode, const char *fname, KEYBOXBLOB blob,
       rc = _keybox_read_blob (NULL, fp, NULL);
       if (rc)
         {
-          es_fclose (fp);
-          es_fclose (newfp);
+          fclose (fp);
+          fclose (newfp);
           return rc;
         }
     }
@@ -301,11 +300,11 @@ blob_filecopy (int mode, const char *fname, KEYBOXBLOB blob,
   /* Do an insert or update. */
   if ( mode == FILECOPY_INSERT || mode == FILECOPY_UPDATE )
     {
-      rc = _keybox_write_blob (blob, newfp, NULL);
+      rc = _keybox_write_blob (blob, newfp);
       if (rc)
         {
-          es_fclose (fp);
-          es_fclose (newfp);
+          fclose (fp);
+          fclose (newfp);
           return rc;
         }
     }
@@ -313,33 +312,33 @@ blob_filecopy (int mode, const char *fname, KEYBOXBLOB blob,
   /* Copy the rest of the packet for an delete or update. */
   if (mode == FILECOPY_DELETE || mode == FILECOPY_UPDATE)
     {
-      while ( (nread = es_fread (buffer, 1, DIM(buffer), fp)) > 0 )
+      while ( (nread = fread (buffer, 1, DIM(buffer), fp)) > 0 )
         {
-          if (es_fwrite (buffer, nread, 1, newfp) != 1)
+          if (fwrite (buffer, nread, 1, newfp) != 1)
             {
               rc = gpg_error_from_syserror ();
-              es_fclose (fp);
-              es_fclose (newfp);
+              fclose (fp);
+              fclose (newfp);
               goto leave;
             }
         }
-      if (es_ferror (fp))
+      if (ferror (fp))
         {
           rc = gpg_error_from_syserror ();
-          es_fclose (fp);
-          es_fclose (newfp);
+          fclose (fp);
+          fclose (newfp);
           goto leave;
         }
     }
 
   /* Close both files. */
-  if (es_fclose(fp))
+  if (fclose(fp))
     {
       rc = gpg_error_from_syserror ();
-      es_fclose (newfp);
+      fclose (newfp);
       goto leave;
     }
-  if (es_fclose(newfp))
+  if (fclose(newfp))
     {
       rc = gpg_error_from_syserror ();
       goto leave;
@@ -424,7 +423,7 @@ keybox_update_keyblock (KEYBOX_HANDLE hd, const void *image, size_t imagelen)
   if (off == (off_t)-1)
     return gpg_error (GPG_ERR_GENERAL);
 
-  /* Close the file so that we do no mess up the position for a
+  /* Close this the file so that we do no mess up the position for a
      next search.  */
   _keybox_close_file (hd);
 
@@ -504,7 +503,7 @@ keybox_set_flags (KEYBOX_HANDLE hd, int what, int idx, unsigned int value)
 {
   off_t off;
   const char *fname;
-  estream_t fp;
+  FILE *fp;
   gpg_err_code_t ec;
   size_t flag_pos, flag_size;
   const unsigned char *buffer;
@@ -536,12 +535,12 @@ keybox_set_flags (KEYBOX_HANDLE hd, int what, int idx, unsigned int value)
   off += flag_pos;
 
   _keybox_close_file (hd);
-  fp = es_fopen (hd->kb->fname, "r+b");
+  fp = fopen (hd->kb->fname, "r+b");
   if (!fp)
     return gpg_error_from_syserror ();
 
   ec = 0;
-  if (es_fseeko (fp, off, SEEK_SET))
+  if (fseeko (fp, off, SEEK_SET))
     ec = gpg_err_code_from_syserror ();
   else
     {
@@ -557,7 +556,7 @@ keybox_set_flags (KEYBOX_HANDLE hd, int what, int idx, unsigned int value)
         case 1:
         case 2:
         case 4:
-          if (es_fwrite (tmp+4-flag_size, flag_size, 1, fp) != 1)
+          if (fwrite (tmp+4-flag_size, flag_size, 1, fp) != 1)
             ec = gpg_err_code_from_syserror ();
           break;
         default:
@@ -566,7 +565,7 @@ keybox_set_flags (KEYBOX_HANDLE hd, int what, int idx, unsigned int value)
         }
     }
 
-  if (es_fclose (fp))
+  if (fclose (fp))
     {
       if (!ec)
         ec = gpg_err_code_from_syserror ();
@@ -582,7 +581,7 @@ keybox_delete (KEYBOX_HANDLE hd)
 {
   off_t off;
   const char *fname;
-  estream_t fp;
+  FILE *fp;
   int rc;
 
   if (!hd)
@@ -601,18 +600,18 @@ keybox_delete (KEYBOX_HANDLE hd)
   off += 4;
 
   _keybox_close_file (hd);
-  fp = es_fopen (hd->kb->fname, "r+b");
+  fp = fopen (hd->kb->fname, "r+b");
   if (!fp)
     return gpg_error_from_syserror ();
 
-  if (es_fseeko (fp, off, SEEK_SET))
+  if (fseeko (fp, off, SEEK_SET))
     rc = gpg_error_from_syserror ();
-  else if (es_fputc (0, fp) == EOF)
+  else if (putc (0, fp) == EOF)
     rc = gpg_error_from_syserror ();
   else
     rc = 0;
 
-  if (es_fclose (fp))
+  if (fclose (fp))
     {
       if (!rc)
         rc = gpg_error_from_syserror ();
@@ -627,10 +626,9 @@ keybox_delete (KEYBOX_HANDLE hd)
 int
 keybox_compress (KEYBOX_HANDLE hd)
 {
-  gpg_err_code_t ec;
   int read_rc, rc;
   const char *fname;
-  estream_t fp, newfp;
+  FILE *fp, *newfp;
   char *bakfname = NULL;
   char *tmpfname = NULL;
   int first_blob;
@@ -653,10 +651,10 @@ keybox_compress (KEYBOX_HANDLE hd)
 
   /* Open the source file. Because we do a rename, we have to check the
      permissions of the file */
-  if ((ec = gnupg_access (fname, W_OK)))
-    return gpg_error (ec);
+  if (access (fname, W_OK))
+    return gpg_error_from_syserror ();
 
-  fp = es_fopen (fname, "rb");
+  fp = fopen (fname, "rb");
   if (!fp && errno == ENOENT)
     return 0; /* Ready. File has been deleted right after the access above. */
   if (!fp)
@@ -677,23 +675,23 @@ keybox_compress (KEYBOX_HANDLE hd)
         {
           u32 last_maint = buf32_to_u32 (buffer+20);
 
-          if ( (last_maint + 3*3600) > make_timestamp () )
+          if ( (last_maint + 3*3600) > time (NULL) )
             {
-              es_fclose (fp);
+              fclose (fp);
               _keybox_release_blob (blob);
               return 0; /* Compress run not yet needed. */
             }
         }
       _keybox_release_blob (blob);
-      es_fseek (fp, 0, SEEK_SET);
-      es_clearerr (fp);
+      fseek (fp, 0, SEEK_SET);
+      clearerr (fp);
     }
 
   /* Create the new file. */
   rc = create_tmp_file (fname, &bakfname, &tmpfname, &newfp);
   if (rc)
     {
-      es_fclose (fp);
+      fclose (fp);
       return rc;;
     }
 
@@ -702,7 +700,7 @@ keybox_compress (KEYBOX_HANDLE hd)
      automagically skip any blobs flagged as deleted.  Thus what we
      only have to do is to check all ephemeral flagged blocks whether
      their time has come and write out all other blobs. */
-  cut_time = make_timestamp () - 86400;
+  cut_time = time(NULL) - 86400;
   first_blob = 1;
   skipped_deleted = 0;
   for (rc=0; !(read_rc = _keybox_read_blob (&blob, fp, &skipped_deleted));
@@ -725,7 +723,7 @@ keybox_compress (KEYBOX_HANDLE hd)
                  stamp and if needed (ie. used by gpg) set the openpgp
                  flag.  */
               _keybox_update_header_blob (blob, hd->for_openpgp);
-              rc = _keybox_write_blob (blob, newfp, NULL);
+              rc = _keybox_write_blob (blob, newfp);
               if (rc)
                 break;
               continue;
@@ -769,7 +767,7 @@ keybox_compress (KEYBOX_HANDLE hd)
             }
         }
 
-      rc = _keybox_write_blob (blob, newfp, NULL);
+      rc = _keybox_write_blob (blob, newfp);
       if (rc)
         break;
     }
@@ -782,9 +780,9 @@ keybox_compress (KEYBOX_HANDLE hd)
     rc = read_rc;
 
   /* Close both files. */
-  if (es_fclose(fp) && !rc)
+  if (fclose(fp) && !rc)
     rc = gpg_error_from_syserror ();
-  if (es_fclose(newfp) && !rc)
+  if (fclose(newfp) && !rc)
     rc = gpg_error_from_syserror ();
 
   /* Rename or remove the temporary file. */

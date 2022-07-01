@@ -45,7 +45,6 @@ test_executing_true (void)
   char *result;
   size_t len;
 
-  /* Fixme: We should use gpgrt_access here.  */
   if (access (pgmname, X_OK))
     {
       if (access (alt_pgmname, X_OK))

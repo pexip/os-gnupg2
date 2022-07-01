@@ -25,9 +25,7 @@ libexec_PROGRAMS += gpg-preset-passphrase
 endif
 noinst_PROGRAMS = $(TESTS)
 
-EXTRA_DIST = ChangeLog-2011 \
-             gpg-agent-w32info.rc gpg-agent.w32-manifest.in \
-             all-tests.scm
+EXTRA_DIST = ChangeLog-2011 gpg-agent-w32info.rc all-tests.scm
 
 
 AM_CPPFLAGS =
@@ -35,10 +33,7 @@ AM_CPPFLAGS =
 include $(top_srcdir)/am/cmacros.am
 
 if HAVE_W32_SYSTEM
-gpg_agent_robjs = $(resource_objs) gpg-agent-w32info.o
-gpg-agent-w32info.o : gpg-agent.w32-manifest
-else
-gpg_agent_robjs =
+resource_objs += gpg-agent-w32info.o
 endif
 
 AM_CFLAGS = $(LIBGCRYPT_CFLAGS) $(GPG_ERROR_CFLAGS)
@@ -74,9 +69,9 @@ gpg_agent_CFLAGS = $(AM_CFLAGS) $(LIBASSUAN_CFLAGS) $(NPTH_CFLAGS) \
 gpg_agent_LDADD = $(commonpth_libs) \
                 $(LIBGCRYPT_LIBS) $(LIBASSUAN_LIBS) $(NPTH_LIBS) \
 	        $(GPG_ERROR_LIBS) $(LIBINTL) $(NETLIBS) $(LIBICONV) \
-		$(gpg_agent_robjs)
+		$(resource_objs)
 gpg_agent_LDFLAGS = $(extra_bin_ldflags)
-gpg_agent_DEPENDENCIES = $(gpg_agent_robjs)
+gpg_agent_DEPENDENCIES = $(resource_objs)
 
 gpg_protect_tool_SOURCES = \
 	protect-tool.c \
@@ -105,11 +100,7 @@ $(PROGRAMS): $(common_libs) $(commonpth_libs) $(pwquery_libs)
 #
 # Module tests
 #
-if DISABLE_TESTS
-TESTS =
-else
 TESTS = t-protect
-endif
 
 t_common_ldadd = $(common_libs)  $(LIBGCRYPT_LIBS) $(GPG_ERROR_LIBS) \
 	          $(LIBINTL) $(LIBICONV) $(NETLIBS)

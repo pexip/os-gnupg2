@@ -84,8 +84,6 @@ struct
 #define OID_FLAG_SKIP 1
 /* The extension is a simple UTF8String and should be printed.  */
 #define OID_FLAG_UTF8 2
-/* The extension can be trnted as a hex string.  */
-#define OID_FLAG_HEX  4
 
 /* A table mapping OIDs to a descriptive string. */
 static struct
@@ -194,12 +192,6 @@ static struct
 
   /* Extensions used by the Bundesnetzagentur.  */
   { "1.3.6.1.4.1.8301.3.5", "validityModel" },
-
-  /* Yubikey extensions for attestation certificates.  */
-  { "1.3.6.1.4.1.41482.3.3", "yubikey-firmware-version", OID_FLAG_HEX },
-  { "1.3.6.1.4.1.41482.3.7", "yubikey-serial-number", OID_FLAG_HEX },
-  { "1.3.6.1.4.1.41482.3.8", "yubikey-pin-touch-policy", OID_FLAG_HEX },
-  { "1.3.6.1.4.1.41482.3.9", "yubikey-formfactor", OID_FLAG_HEX },
 
   { NULL }
 };
@@ -356,22 +348,10 @@ email_kludge (const char *name)
 /* Print the compliance flags to field 18.  ALGO is the gcrypt algo
  * number.  NBITS is the length of the key in bits.  */
 static void
-print_compliance_flags (ksba_cert_t cert, int algo, unsigned int nbits,
-                        estream_t fp)
+print_compliance_flags (int algo, unsigned int nbits, estream_t fp)
 {
-  int hashalgo;
-
-  /* Note that we do not need to test for PK_ALGO_FLAG_RSAPSS because
-   * that is not a property of the key but one of the created
-   * signature.  */
-  if (gnupg_pk_is_compliant (CO_DE_VS, algo, 0, NULL, nbits, NULL))
-    {
-      hashalgo = gcry_md_map_name (ksba_cert_get_digest_algo (cert));
-      if (gnupg_digest_is_compliant (CO_DE_VS, hashalgo))
-        {
-          es_fputs (gnupg_status_compliance_flag (CO_DE_VS), fp);
-        }
-    }
+  if (gnupg_pk_is_compliant (CO_DE_VS, algo, NULL, nbits, NULL))
+    es_fputs (gnupg_status_compliance_flag (CO_DE_VS), fp);
 }
 
 
@@ -546,7 +526,7 @@ list_cert_colon (ctrl_t ctrl, ksba_cert_t cert, unsigned int validity,
   es_putc (':', fp);  /* End of field 15. */
   es_putc (':', fp);  /* End of field 16. */
   es_putc (':', fp);  /* End of field 17. */
-  print_compliance_flags (cert, algo, nbits, fp);
+  print_compliance_flags (algo, nbits, fp);
   es_putc (':', fp);  /* End of field 18. */
   es_putc ('\n', fp);
 
@@ -559,10 +539,6 @@ list_cert_colon (ctrl_t ctrl, ksba_cert_t cert, unsigned int validity,
   es_putc ('\n', fp);
   xfree (fpr); fpr = NULL; chain_id = NULL;
   xfree (chain_id_buffer); chain_id_buffer = NULL;
-  /* SHA256 FPR record */
-  fpr = gpgsm_get_fingerprint_hexstring (cert, GCRY_MD_SHA256);
-  es_fprintf (fp, "fp2:::::::::%s::::\n", fpr);
-  xfree (fpr); fpr = NULL;
 
   /* Always print the keygrip.  */
   if ( (p = gpgsm_get_keygrip_hexstring (cert)))
@@ -700,21 +676,6 @@ print_utf8_extn (estream_t fp, int indent,
 }
 
 
-/* Print the extension described by (DER,DERLEN) in hex.  */
-static void
-print_hex_extn (estream_t fp, int indent,
-                const unsigned char *der, size_t derlen)
-{
-  if (indent < 0)
-    indent = - indent;
-
-  es_fprintf (fp, "%*s(", indent, "");
-  for (; derlen; der++, derlen--)
-    es_fprintf (fp, "%02X%s", *der, derlen > 1? " ":"");
-  es_fprintf (fp, ")\n");
-}
-
-
 /* List one certificate in raw mode useful to have a closer look at
    the certificate.  This one does no beautification and only minimal
    output sanitation.  It is mainly useful for debugging. */
@@ -745,11 +706,8 @@ list_cert_raw (ctrl_t ctrl, KEYDB_HANDLE hd,
   sexp = ksba_cert_get_serial (cert);
   es_fputs ("          S/N: ", fp);
   gpgsm_print_serial (fp, sexp);
-  es_putc ('\n', fp);
-  es_fputs ("        (dec): ", fp);
-  gpgsm_print_serial_decimal (fp, sexp);
-  es_putc ('\n', fp);
   ksba_free (sexp);
+  es_putc ('\n', fp);
 
   dn = ksba_cert_get_issuer (cert, 0);
   es_fputs ("       Issuer: ", fp);
@@ -776,10 +734,6 @@ list_cert_raw (ctrl_t ctrl, KEYDB_HANDLE hd,
       ksba_free (dn);
       es_putc ('\n', fp);
     }
-
-  dn = gpgsm_get_fingerprint_string (cert, GCRY_MD_SHA256);
-  es_fprintf (fp, "     sha2_fpr: %s\n", dn?dn:"error");
-  xfree (dn);
 
   dn = gpgsm_get_fingerprint_string (cert, 0);
   es_fprintf (fp, "     sha1_fpr: %s\n", dn?dn:"error");
@@ -1059,27 +1013,16 @@ list_cert_raw (ctrl_t ctrl, KEYDB_HANDLE hd,
       if ((flag & OID_FLAG_SKIP))
         continue;
 
-      es_fprintf (fp, "     %s: %s%s%s%s",
+      es_fprintf (fp, "     %s: %s%s%s%s  [%d octets]\n",
                   i? "critExtn":"    extn",
-                  oid, s?" (":"", s?s:"", s?")":"");
+                  oid, s?" (":"", s?s:"", s?")":"", (int)len);
       if ((flag & OID_FLAG_UTF8))
         {
           if (!cert_der)
             cert_der = ksba_cert_get_image (cert, NULL);
-          log_assert (cert_der);
-          es_fprintf (fp, "\n");
+          assert (cert_der);
           print_utf8_extn_raw (fp, -15, cert_der+off, len);
         }
-      else if ((flag & OID_FLAG_HEX))
-        {
-          if (!cert_der)
-            cert_der = ksba_cert_get_image (cert, NULL);
-          log_assert (cert_der);
-          es_fprintf (fp, "\n");
-          print_hex_extn (fp, -15, cert_der+off, len);
-        }
-      else
-        es_fprintf (fp, "  [%d octets]\n", (int)len);
     }
 
 
@@ -1132,11 +1075,8 @@ list_cert_std (ctrl_t ctrl, ksba_cert_t cert, estream_t fp, int have_secret,
   sexp = ksba_cert_get_serial (cert);
   es_fputs ("          S/N: ", fp);
   gpgsm_print_serial (fp, sexp);
-  es_putc ('\n', fp);
-  es_fputs ("        (dec): ", fp);
-  gpgsm_print_serial_decimal (fp, sexp);
-  es_putc ('\n', fp);
   ksba_free (sexp);
+  es_putc ('\n', fp);
 
   dn = ksba_cert_get_issuer (cert, 0);
   es_fputs ("       Issuer: ", fp);
@@ -1301,10 +1241,6 @@ list_cert_std (ctrl_t ctrl, ksba_cert_t cert, estream_t fp, int have_secret,
 
   dn = gpgsm_get_fingerprint_string (cert, 0);
   es_fprintf (fp, "  fingerprint: %s\n", dn?dn:"error");
-  xfree (dn);
-
-  dn = gpgsm_get_fingerprint_string (cert, GCRY_MD_SHA256);
-  es_fprintf (fp, "     sha2 fpr: %s\n", dn?dn:"error");
   xfree (dn);
 
   if (opt.with_keygrip)
@@ -1628,7 +1564,7 @@ list_external_keys (ctrl_t ctrl, strlist_t names, estream_t fp, int raw_mode)
   parm.with_chain = ctrl->with_chain;
   parm.raw_mode  = raw_mode;
 
-  rc = gpgsm_dirmngr_lookup (ctrl, names, NULL, 0, list_external_cb, &parm);
+  rc = gpgsm_dirmngr_lookup (ctrl, names, 0, list_external_cb, &parm);
   if (gpg_err_code (rc) == GPG_ERR_EOF || rc == -1
       || gpg_err_code (rc) == GPG_ERR_NOT_FOUND)
     rc = 0; /* "Not found" is not an error here. */

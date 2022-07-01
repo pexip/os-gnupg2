@@ -21,10 +21,7 @@
 
 ## Process this file with automake to produce Makefile.in
 
-EXTRA_DIST = OAUTHORS ONEWS ChangeLog-2011 tls-ca.pem \
-             dirmngr-w32info.rc dirmngr.w32-manifest.in
-
-
+EXTRA_DIST = OAUTHORS ONEWS ChangeLog-2011 tls-ca.pem
 dist_pkgdata_DATA = sks-keyservers.netCA.pem
 
 bin_PROGRAMS = dirmngr dirmngr-client
@@ -34,11 +31,7 @@ libexec_PROGRAMS = dirmngr_ldap
 endif
 
 noinst_PROGRAMS = $(module_tests) $(module_net_tests) $(module_maint_tests)
-if DISABLE_TESTS
-TESTS =
-else
 TESTS = $(module_tests) $(module_net_tests)
-endif
 
 AM_CPPFLAGS =
 
@@ -69,7 +62,7 @@ dirmngr_SOURCES = dirmngr.c dirmngr.h server.c crlcache.c crlfetch.c	\
 	domaininfo.c \
 	workqueue.c \
 	loadswdb.c \
-	cdb.h cdblib.c misc.c dirmngr-err.h dirmngr-status.h \
+	cdb.h cdblib.c misc.c dirmngr-err.h  \
 	ocsp.c ocsp.h validate.c validate.h  \
 	dns-stuff.c dns-stuff.h \
 	http.c http.h http-common.c http-common.h http-ntbtls.c \
@@ -89,19 +82,11 @@ else
 ldaplibs =
 endif
 
-if HAVE_W32_SYSTEM
-dirmngr_robjs = $(resource_objs) dirmngr-w32info.o
-dirmngr-w32info.o : dirmngr.w32-manifest
-else
-dirmngr_robjs =
-endif
-
 
 dirmngr_LDADD = $(libcommonpth) \
         $(DNSLIBS) $(LIBASSUAN_LIBS) \
 	$(LIBGCRYPT_LIBS) $(KSBA_LIBS) $(NPTH_LIBS) \
-	$(NTBTLS_LIBS) $(LIBGNUTLS_LIBS) $(LIBINTL) $(LIBICONV) $(NETLIBS) \
-        $(dirmngr_robj)
+	$(NTBTLS_LIBS) $(LIBGNUTLS_LIBS) $(LIBINTL) $(LIBICONV)
 if USE_LDAP
 dirmngr_LDADD += $(ldaplibs)
 endif
@@ -126,7 +111,7 @@ dirmngr_client_LDADD = $(libcommon) \
 dirmngr_client_LDFLAGS = $(extra_bin_ldflags)
 
 
-t_common_src = t-support.h t-support.c
+t_common_src = t-support.h
 if USE_LIBDNS
 t_common_src += dns.c dns.h
 endif

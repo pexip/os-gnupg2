@@ -784,32 +784,30 @@ gnupg_wait_processes (const char **pgmnames, pid_t *pids, size_t count,
         }
     }
 
-  for (i = 0; i < count; i++)
-    {
-      if (r_exitcodes[i] == -1)
-        continue;
-
-      if (WIFEXITED (r_exitcodes[i]) && WEXITSTATUS (r_exitcodes[i]) == 127)
-        {
-          log_error (_("error running '%s': probably not installed\n"),
-                     pgmnames[i]);
-          ec = GPG_ERR_CONFIGURATION;
-        }
-      else if (WIFEXITED (r_exitcodes[i]) && WEXITSTATUS (r_exitcodes[i]))
-        {
-          if (dummy)
-            log_error (_("error running '%s': exit status %d\n"),
-                       pgmnames[i], WEXITSTATUS (r_exitcodes[i]));
-          else
-            r_exitcodes[i] = WEXITSTATUS (r_exitcodes[i]);
-          ec = GPG_ERR_GENERAL;
-        }
-      else if (!WIFEXITED (r_exitcodes[i]))
-        {
-          log_error (_("error running '%s': terminated\n"), pgmnames[i]);
-          ec = GPG_ERR_GENERAL;
-        }
-    }
+  if (ec == 0)
+    for (i = 0; i < count; i++)
+      {
+        if (WIFEXITED (r_exitcodes[i]) && WEXITSTATUS (r_exitcodes[i]) == 127)
+          {
+            log_error (_("error running '%s': probably not installed\n"),
+                       pgmnames[i]);
+            ec = GPG_ERR_CONFIGURATION;
+          }
+        else if (WIFEXITED (r_exitcodes[i]) && WEXITSTATUS (r_exitcodes[i]))
+          {
+            if (dummy)
+              log_error (_("error running '%s': exit status %d\n"),
+                         pgmnames[i], WEXITSTATUS (r_exitcodes[i]));
+            else
+              r_exitcodes[i] = WEXITSTATUS (r_exitcodes[i]);
+            ec = GPG_ERR_GENERAL;
+          }
+        else if (!WIFEXITED (r_exitcodes[i]))
+          {
+            log_error (_("error running '%s': terminated\n"), pgmnames[i]);
+            ec = GPG_ERR_GENERAL;
+          }
+      }
 
   xfree (dummy);
   return gpg_err_make (GPG_ERR_SOURCE_DEFAULT, ec);
@@ -835,15 +833,14 @@ gpg_error_t
 gnupg_spawn_process_detached (const char *pgmname, const char *argv[],
                               const char *envp[] )
 {
-  gpg_err_code_t ec;
   pid_t pid;
   int i;
 
   if (getuid() != geteuid())
     return my_error (GPG_ERR_BUG);
 
-  if ((ec = gnupg_access (pgmname, X_OK)))
-    return gpg_err_make (default_errsource, ec);
+  if (access (pgmname, X_OK))
+    return my_error_from_syserror ();
 
   pid = fork ();
   if (pid == (pid_t)(-1))

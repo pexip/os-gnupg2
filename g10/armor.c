@@ -1156,10 +1156,10 @@ armor_filter( void *opaque, int control,
 	      }
 
 	    /* write the comment strings */
-	    for(;comment;comment=comment->next)
+	    for(s=comment->d;comment;comment=comment->next,s=comment->d)
 	      {
 		iobuf_writestr(a, "Comment: " );
-		for( s=comment->d; *s; s++ )
+		for( ; *s; s++ )
 		  {
 		    if( *s == '\n' )
 		      iobuf_writestr(a, "\\n" );

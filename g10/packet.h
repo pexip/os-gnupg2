@@ -33,17 +33,12 @@
 
 #define DEBUG_PARSE_PACKET 1
 
-/* Maximum length of packets to avoid excessive memory allocation.  */
-#define MAX_KEY_PACKET_LENGTH     (256 * 1024)
-#define MAX_UID_PACKET_LENGTH     (  2 * 1024)
-#define MAX_COMMENT_PACKET_LENGTH ( 64 * 1024)
-#define MAX_ATTR_PACKET_LENGTH    ( 16 * 1024*1024)
 
-/* Constants to allocate static MPI arrays.  */
-#define PUBKEY_MAX_NPKEY  OPENPGP_MAX_NPKEY
-#define PUBKEY_MAX_NSKEY  OPENPGP_MAX_NSKEY
-#define PUBKEY_MAX_NSIG   OPENPGP_MAX_NSIG
-#define PUBKEY_MAX_NENC   OPENPGP_MAX_NENC
+/* Constants to allocate static MPI arrays. */
+#define PUBKEY_MAX_NPKEY  5
+#define PUBKEY_MAX_NSKEY  7
+#define PUBKEY_MAX_NSIG   2
+#define PUBKEY_MAX_NENC   2
 
 /* Usage flags */
 #define PUBKEY_USAGE_SIG     GCRY_PK_USAGE_SIGN  /* Good for signatures. */
@@ -77,8 +72,7 @@ typedef enum {
     PREFTYPE_NONE = 0,
     PREFTYPE_SYM = 1,
     PREFTYPE_HASH = 2,
-    PREFTYPE_ZIP = 3,
-    PREFTYPE_AEAD = 4
+    PREFTYPE_ZIP = 3
 } preftype_t;
 
 typedef struct {
@@ -105,8 +99,6 @@ typedef struct {
      be different from the algorithm that is used to encrypt the SED
      packet.)  */
   byte cipher_algo;
-  /* The AEAD algorithm or 0 for CFB encryption.  */
-  byte aead_algo;
   /* The string-to-key specifier.  */
   STRING2KEY s2k;
   /* The length of SESKEY in bytes or 0 if this packet does not
@@ -114,8 +106,7 @@ typedef struct {
      S2K function on the password is the session key. See RFC 4880,
      Section 5.3.)  */
   byte seskeylen;
-  /* The session key as encrypted by the S2K specifier.  For AEAD this
-   * includes the nonce and the authentication tag.  */
+  /* The session key as encrypted by the S2K specifier.  */
   byte seskey[1];
 } PKT_symkey_enc;
 
@@ -211,7 +202,6 @@ typedef struct
     unsigned policy_url:1;  /* At least one policy URL is present */
     unsigned notation:1;    /* At least one notation is present */
     unsigned pref_ks:1;     /* At least one preferred keyserver is present */
-    unsigned key_block:1;   /* A key block subpacket is present.  */
     unsigned expired:1;
     unsigned pka_tried:1;   /* Set if we tried to retrieve the PKA record. */
   } flags;
@@ -301,7 +291,6 @@ typedef struct
   struct
   {
     unsigned int mdc:1;
-    unsigned int aead:1;
     unsigned int ks_modify:1;
     unsigned int compacted:1;
     unsigned int primary:2; /* 2 if set via the primary flag, 1 if calculated */
@@ -398,7 +387,6 @@ typedef struct
   struct
   {
     unsigned int mdc:1;           /* MDC feature set.  */
-    unsigned int aead:1;          /* AEAD feature set.  */
     unsigned int disabled_valid:1;/* The next flag is valid.  */
     unsigned int disabled:1;      /* The key has been disabled.  */
     unsigned int primary:1;       /* This is a primary key.  */
@@ -469,13 +457,12 @@ typedef struct {
 typedef struct {
   /* Remaining length of encrypted data. */
   u32  len;
-  /* When encrypting in CFB mode, the first block size bytes of data
-   * are random data and the following 2 bytes are copies of the last
-   * two bytes of the random data (RFC 4880, Section 5.7).  This
-   * provides a simple check that the key is correct.  EXTRALEN is the
-   * size of this extra data or, in AEAD mode, the length of the
-   * headers and the tags.  This is used by build_packet when writing
-   * out the packet's header. */
+  /* When encrypting, the first block size bytes of data are random
+     data and the following 2 bytes are copies of the last two bytes
+     of the random data (RFC 4880, Section 5.7).  This provides a
+     simple check that the key is correct.  extralen is the size of
+     this extra data.  This is used by build_packet when writing out
+     the packet's header. */
   int  extralen;
   /* Whether the serialized version of the packet used / should use
      the new format.  */
@@ -487,15 +474,6 @@ typedef struct {
   /* If 0, MDC is disabled.  Otherwise, the MDC method that was used
      (currently, only DIGEST_ALGO_SHA1 is supported).  */
   byte mdc_method;
-  /* If 0, AEAD is not used.  Otherwise, the used AEAD algorithm.
-   * MDC_METHOD (above) shall be zero if AEAD is used.  */
-  byte aead_algo;
-  /* The cipher algo for/from the AEAD packet.  0 for other encryption
-   * packets. */
-  byte cipher_algo;
-  /* The chunk byte from the AEAD packet.  */
-  byte chunkbyte;
-
   /* An iobuf holding the data to be decrypted.  (This is not used for
      encryption!)  */
   iobuf_t buf;
@@ -890,10 +868,9 @@ int check_signature (ctrl_t ctrl, PKT_signature *sig, gcry_md_hd_t digest);
  * R_PK is not NULL, it is stored at RET_PK.)  DIGEST contains a
  * valid hash context that already includes the signed data.  This
  * function adds the relevant meta-data to the hash before finalizing
- * it and verifying the signature.  FOCRED_PK is usually NULL. */
+ * it and verifying the signature.  */
 gpg_error_t check_signature2 (ctrl_t ctrl,
                               PKT_signature *sig, gcry_md_hd_t digest,
-                              PKT_public_key *forced_pk,
                               u32 *r_expiredate, int *r_expired, int *r_revoked,
                               PKT_public_key **r_pk);
 

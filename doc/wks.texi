@@ -61,7 +61,7 @@ Service provider.  This is usuallay done to upload a key into a Web
 Key Directory.
 
 With the @option{--supported} command the caller can test whether a
-site supports the Web Key Service.  The argument is an arbitrary
+site supports the Web Key Service.  The argument is an arbitray
 address in the to be tested domain. For example
 @file{foo@@example.net}.  The command returns success if the Web Key
 Service is supported.  The operation is silent; to get diagnostic
@@ -101,14 +101,6 @@ fingerprint and the mailbox separated by a space.  The command
 @option{--remove-key} removes a key from that directory, its only
 argument is a user-id.
 
-The command @option{--print-wkd-hash} prints the WKD user-id identifiers
-and the corresponding mailboxes from the user-ids given on the command
-line or via stdin (one user-id per line).
-
-The command @option{--print-wkd-url} prints the URLs used to fetch the
-key for the given user-ids from WKD.  The meanwhile preferred format
-with sub-domains is used here.
-
 @command{gpg-wks-client} is not commonly invoked directly and thus it
 is not installed in the bin directory.  Here is an example how it can
 be invoked manually to check for a Web Key Directory entry for
@@ -132,7 +124,7 @@ Requires installation of that command.
 @item --with-colons
 @opindex with-colons
 This option has currently only an effect on the @option{--supported}
-command.  If it is used all arguments on the command line are taken
+command.  If it is used all arguimenst on the command line are taken
 as domain names and tested for WKD support.  The output format is one
 line per domain with colon delimited fields.  The currently specified
 fields are (future versions may specify additional fields):

@@ -25,7 +25,6 @@
 #include <assert.h>
 
 #include "keybox-defs.h"
-#include "../common/sysutils.h"
 #include "../common/mischelp.h"
 
 static KB_NAME kb_names;
@@ -81,7 +80,7 @@ keybox_is_writable (void *token)
 {
   KB_NAME r = token;
 
-  return r? !gnupg_access (r->fname, W_OK) : 0;
+  return r? !access (r->fname, W_OK) : 0;
 }
 
 
@@ -180,7 +179,7 @@ keybox_release (KEYBOX_HANDLE hd)
   _keybox_release_blob (hd->saved_found.blob);
   if (hd->fp)
     {
-      es_fclose (hd->fp);
+      fclose (hd->fp);
       hd->fp = NULL;
     }
   xfree (hd->word_match.name);
@@ -253,22 +252,19 @@ _keybox_close_file (KEYBOX_HANDLE hd)
       {
         if (roverhd->fp)
           {
-            es_fclose (roverhd->fp);
+            fclose (roverhd->fp);
             roverhd->fp = NULL;
           }
       }
-  log_assert (!hd->fp);
+  assert (!hd->fp);
 }
 
 
 /*
  * Lock the keybox at handle HD, or unlock if YES is false.
- * Lock the keybox at handle HD, or unlock if YES is false.  TIMEOUT
- * is the value used for dotlock_take.  In general -1 should be used
- * when taking a lock; use 0 when releasing a lock.
  */
 gpg_error_t
-keybox_lock (KEYBOX_HANDLE hd, int yes, long timeout)
+keybox_lock (KEYBOX_HANDLE hd, int yes)
 {
   gpg_error_t err = 0;
   KB_NAME kb = hd->kb;
@@ -293,22 +289,23 @@ keybox_lock (KEYBOX_HANDLE hd, int yes, long timeout)
       if (!kb->is_locked)
         {
 #ifdef HAVE_W32_SYSTEM
-          /* Under Windows we need to close the file before we try
-           * to lock it.  This is because another process might have
-           * taken the lock and is using keybox_file_rename to
-           * rename the base file.  Now if our dotlock_take below is
-           * waiting for the lock but we have the base file still
-           * open, keybox_file_rename will never succeed as we are
-           * in a deadlock.  */
-          _keybox_close_file (hd);
+            /* Under Windows we need to close the file before we try
+             * to lock it.  This is because another process might have
+             * taken the lock and is using keybox_file_rename to
+             * rename the base file.  How if our dotlock_take below is
+             * waiting for the lock but we have the base file still
+             * open, keybox_file_rename will never succeed as we are
+             * in a deadlock.  */
+          if (hd->fp)
+            {
+              fclose (hd->fp);
+              hd->fp = NULL;
+            }
 #endif /*HAVE_W32_SYSTEM*/
-          if (dotlock_take (kb->lockhd, timeout))
+          if (dotlock_take (kb->lockhd, -1))
             {
               err = gpg_error_from_syserror ();
-              if (!timeout && gpg_err_code (err) == GPG_ERR_EACCES)
-                ; /* No diagnostic if we only tried to lock.  */
-              else
-                log_info ("can't lock '%s'\n", kb->fname );
+              log_info ("can't lock '%s'\n", kb->fname );
             }
           else
             kb->is_locked = 1;

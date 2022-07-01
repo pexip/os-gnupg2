@@ -1,0 +1,121 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Mon, 18 Mar 2019 14:10:16 +0100
+Subject: gpg: Do not bail out on v5 keys in the local keyring.
+
+* g10/parse-packet.c (parse_key): Return GPG_ERR_UNKNOWN_VERSION
+instead of invalid packet.
+* g10/keydb.c (parse_keyblock_image): Do not map the unknown version
+error to invalid keyring.
+(keydb_search): Skip unknown version errors simlar to legacy keys.
+* g10/keyring.c (keyring_rebuild_cache): Skip keys with unknown
+versions.
+* g10/import.c (read_block): Handle unknown version.
+--
+
+When using gpg 2.3 the local keyring may contain v5 keys.  This patch
+allows the use of such a keyring also with a 2.2 version which does
+not support v5 keys.  We will probably need some more tweaking here
+but this covers the most common cases of listing keys and also
+importing v5 keys.
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit de70a2f377c1647417fb8a2b6476c3744a901296)
+---
+ g10/import.c       |  6 ++++--
+ g10/keydb.c        | 13 +++++++++----
+ g10/keylist.c      |  2 ++
+ g10/keyring.c      |  2 ++
+ g10/parse-packet.c |  2 +-
+ 5 files changed, 18 insertions(+), 7 deletions(-)
+
+diff --git a/g10/import.c b/g10/import.c
+index f76ca0c..aeab4e0 100644
+--- a/g10/import.c
++++ b/g10/import.c
+@@ -860,12 +860,14 @@ read_block( IOBUF a, int with_meta,
+   skip_sigs = 0;
+   while ((rc=parse_packet (&parsectx, pkt)) != -1)
+     {
+-      if (rc && (gpg_err_code (rc) == GPG_ERR_LEGACY_KEY
++      if (rc && ((gpg_err_code (rc) == GPG_ERR_LEGACY_KEY
++                 || gpg_err_code (rc) == GPG_ERR_UNKNOWN_VERSION)
+                  && (pkt->pkttype == PKT_PUBLIC_KEY
+                      || pkt->pkttype == PKT_SECRET_KEY)))
+         {
+           in_v3key = 1;
+-          ++*r_v3keys;
++          if (gpg_err_code (rc) != GPG_ERR_UNKNOWN_VERSION)
++            ++*r_v3keys;
+           free_packet (pkt, &parsectx);
+           init_packet (pkt);
+           continue;
+diff --git a/g10/keydb.c b/g10/keydb.c
+index 03fadfd..0475f85 100644
+--- a/g10/keydb.c
++++ b/g10/keydb.c
+@@ -1249,9 +1249,12 @@ parse_keyblock_image (iobuf_t iobuf, int pk_no, int uid_no,
+ 	}
+       if (err)
+         {
+-          log_error ("parse_keyblock_image: read error: %s\n",
+-                     gpg_strerror (err));
+-          err = gpg_error (GPG_ERR_INV_KEYRING);
++          if (gpg_err_code (err) != GPG_ERR_UNKNOWN_VERSION)
++            {
++              log_error ("parse_keyblock_image: read error: %s\n",
++                         gpg_strerror (err));
++              err = gpg_error (GPG_ERR_INV_KEYRING);
++            }
+           break;
+         }
+ 
+@@ -1955,7 +1958,9 @@ keydb_search (KEYDB_HANDLE hd, KEYDB_SEARCH_DESC *desc,
+             rc = keybox_search (hd->active[hd->current].u.kb, desc,
+                                 ndesc, KEYBOX_BLOBTYPE_PGP,
+                                 descindex, &hd->skipped_long_blobs);
+-          while (rc == GPG_ERR_LEGACY_KEY);
++          while (gpg_err_code (rc) == GPG_ERR_LEGACY_KEY
++                 || gpg_err_code (rc) == GPG_ERR_UNKNOWN_VERSION)
++            ;
+           break;
+         }
+ 
+diff --git a/g10/keylist.c b/g10/keylist.c
+index 7b3fde1..85fcdba 100644
+--- a/g10/keylist.c
++++ b/g10/keylist.c
+@@ -527,6 +527,8 @@ list_all (ctrl_t ctrl, int secret, int mark_secret)
+ 	{
+           if (gpg_err_code (rc) == GPG_ERR_LEGACY_KEY)
+             continue;  /* Skip legacy keys.  */
++          if (gpg_err_code (rc) == GPG_ERR_UNKNOWN_VERSION)
++            continue;  /* Skip keys with unknown versions.  */
+ 	  log_error ("keydb_get_keyblock failed: %s\n", gpg_strerror (rc));
+ 	  goto leave;
+ 	}
+diff --git a/g10/keyring.c b/g10/keyring.c
+index 25ef507..a8dd462 100644
+--- a/g10/keyring.c
++++ b/g10/keyring.c
+@@ -1476,6 +1476,8 @@ keyring_rebuild_cache (ctrl_t ctrl, void *token, int noisy)
+         {
+           if (gpg_err_code (rc) == GPG_ERR_LEGACY_KEY)
+             continue;  /* Skip legacy keys.  */
++          if (gpg_err_code (rc) == GPG_ERR_UNKNOWN_VERSION)
++            continue;  /* Skip keys with unknown version.  */
+           log_error ("keyring_get_keyblock failed: %s\n", gpg_strerror (rc));
+           goto leave;
+         }
+diff --git a/g10/parse-packet.c b/g10/parse-packet.c
+index ff348ec..05f63e9 100644
+--- a/g10/parse-packet.c
++++ b/g10/parse-packet.c
+@@ -2296,7 +2296,7 @@ parse_key (IOBUF inp, int pkttype, unsigned long pktlen,
+       log_error ("packet(%d) with unknown version %d\n", pkttype, version);
+       if (list_mode)
+         es_fputs (":key packet: [unknown version]\n", listfp);
+-      err = gpg_error (GPG_ERR_INV_PACKET);
++      err = gpg_error (GPG_ERR_UNKNOWN_VERSION);
+       goto leave;
+     }
+ 

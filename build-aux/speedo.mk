@@ -1,5 +1,5 @@
 # speedo.mk - Speedo rebuilds speedily.
-# Copyright (C) 2008, 2014, 2019 g10 Code GmbH
+# Copyright (C) 2008, 2014 g10 Code GmbH
 #
 # speedo is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -41,52 +41,11 @@
 #
 # Lists packages and versions.
 #
-# The information reyured to sign the tarballs and binaries
-# are expected in the developer specific file ~/.gnupg-autogen.rc".
-# Here is an example:
-#--8<---------------cut here---------------start------------->8---
-# # Location of the released tarball archives.  Note that this is an
-# # internal archive and before uploading this to the public server,
-# # manual tests should be run and the git release tagged and pushed.
-# # This is greped by the Makefile.
-# RELEASE_ARCHIVE=foo@somehost:tarball-archive
-#
-# # The key used to sign the released sources.
-# # This is greped by the Makefile.
-# RELEASE_SIGNKEY=6DAA6E64A76D2840571B4902528897B826403ADA
-#
-# # For signing Windows binaries we need to employ a Windows machine.
-# # We connect to this machine via ssh and take the connection
-# # parameters via .ssh/config. For example a VM could be specified
-# # like this:
-# #
-# #   Host authenticode-signhost
-# #        HostName localhost
-# #        Port 27042
-# #        User gpgsign
-# #
-# # Depending on the used token it might be necessary to allow single
-# # signon and unlock the token before running the make.  The following
-# # variable references this entry.  This is greped by the Makefile.
-# AUTHENTICODE_SIGNHOST=authenticode-signhost
-#
-# # The name of the signtool as used on Windows.
-# # This is greped by the Makefile.
-# AUTHENTICODE_TOOL="C:\Program Files (x86)\Windows Kits\10\bin\signtool.exe"
-#
-# # To use osslsigncode the follwing entries are required and
-# # an empty string must be given for AUTHENTICODE_SIGNHOST.
-# # They are greped by the Makefile.
-# AUTHENTICODE_KEY=/home/foo/.gnupg/my-authenticode-key.p12
-# AUTHENTICODE_CERTS=/home/foo/.gnupg/my-authenticode-certs.pem
-#
-#--8<---------------cut here---------------end--------------->8---
-
 
 # We need to know our own name.
 SPEEDO_MK := $(realpath $(lastword $(MAKEFILE_LIST)))
 
-.PHONY : help native native-gui w32-installer w32-source w32-wixlib
+.PHONY : help native native-gui w32-installer w32-source
 .PHONY :      git-native git-native-gui git-w32-installer git-w32-source
 .PHONY :      this-native this-native-gui this-w32-installer this-w32-source
 
@@ -99,7 +58,6 @@ help:
 	@echo '  w32-installer      Build a Windows installer'
 	@echo '  w32-source         Pack a source archive'
 	@echo '  w32-release        Build a Windows release'
-	@echo '  w32-wixlib         Build a wixlib for MSI packages'
 	@echo '  w32-sign-installer Sign the installer'
 	@echo
 	@echo 'You may append INSTALL_PREFIX=<dir> for native builds.'
@@ -108,30 +66,6 @@ help:
 	@echo 'Use STATIC=1 to build with statically linked libraries.'
 	@echo 'Use SELFCHECK=0 for a non-released version.'
 	@echo 'Use CUSTOM_SWDB=1 for an already downloaded swdb.lst.'
-	@echo 'Use WIXPREFIX to provide the WIX binaries for the MSI package.'
-	@echo '    Using WIX also requires wine with installed wine mono.'
-	@echo '    See help-wixlib for more information'
-
-help-wixlib:
-	@echo 'The buildsystem can create a wixlib to build MSI packages.'
-	@echo ''
-	@echo 'On debian install the packages "wine"'
-	@echo '  apt-get install wine'
-	@echo ''
-	@echo 'Download the wine-mono msi:'
-	@echo '  https://dl.winehq.org/wine/wine-mono/'
-	@echo ''
-	@echo 'Install it:'
-	@echo '  wine msiexec /i ~/Downloads/wine-mono-4.9.4.msi'
-	@echo ''
-	@echo 'Download the wix toolset binary zip from:'
-	@echo '  https://github.com/wixtoolset/wix3/releases'
-	@echo 'The default folder searches for ~/w32root/wixtools'
-	@echo 'Alternative locations can be passed by WIXPREFIX variable'
-	@echo '  unzip -d ~/w32root/wixtools ~/Downloads/wix311-binaries.zip'
-	@echo ''
-	@echo 'Afterwards w32-release will build also a wixlib.'
-
 
 SPEEDOMAKE := $(MAKE) -f $(SPEEDO_MK) UPD_SWDB=1
 
@@ -162,15 +96,6 @@ git-w32-installer: check-tools
 this-w32-installer: check-tools
 	$(SPEEDOMAKE) TARGETOS=w32    WHAT=this    WITH_GUI=0 \
 	                                           CUSTOM_SWDB=1 installer
-w32-wixlib: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32    WHAT=release WITH_GUI=0 wixlib
-
-git-w32-wixlib: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32    WHAT=git     WITH_GUI=0 wixlib
-
-this-w32-wixlib: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32    WHAT=this    WITH_GUI=0 \
-	                                           CUSTOM_SWDB=1 wixlib
 
 w32-source: check-tools
 	$(SPEEDOMAKE) TARGETOS=w32    WHAT=release WITH_GUI=0 dist-source
@@ -232,44 +157,9 @@ INST_NAME=gnupg-w32
 # Use this to override the installaion directory for native builds.
 INSTALL_PREFIX=none
 
-# Set this to the location of wixtools
-WIXPREFIX=$(shell readlink -f ~/w32root/wixtools)
-
-# Read signing information from ~/.gnupg-autogen.rc
-define READ_AUTOGEN_template
-$(1) = $$(shell grep '^$(1)=' $$$$HOME/.gnupg-autogen.rc|cut -d= -f2)
-endef
-$(eval $(call READ_AUTOGEN_template,AUTHENTICODE_SIGNHOST))
-$(eval $(call READ_AUTOGEN_template,AUTHENTICODE_TOOL))
-$(eval $(call READ_AUTOGEN_template,AUTHENTICODE_KEY))
-$(eval $(call READ_AUTOGEN_template,AUTHENTICODE_CERTS))
-
-# All files given in AUTHENTICODE_FILES are signed before
-# they are put into the installer.
-AUTHENTICODE_FILES= \
-                    dirmngr.exe               \
-                    dirmngr_ldap.exe          \
-                    gpg-agent.exe             \
-                    gpg-connect-agent.exe     \
-                    gpg-preset-passphrase.exe \
-                    gpg-wks-client.exe        \
-                    gpg.exe                   \
-                    gpgconf.exe               \
-                    gpgme-w32spawn.exe        \
-                    gpgsm.exe                 \
-                    gpgtar.exe                \
-                    gpgv.exe                  \
-                    libassuan-0.dll           \
-                    libgcrypt-20.dll          \
-                    libgpg-error-0.dll        \
-                    libgpgme-11.dll           \
-                    libksba-8.dll             \
-                    libnpth-0.dll             \
-                    libsqlite3-0.dll          \
-                    pinentry-w32.exe          \
-                    scdaemon.exe	      \
-                    zlib1.dll
-
+# The Authenticode key and cert chain used to sign the Windows installer
+AUTHENTICODE_KEY=${HOME}/.gnupg/g10code-authenticode-key.p12
+AUTHENTICODE_CERTS=${HOME}/.gnupg/g10code-authenticode-certs.pem
 
 
 # Directory names.
@@ -403,9 +293,9 @@ npth_ver  := $(shell awk '$$1=="npth_ver" {print $$2}' swdb.lst)
 npth_sha1 := $(shell awk '$$1=="npth_sha1" {print $$2}' swdb.lst)
 npth_sha2 := $(shell awk '$$1=="npth_sha2" {print $$2}' swdb.lst)
 
-libgcrypt_ver  := $(shell awk '$$1=="libgcrypt18_ver" {print $$2}' swdb.lst)
-libgcrypt_sha1 := $(shell awk '$$1=="libgcrypt18_sha1" {print $$2}' swdb.lst)
-libgcrypt_sha2 := $(shell awk '$$1=="libgcrypt18_sha2" {print $$2}' swdb.lst)
+libgcrypt_ver  := $(shell awk '$$1=="libgcrypt_ver" {print $$2}' swdb.lst)
+libgcrypt_sha1 := $(shell awk '$$1=="libgcrypt_sha1" {print $$2}' swdb.lst)
+libgcrypt_sha2 := $(shell awk '$$1=="libgcrypt_sha2" {print $$2}' swdb.lst)
 
 libassuan_ver  := $(shell awk '$$1=="libassuan_ver" {print $$2}' swdb.lst)
 libassuan_sha1 := $(shell awk '$$1=="libassuan_sha1" {print $$2}' swdb.lst)
@@ -610,7 +500,8 @@ speedo_pkg_ntbtls_configure = --disable-shared
 
 ifeq ($(TARGETOS),w32)
 speedo_pkg_gnupg_configure = \
-        --disable-g13 --enable-ntbtls
+        --disable-g13 --enable-ntbtls \
+        --enable-build-timestamp
 else
 speedo_pkg_gnupg_configure = --disable-g13 --enable-wks-tools
 endif
@@ -808,8 +699,6 @@ W32CC = i686-w64-mingw32-gcc
 
 MKDIR=mkdir
 MAKENSIS=makensis
-WINE=wine
-
 SHA1SUM := $(shell $(topsrc)/build-aux/getswdb.sh --find-sha1sum)
 ifeq ($(SHA1SUM),false)
 $(error The sha1sum tool is missing)
@@ -1280,7 +1169,7 @@ dist-source: installer
               --transform='s,^,$(INST_NAME)-$(INST_VERSION)/,' \
 	     PLAY/stamps/stamp-*-00-unpack PLAY/src swdb.lst swdb.lst.sig ;\
 	 [ -f "$$tarname".xz ] && rm "$$tarname".xz;\
-         xz -T0 "$$tarname" ;\
+         xz "$$tarname" ;\
 	)
 
 
@@ -1322,24 +1211,8 @@ ifeq ($(WITH_GUI),1)
 extra_installer_options += -DWITH_GUI=1
 endif
 
-# Note that we sign only when doing the final installer.
 installer: all w32_insthelpers $(w32src)/inst-options.ini $(bdir)/README.txt
-	(set -e;\
-	 cd "$(idir)"; \
-	 if echo "$(idir)" | grep -q '/PLAY-release/' ; then \
-	   for f in $(AUTHENTICODE_FILES); do \
-             if [ -f "bin/$$f" ]; then \
-	       $(call AUTHENTICODE_sign,"bin/$$f","bin/$$f");\
-	     elif [ -f "libexec/$$f" ]; then \
-	       $(call AUTHENTICODE_sign,"libexec/$$f","libexec/$$f");\
-	     else \
-	       echo "speedo: WARNING: file '$$f' not available for signing";\
-             fi;\
-           done; \
-         fi \
-        )
-	$(MAKENSIS) -V2 $$($(MAKENSIS) -version \
-                           | grep -q ^v3 && echo "-INPUTCHARSET CP1252 ") \
+	$(MAKENSIS) -V2 \
                     -DINST_DIR=$(idir) \
                     -DINST6_DIR=$(idir6) \
                     -DBUILD_DIR=$(bdir) \
@@ -1353,94 +1226,15 @@ installer: all w32_insthelpers $(w32src)/inst-options.ini $(bdir)/README.txt
 		    $(extra_installer_options) $(w32src)/inst.nsi
 	@echo "Ready: $(idir)/$(INST_NAME)-$(INST_VERSION)_$(BUILD_DATESTR).exe"
 
-# We use the installer target to ensure everything is done and signed
-wixlib: installer $(bdir)/README.txt $(w32src)/wixlib.wxs
-	if [ -z "$$(which $(WINE))" ]; then \
-		echo "ERROR: For the w32-wixlib wine needs to be installed."; \
-		echo "ERROR: see 'help-w32-wixlib'"; \
-		exit 1; \
-	fi;
-	if [ ! -d "$(WIXPREFIX)" ]; then \
-		echo "ERROR: You must set WIXPREFIX to an installation of wixtools."; \
-		echo "ERROR: see 'help-w32-wixlib'"; \
-		exit 1; \
-	fi;
-	(if [ -z "$$WINEPREFIX" ]; then \
-		WINEPREFIX="$$HOME/.wine"; \
-		if [ ! -e "$$WINEPREFIX/dosdevices" ]; then \
-			echo "ERROR: No wine prefix found under $$WINEPREFIX"; \
-			exit 1; \
-		fi; \
-	fi; \
-	WINEINST=$$WINEPREFIX/dosdevices/k:; \
-	WINESRC=$$WINEPREFIX/dosdevices/i:; \
-	WINEBUILD=$$WINEPREFIX/dosdevices/j:; \
-	if [ -e "$$WINEINST" ]; then \
-		echo "ERROR: $$WINEINST already exists. Please remove."; \
-		exit 1; \
-	fi; \
-	if [ -e "$$WINESRC" ]; then \
-		echo "ERROR: $$WINESRC already exists. Please remove."; \
-		exit 1; \
-	fi; \
-	if [ -e "$$WINEBUILD" ]; then \
-		echo "ERROR: $$WINEBUILD already exists. Please remove."; \
-		exit 1; \
-	fi; \
-	echo "$(INST_NAME)" > $(bdir)/VERSION; \
-	echo "$(INST_VERSION)" >> $(bdir)/VERSION; \
-	MSI_VERSION=$$(echo $(INST_VERSION) | tr -s \\-beta .); \
-	(ln -s $(idir) $$WINEINST; \
-	 ln -s $(w32src) $$WINESRC; \
-	 ln -s $(bdir)  $$WINEBUILD; \
-		$(WINE) $(WIXPREFIX)/candle.exe \
-		-dSourceDir=k: \
-		-dBuildDir=j: \
-		-dVersion=$$MSI_VERSION \
-		-out k:\\$(INST_NAME).wixobj \
-		-pedantic -wx i:\\wixlib.wxs ;\
-		$(WINE) $(WIXPREFIX)/lit.exe \
-		-out k:\\$(INST_NAME)-$(INST_VERSION)_$(BUILD_DATESTR).wixlib \
-		-bf \
-		-wx \
-		-pedantic \
-		k:\\$(INST_NAME).wixobj \
-	); \
-		(rm $$WINEINST; rm $$WINESRC; rm $$WINEBUILD;) \
-	)
 
 define MKSWDB_commands
- ( pref="#+macro: gnupg22_w32_$(3)" ;\
+ ( pref="#+macro: gnupg22_w32_" ;\
    echo "$${pref}ver  $(INST_VERSION)_$(BUILD_DATESTR)"  ;\
    echo "$${pref}date $(2)" ;\
    echo "$${pref}size $$(wc -c <$(1)|awk '{print int($$1/1024)}')k";\
    echo "$${pref}sha1 $$(sha1sum <$(1)|cut -d' ' -f1)" ;\
    echo "$${pref}sha2 $$(sha256sum <$(1)|cut -d' ' -f1)" ;\
  ) | tee $(1).swdb
-endef
-
-# Sign the file $1 and save the result as $2
-define AUTHENTICODE_sign
-   set -e;\
-   if [ -n "$(AUTHENTICODE_SIGNHOST)" ]; then \
-     echo "speedo: Signing via host $(AUTHENTICODE_SIGNHOST)";\
-     scp $(1) "$(AUTHENTICODE_SIGNHOST):a.exe" ;\
-     ssh "$(AUTHENTICODE_SIGNHOST)" '$(AUTHENTICODE_TOOL)' sign \
-        /n '"g10 Code GmbH"' \
-        /tr 'http://rfc3161timestamp.globalsign.com/advanced' /td sha256 \
-        /fd sha256 /du https://gnupg.org a.exe ;\
-     scp "$(AUTHENTICODE_SIGNHOST):a.exe" $(2);\
-     echo "speedo: signed file is '$(2)'" ;\
-   elif [ -e "$(AUTHENTICODE_KEY)" ]; then \
-     echo "speedo: Signing using key $(AUTHENTICODE_KEY)";\
-     osslsigncode sign -certs $(AUTHENTICODE_CERTS) \
-       -pkcs12 $(AUTHENTICODE_KEY) -askpass \
-       -ts "http://timestamp.globalsign.com/scripts/timstamp.dll" \
-       -h sha256 -n GnuPG -i https://gnupg.org \
-       -in $(1) -out $(2) ;\
-   else \
-     echo "speedo: WARNING: Binaries are not signed"; \
-   fi
 endef
 
 
@@ -1452,21 +1246,12 @@ installer-from-source: dist-source
 	 cd PLAY-release; \
 	 tar xJf "../$(INST_NAME)-$(INST_VERSION)_$(BUILD_DATESTR).tar.xz";\
 	 cd $(INST_NAME)-$(INST_VERSION); \
-	 $(MAKE) -f build-aux/speedo.mk this-w32-installer SELFCHECK=0;\
-	 if [ -d "$(WIXPREFIX)" ]; then \
-		 $(MAKE) -f build-aux/speedo.mk this-w32-wixlib SELFCHECK=0;\
-	 fi; \
+         $(MAKE) -f build-aux/speedo.mk this-w32-installer SELFCHECK=0;\
 	 reldate="$$(date -u +%Y-%m-%d)" ;\
 	 exefile="$(INST_NAME)-$(INST_VERSION)_$(BUILD_DATESTR).exe" ;\
 	 cp "PLAY/inst/$$exefile" ../.. ;\
 	 exefile="../../$$exefile" ;\
 	 $(call MKSWDB_commands,$${exefile},$${reldate}); \
-	 msifile="$(INST_NAME)-$(INST_VERSION)_$(BUILD_DATESTR).wixlib"; \
-	 if [ -e "PLAY/inst/$${msifile}" ]; then \
-		 cp "PLAY/inst/$$msifile" ../..; \
-		 msifile="../../$$msifile" ; \
-		 $(call MKSWDB_commands,$${msifile},$${reldate},"wixlib_"); \
-	 fi \
 	)
 
 # This target repeats some of the installer-from-source steps but it
@@ -1478,17 +1263,17 @@ sign-installer:
 	 cd $(INST_NAME)-$(INST_VERSION); \
 	 reldate="$$(date -u +%Y-%m-%d)" ;\
 	 exefile="$(INST_NAME)-$(INST_VERSION)_$(BUILD_DATESTR).exe" ;\
-	 msifile="$(INST_NAME)-$(INST_VERSION)_$(BUILD_DATESTR).wixlib" ;\
 	 echo "speedo: /*" ;\
 	 echo "speedo:  * Signing installer" ;\
+	 echo "speedo:  * Key: $(AUTHENTICODE_KEY)";\
 	 echo "speedo:  */" ;\
-	 $(call AUTHENTICODE_sign,"PLAY/inst/$$exefile","../../$$exefile");\
+	 osslsigncode sign -certs $(AUTHENTICODE_CERTS)\
+            -pkcs12 $(AUTHENTICODE_KEY) -askpass \
+            -ts "http://timestamp.globalsign.com/scripts/timstamp.dll" \
+            -h sha256 -n GnuPG -i https://gnupg.org \
+	    -in "PLAY/inst/$$exefile" -out "../../$$exefile" ;\
 	 exefile="../../$$exefile" ;\
-	 msifile="../../$$msifile" ;\
 	 $(call MKSWDB_commands,$${exefile},$${reldate}); \
-	 if [ -e "$${msifile}" ]; then \
-	   $(call MKSWDB_commands,$${msifile},$${reldate},"wixlib_"); \
-	 fi; \
 	 echo "speedo: /*" ;\
 	 echo "speedo:  * Verification result" ;\
 	 echo "speedo:  */" ;\

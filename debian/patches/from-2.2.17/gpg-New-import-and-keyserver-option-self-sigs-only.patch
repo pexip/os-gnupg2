@@ -1,0 +1,136 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Mon, 1 Jul 2019 15:14:59 +0200
+Subject: gpg: New import and keyserver option "self-sigs-only"
+
+* g10/options.h (IMPORT_SELF_SIGS_ONLY): New.
+* g10/import.c (parse_import_options): Add option "self-sigs-only".
+(read_block): Handle that option.
+--
+
+This option is intended to help against importing keys with many bogus
+key-signatures.  It has obvious drawbacks and is not a bullet-proof
+solution because a self-signature can also be faked and would be
+detected only later.
+
+GnuPG-bug-id: 4591
+Signed-off-by: Werner Koch <wk@gnupg.org>
+
+(cherry picked from commit 15a425a1dfe60bd976b17671aa8e3d9aed12e1c0)
+(cherry picked from commit adb120e663fc5e78f714976c6e42ae233c1990b0)
+---
+ doc/gpg.texi  |  8 ++++++++
+ g10/import.c  | 40 ++++++++++++++++++++++++++++++++++++++--
+ g10/options.h |  1 +
+ 3 files changed, 47 insertions(+), 2 deletions(-)
+
+diff --git a/doc/gpg.texi b/doc/gpg.texi
+index 9853f69..ff2c0cf 100644
+--- a/doc/gpg.texi
++++ b/doc/gpg.texi
+@@ -2322,6 +2322,14 @@ opposite meaning. The options are:
+   on the keyring. This option is the same as running the @option{--edit-key}
+   command "clean" after import. Defaults to no.
+ 
++  @item self-sigs-only
++  Accept only self-signatures while importing a key.  All other
++  key-signatures are skipped at an early import stage.  This option
++  can be used with @code{keyserver-options} to mitigate attempts to
++  flood a key with bogus signatures from a keyserver.  The drawback is
++  that all other valid key-signatures, as required by the Web of Trust
++  are also not imported.
++
+   @item repair-keys
+   After import, fix various problems with the
+   keys.  For example, this reorders signatures, and strips duplicate
+diff --git a/g10/import.c b/g10/import.c
+index 6215d2b..a5b68e9 100644
+--- a/g10/import.c
++++ b/g10/import.c
+@@ -188,6 +188,9 @@ parse_import_options(char *str,unsigned int *options,int noisy)
+       {"import-minimal",IMPORT_MINIMAL|IMPORT_CLEAN,NULL,
+        N_("remove as much as possible from key after import")},
+ 
++      {"self-sigs-only", IMPORT_SELF_SIGS_ONLY, NULL,
++       N_("ignore key-signatures which are not self-signatures")},
++
+       {"import-export", IMPORT_EXPORT, NULL,
+        N_("run import filters and export key immediately")},
+ 
+@@ -850,6 +853,8 @@ read_block( IOBUF a, unsigned int options,
+   PACKET *pkt;
+   kbnode_t root = NULL;
+   int in_cert, in_v3key, skip_sigs;
++  u32 keyid[2];
++  unsigned int dropped_nonselfsigs = 0;
+ 
+   *r_v3keys = 0;
+ 
+@@ -974,16 +979,43 @@ read_block( IOBUF a, unsigned int options,
+           init_packet(pkt);
+           break;
+ 
++        case PKT_SIGNATURE:
++          if (!in_cert)
++            goto x_default;
++          if (!(options & IMPORT_SELF_SIGS_ONLY))
++            goto x_default;
++	  if (pkt->pkt.signature->keyid[0] == keyid[0]
++              && pkt->pkt.signature->keyid[1] == keyid[1])
++	    { /* This is likely a self-signature.  We import this one.
++               * Eventually we should use the ISSUER_FPR to compare
++               * self-signatures, but that will work only for v5 keys
++               * which are currently not even deployed.
++               * Note that we do not do any crypto verify here because
++               * that would defeat this very mitigation of DoS by
++               * importing a key with a huge amount of faked
++               * key-signatures.  A verification will be done later in
++               * the processing anyway.  Here we want a cheap an early
++               * way to drop non-self-signatures.  */
++              goto x_default;
++            }
++          /* Skip this signature.  */
++          dropped_nonselfsigs++;
++          free_packet (pkt, &parsectx);
++          init_packet(pkt);
++          break;
++
+         case PKT_PUBLIC_KEY:
+         case PKT_SECRET_KEY:
+-          if (in_cert ) /* Store this packet.  */
++          if (in_cert) /* Store this packet.  */
+             {
+               *pending_pkt = pkt;
+               pkt = NULL;
+               goto ready;
+             }
+           in_cert = 1;
+-          /* fall through */
++          keyid_from_pk (pkt->pkt.public_key, keyid);
++          goto x_default;
++
+         default:
+         x_default:
+           if (in_cert && valid_keyblock_packet (pkt->pkttype))
+@@ -1012,6 +1044,10 @@ read_block( IOBUF a, unsigned int options,
+   free_packet (pkt, &parsectx);
+   deinit_parse_packet (&parsectx);
+   xfree( pkt );
++  if (!rc && dropped_nonselfsigs && opt.verbose)
++    log_info ("key %s: number of dropped non-self-signatures: %u\n",
++              keystr (keyid), dropped_nonselfsigs);
++
+   return rc;
+ }
+ 
+diff --git a/g10/options.h b/g10/options.h
+index 782c0cb..4877a71 100644
+--- a/g10/options.h
++++ b/g10/options.h
+@@ -354,6 +354,7 @@ EXTERN_UNLESS_MAIN_MODULE int memory_stat_debug_mode;
+ #define IMPORT_RESTORE                   (1<<10)
+ #define IMPORT_REPAIR_KEYS               (1<<11)
+ #define IMPORT_DRY_RUN                   (1<<12)
++#define IMPORT_SELF_SIGS_ONLY            (1<<14)
+ 
+ #define EXPORT_LOCAL_SIGS                (1<<0)
+ #define EXPORT_ATTRIBUTES                (1<<1)

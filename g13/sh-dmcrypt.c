@@ -41,7 +41,6 @@
 #include "../common/i18n.h"
 #include "g13tuple.h"
 #include "../common/exectool.h"
-#include "../common/sysutils.h"
 #include "keyblob.h"
 
 /* The standard disk block size (logical).  */
@@ -95,7 +94,7 @@ check_blockdev (const char *devname, int expect_busy)
   char **fields = NULL;
   int lno, count;
 
-  if (gnupg_stat (devname, &sb))
+  if (stat (devname, &sb))
     {
       err = gpg_error_from_syserror ();
       log_error ("error stating '%s': %s\n", devname, gpg_strerror (err));

@@ -262,8 +262,7 @@ char *image_type_to_string(byte type,int style)
 }
 
 #if !defined(FIXED_PHOTO_VIEWER) && !defined(DISABLE_PHOTO_VIEWER)
-static const char *
-get_default_photo_command(void)
+static const char *get_default_photo_command(void)
 {
 #if defined(_WIN32)
   OSVERSIONINFO osvi;
@@ -275,21 +274,14 @@ get_default_photo_command(void)
   if(osvi.dwPlatformId==VER_PLATFORM_WIN32_WINDOWS)
     return "start /w %i";
   else
-    return "!ShellExecute 400 %i";
+    return "cmd /c start /w %i";
 #elif defined(__APPLE__)
   /* OS X.  This really needs more than just __APPLE__. */
   return "open %I";
 #elif defined(__riscos__)
   return "Filer_Run %I";
 #else
-  if (!path_access ("xloadimage", X_OK))
-    return "xloadimage -fork -quiet -title 'KeyID 0x%k' stdin";
-  else if (!path_access ("display",X_OK))
-    return "display -title 'KeyID 0x%k' %i";
-  else if (getuid () && !path_access ("xdg-open", X_OK))
-    return "xdg-open %i";
-  else
-    return "/bin/true";
+  return "xloadimage -fork -quiet -title 'KeyID 0x%k' stdin";
 #endif
 }
 #endif
@@ -320,8 +312,6 @@ show_photos (ctrl_t ctrl, const struct user_attribute *attrs, int count,
   if (pk)
     keyid_from_pk (pk, kid);
 
-  es_fflush (es_stdout);
-
   for(i=0;i<count;i++)
     if(attrs[i].type==ATTRIB_IMAGE &&
        parse_image_header(&attrs[i],&args.imagetype,&len))
@@ -341,11 +331,6 @@ show_photos (ctrl_t ctrl, const struct user_attribute *attrs, int count,
 	command=pct_expando(opt.photo_viewer,&args);
 	if(!command)
 	  goto fail;
-        if (!*command)
-          {
-            xfree (command);
-            goto fail;
-          }
 
 	name=xmalloc(16+strlen(EXTSEP_S)+
 		     strlen(image_type_to_string(args.imagetype,0))+1);

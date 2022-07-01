@@ -32,6 +32,7 @@
 #include "../common/session-env.h"
 #include "../common/strlist.h"
 
+
 /* Debug values and macros.  */
 #define DBG_MOUNT_VALUE     1	/* Debug mount or device stuff. */
 #define DBG_CRYPTO_VALUE    4	/* Debug low level crypto.  */
@@ -47,7 +48,6 @@
 /* A large struct named "opt" to keep global flags.  Note that this
    struct is used by g13 and g13-syshelp and thus some fields may only
    make sense for one of them.  */
-EXTERN_UNLESS_MAIN_MODULE
 struct
 {
   unsigned int debug; /* Debug flags (DBG_foo_VALUE).  */

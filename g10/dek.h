@@ -19,31 +19,21 @@
 #ifndef G10_DEK_H
 #define G10_DEK_H
 
+
 typedef struct
 {
   /* The algorithm (e.g., CIPHER_ALGO_AES).  */
   int algo;
   /* The length of the key (in bytes).  */
   int keylen;
-
   /* Whether we've already printed information about this key.  This
-   * is currently only used in decrypt_data() and only if we are in
-   * verbose mode.  */
-  unsigned int algo_info_printed : 1;
-
-  /* AEAD shall be used.  The value is the AEAD algo. */
-  int use_aead : 4;
-
-  /* MDC shall be used.  */
-  unsigned int use_mdc : 1;
-
+     is currently only used in decrypt_data() and only if we are in
+     verbose mode.  */
+  int algo_info_printed;
+  int use_mdc;
   /* This key was read from a SK-ESK packet (see proc_symkey_enc).  */
-  unsigned int symmetric : 1;
-
-  /* This is the largest used keylen (256 bit). */
-  byte key[32];
-
-  /* The cacheid for the S2K. */
+  int symmetric;
+  byte key[32]; /* This is the largest used keylen (256 bit). */
   char s2k_cacheid[1+16+1];
 } DEK;
 

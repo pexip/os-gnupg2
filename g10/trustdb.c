@@ -23,10 +23,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef DISABLE_REGEX
+#include <sys/types.h>
+#include <regex.h>
+#endif /* !DISABLE_REGEX */
+
 #include "gpg.h"
 #include "../common/status.h"
 #include "../common/iobuf.h"
-#include "../regexp/jimregexp.h"
 #include "keydb.h"
 #include "../common/util.h"
 #include "options.h"
@@ -201,34 +205,21 @@ tdb_register_trusted_keyid (u32 *keyid)
   user_utk_list = k;
 }
 
-
 void
-tdb_register_trusted_key (const char *string)
+tdb_register_trusted_key( const char *string )
 {
   gpg_error_t err;
   KEYDB_SEARCH_DESC desc;
-  u32 kid[2];
 
   err = classify_user_id (string, &desc, 1);
-  if (!err)
+  if (err || desc.mode != KEYDB_SEARCH_MODE_LONG_KID )
     {
-      if (desc.mode == KEYDB_SEARCH_MODE_LONG_KID)
-        {
-          register_trusted_keyid (desc.u.kid);
-          return;
-        }
-      if (desc.mode == KEYDB_SEARCH_MODE_FPR
-          || desc.mode == KEYDB_SEARCH_MODE_FPR20)
-        {
-          kid[0] = buf32_to_u32 (desc.u.fpr+12);
-          kid[1] = buf32_to_u32 (desc.u.fpr+16);
-          register_trusted_keyid (kid);
-          return;
-        }
+      log_error(_("'%s' is not a valid long keyID\n"), string );
+      return;
     }
-  log_error (_("'%s' is not a valid long keyID\n"), string );
-}
 
+  register_trusted_keyid(desc.u.kid);
+}
 
 /*
  * Helper to add a key to the global list of ultimately trusted keys.
@@ -312,9 +303,7 @@ verify_own_keys (ctrl_t ctrl)
 	      release_public_key_parts (&pk);
 	    }
 
-          if (!opt.quiet)
-            log_info (_("key %s marked as ultimately trusted\n"),
-                      keystr(k->kid));
+          log_info (_("key %s marked as ultimately trusted\n"),keystr(k->kid));
         }
     }
 
@@ -1516,7 +1505,8 @@ store_validation_status (ctrl_t ctrl, int depth,
 
 /* Returns a sanitized copy of the regexp (which might be "", but not
    NULL). */
-/* Operator characters except '.' and backslash.
+#ifndef DISABLE_REGEX
+/* Operator charactors except '.' and backslash.
    See regex(7) on BSD.  */
 #define REGEXP_OPERATOR_CHARS "^[$()|*+?{"
 
@@ -1580,6 +1570,7 @@ sanitize_regexp(const char *old)
 
   return new;
 }
+#endif /*!DISABLE_REGEX*/
 
 /* Used by validate_one_keyblock to confirm a regexp within a trust
    signature.  Returns 1 for match, and 0 for no match or regex
@@ -1587,15 +1578,25 @@ sanitize_regexp(const char *old)
 static int
 check_regexp(const char *expr,const char *string)
 {
+#ifdef DISABLE_REGEX
+  (void)expr;
+  (void)string;
+  /* When DISABLE_REGEX is defined, assume all regexps do not
+     match. */
+  return 0;
+#else
   int ret;
   char *regexp;
 
   regexp=sanitize_regexp(expr);
 
+#ifdef __riscos__
+  ret=riscos_check_regexp(expr, string, DBG_TRUST);
+#else
   {
     regex_t pat;
 
-    ret=regcomp(&pat,regexp,REG_ICASE|REG_EXTENDED);
+    ret=regcomp(&pat,regexp,REG_ICASE|REG_NOSUB|REG_EXTENDED);
     if(ret==0)
       {
 	ret=regexec(&pat,string,0,NULL,0);
@@ -1603,6 +1604,7 @@ check_regexp(const char *expr,const char *string)
       }
     ret=(ret==0);
   }
+#endif
 
   if(DBG_TRUST)
     log_debug("regexp '%s' ('%s') on '%s': %s\n",
@@ -1611,6 +1613,7 @@ check_regexp(const char *expr,const char *string)
   xfree(regexp);
 
   return ret;
+#endif
 }
 
 /*

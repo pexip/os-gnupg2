@@ -50,10 +50,10 @@ migrate_secring (ctrl_t ctrl)
   char *agent_version = NULL;
 
   secring = make_filename (gnupg_homedir (), "secring" EXTSEP_S "gpg", NULL);
-  if (gnupg_access (secring, F_OK))
+  if (access (secring, F_OK))
     goto leave; /* Does not exist or is not readable.  */
   flagfile = make_filename (gnupg_homedir (), V21_MIGRATION_FNAME, NULL);
-  if (!gnupg_access (flagfile, F_OK))
+  if (!access (flagfile, F_OK))
     goto leave; /* Does exist - fine.  */
 
   log_info ("starting migration from earlier GnuPG versions\n");
@@ -99,8 +99,8 @@ migrate_secring (ctrl_t ctrl)
   log_info ("porting secret keys from '%s' to gpg-agent\n", secring);
   if (!import_old_secring (ctrl, secring))
     {
-      estream_t fp = es_fopen (flagfile, "w");
-      if (!fp || es_fclose (fp))
+      FILE *fp = fopen (flagfile, "w");
+      if (!fp || fclose (fp))
         log_error ("error creating flag file '%s': %s\n",
                    flagfile, gpg_strerror (gpg_error_from_syserror ()));
       else

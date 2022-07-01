@@ -1,0 +1,44 @@
+From: Andre Heinecke <aheinecke@intevation.de>
+Date: Thu, 18 Apr 2019 13:19:05 +0200
+Subject: g10: Fix double free when locating by mbox
+
+* g10/getkey.c (get_best_pubkey_byname): Set new.uid always
+to NULL after use.
+
+--
+pubkey_cmp is not guranteed to set new.uid.
+So if the diff < 0 case is reached best is set to new.
+
+If then diff > 0 is reached without modifying new.uid
+e.g. if the key has no matching mboxes. new.uid is
+free'd even though the uid is still referenced in
+best.
+
+GnuPG-Bug-Id: T4462
+(cherry picked from commit e57954ed278cb5e6e725005b1ecaf7ce70006ce0)
+(cherry picked from commit 35899dc2903b118620e6f9f0fa6b21c8568abbf1)
+---
+ g10/getkey.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/g10/getkey.c b/g10/getkey.c
+index c4afe45..1b699a4 100644
+--- a/g10/getkey.c
++++ b/g10/getkey.c
+@@ -1495,15 +1495,14 @@ get_best_pubkey_byname (ctrl_t ctrl, GETKEY_CTX *retctx, PKT_public_key *pk,
+               /* Old key is better.  */
+               release_public_key_parts (&new.key);
+               free_user_id (new.uid);
+-              new.uid = NULL;
+             }
+           else
+             {
+               /* A tie.  Keep the old key.  */
+               release_public_key_parts (&new.key);
+               free_user_id (new.uid);
+-              new.uid = NULL;
+             }
++          new.uid = NULL;
+         }
+       getkey_end (ctrl, ctx);
+       ctx = NULL;

@@ -1,0 +1,142 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Tue, 21 May 2019 16:25:56 +0200
+Subject: gpg: Do not allow creation of user ids larger than our parser
+ allows.
+
+* g10/parse-packet.c: Move max packet lengths constants to ...
+* g10/packet.h: ... here.
+* g10/build-packet.c (do_user_id): Return an error if too data is too
+large.
+* g10/keygen.c (write_uid): Return an error for too large data.
+--
+
+This can lead to keyring corruption becuase we expect that our parser
+is abale to parse packts created by us.  Test case is
+
+  gpg --batch --passphrase 'abc' -v  \
+      --quick-gen-key $(yes 'a'| head -4000|tr -d '\n')
+
+GnuPG-bug-id: 4532
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit d32963eeb33fd3053d40a4e7071fb0e8b28a8651)
+---
+ g10/build-packet.c |  8 +++++++-
+ g10/keygen.c       | 35 ++++++++++++++++++++---------------
+ g10/packet.h       |  5 +++++
+ g10/parse-packet.c |  6 ------
+ 4 files changed, 32 insertions(+), 22 deletions(-)
+
+diff --git a/g10/build-packet.c b/g10/build-packet.c
+index b83ea84..14e40a1 100644
+--- a/g10/build-packet.c
++++ b/g10/build-packet.c
+@@ -424,15 +424,21 @@ do_user_id( IOBUF out, int ctb, PKT_user_id *uid )
+    * Without forcing HDRLEN to 2 in this case an indeterminate length
+    * packet would be written which is not allowed.  Note that we are
+    * always called with a CTB indicating an old packet header format,
+-   * so that forcing a 2 octet header works.  */
++   * so that forcing a 2 octet header works.  We also check for the
++   * maximum allowed packet size by the parser using an arbitrary
++   * extra 10 bytes for header data. */
+   if (uid->attrib_data)
+     {
++      if (uid->attrib_len > MAX_ATTR_PACKET_LENGTH - 10)
++        return gpg_error (GPG_ERR_TOO_LARGE);
+       hdrlen = uid->attrib_len? 0 : 2;
+       write_header2 (out, ctb, uid->attrib_len, hdrlen);
+       rc = iobuf_write( out, uid->attrib_data, uid->attrib_len );
+     }
+   else
+     {
++      if (uid->len > MAX_UID_PACKET_LENGTH - 10)
++        return gpg_error (GPG_ERR_TOO_LARGE);
+       hdrlen = uid->len? 0 : 2;
+       write_header2 (out, ctb, uid->len, hdrlen);
+       rc = iobuf_write( out, uid->name, uid->len );
+diff --git a/g10/keygen.c b/g10/keygen.c
+index 9edbdff..28ef898 100644
+--- a/g10/keygen.c
++++ b/g10/keygen.c
+@@ -217,18 +217,22 @@ print_status_key_not_created (const char *handle)
+ 
+ 
+ 
+-static void
+-write_uid( KBNODE root, const char *s )
++static gpg_error_t
++write_uid (kbnode_t root, const char *s)
+ {
+-    PACKET *pkt = xmalloc_clear(sizeof *pkt );
+-    size_t n = strlen(s);
+-
+-    pkt->pkttype = PKT_USER_ID;
+-    pkt->pkt.user_id = xmalloc_clear (sizeof *pkt->pkt.user_id + n);
+-    pkt->pkt.user_id->len = n;
+-    pkt->pkt.user_id->ref = 1;
+-    strcpy(pkt->pkt.user_id->name, s);
+-    add_kbnode( root, new_kbnode( pkt ) );
++  PACKET *pkt = xmalloc_clear (sizeof *pkt);
++  size_t n = strlen (s);
++
++  if (n > MAX_UID_PACKET_LENGTH - 10)
++    return gpg_error (GPG_ERR_INV_USER_ID);
++
++  pkt->pkttype = PKT_USER_ID;
++  pkt->pkt.user_id = xmalloc_clear (sizeof *pkt->pkt.user_id + n);
++  pkt->pkt.user_id->len = n;
++  pkt->pkt.user_id->ref = 1;
++  strcpy (pkt->pkt.user_id->name, s);
++  add_kbnode (root, new_kbnode (pkt));
++  return 0;
+ }
+ 
+ static void
+@@ -4750,10 +4754,11 @@ do_generate_keypair (ctrl_t ctrl, struct para_data_s *para,
+ 
+   if (!err && (s = get_parameter_value (para, pUSERID)))
+     {
+-      write_uid (pub_root, s );
+-      err = write_selfsigs (ctrl, pub_root, pri_psk,
+-                            get_parameter_uint (para, pKEYUSAGE), timestamp,
+-                            cache_nonce);
++      err = write_uid (pub_root, s );
++      if (!err)
++        err = write_selfsigs (ctrl, pub_root, pri_psk,
++                              get_parameter_uint (para, pKEYUSAGE), timestamp,
++                              cache_nonce);
+     }
+ 
+   /* Write the auth key to the card before the encryption key.  This
+diff --git a/g10/packet.h b/g10/packet.h
+index 6d01b10..6e326b5 100644
+--- a/g10/packet.h
++++ b/g10/packet.h
+@@ -33,6 +33,11 @@
+ 
+ #define DEBUG_PARSE_PACKET 1
+ 
++/* Maximum length of packets to avoid excessive memory allocation.  */
++#define MAX_KEY_PACKET_LENGTH     (256 * 1024)
++#define MAX_UID_PACKET_LENGTH     (  2 * 1024)
++#define MAX_COMMENT_PACKET_LENGTH ( 64 * 1024)
++#define MAX_ATTR_PACKET_LENGTH    ( 16 * 1024*1024)
+ 
+ /* Constants to allocate static MPI arrays. */
+ #define PUBKEY_MAX_NPKEY  5
+diff --git a/g10/parse-packet.c b/g10/parse-packet.c
+index 3aa11a4..2d6ec92 100644
+--- a/g10/parse-packet.c
++++ b/g10/parse-packet.c
+@@ -38,12 +38,6 @@
+ #include "../common/mbox-util.h"
+ 
+ 
+-/* Maximum length of packets to avoid excessive memory allocation.  */
+-#define MAX_KEY_PACKET_LENGTH     (256 * 1024)
+-#define MAX_UID_PACKET_LENGTH     (  2 * 1024)
+-#define MAX_COMMENT_PACKET_LENGTH ( 64 * 1024)
+-#define MAX_ATTR_PACKET_LENGTH    ( 16 * 1024*1024)
+-
+ static int mpi_print_mode;
+ static int list_mode;
+ static estream_t listfp;

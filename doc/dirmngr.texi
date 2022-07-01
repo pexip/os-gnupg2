@@ -251,7 +251,7 @@ The option @option{--use-tor} switches Dirmngr and thus GnuPG into
 ``Tor mode'' to route all network access via Tor (an anonymity
 network).  Certain other features are disabled in this mode.  The
 effect of @option{--use-tor} cannot be overridden by any other command
-or even by reloading dirmngr.  The use of @option{--no-use-tor}
+or even be reloading gpg-agent.  The use of @option{--no-use-tor}
 disables the use of Tor.  The default is to use Tor if it is available
 on startup or after reloading dirmngr.
 
@@ -260,8 +260,7 @@ on startup or after reloading dirmngr.
 This option forces the use of the system's standard DNS resolver code.
 This is mainly used for debugging.  Note that on Windows a standard
 resolver is not used and all DNS access will return the error ``Not
-Implemented'' if this option is used.  Using this together with enabled
-Tor mode returns the error ``Not Enabled''.
+Implemented'' if this function is used.
 
 @item --recursive-resolver
 @opindex recursive-resolver
@@ -328,26 +327,7 @@ whether Tor is locally running or not.  The check for a running Tor is
 done for each new connection.
 
 If no keyserver is explicitly configured, dirmngr will use the
-built-in default of @code{hkps://hkps.pool.sks-keyservers.net}.
-
-Windows users with a keyserver running on their Active Directory
-should use @code{ldap:///} for @var{name} to access this directory.
-
-For accessing anonymous LDAP keyservers @var{name} is in general just
-a @code{ldaps://ldap.example.com}.  A BaseDN parameter should never be
-specified.  If authentication is required the value of @var{name} is
-for example:
-
-@example
-       keyserver ldaps://ldap.example.com/????bindname=uid=USERNAME
-       %2Cou=GnuPG%20Users%2Cdc=example%2Cdc=com,password=PASSWORD
-@end example
-
-       Put this all on one line without any spaces and keep the '%2C' as given.
-       Replace USERNAME, PASSWORD, and the 'dc' parts according to the
-       instructions received from the LDAP administrator.  Note that only
-       simple authentication (i.e. cleartext passwords) is supported and thus
-       using ldaps is strongly suggested.
+built-in default of hkps://hkps.pool.sks-keyservers.net.
 
 @item --nameserver @var{ipaddr}
 @opindex nameserver
@@ -1198,3 +1178,5 @@ as a binary blob.
 @c used for this.  The first one starts a search and the second one is
 @c used to retrieve certificate after certificate.
 @c
+
+

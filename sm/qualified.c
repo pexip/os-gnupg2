@@ -35,7 +35,7 @@
    NULL indicates that this module has been initialized and if the
    LISTFP is also NULL, no list of qualified signatures exists. */
 static char *listname;
-static estream_t listfp;
+static FILE *listfp;
 
 
 /* Read the trustlist and return entry by entry.  KEY must point to a
@@ -59,7 +59,7 @@ read_list (char *key, char *country, int *lnr)
   if (!listname)
     {
       listname = make_filename (gnupg_datadir (), "qualified.txt", NULL);
-      listfp = es_fopen (listname, "r");
+      listfp = fopen (listname, "r");
       if (!listfp && errno != ENOENT)
         {
           err = gpg_error_from_syserror ();
@@ -73,9 +73,9 @@ read_list (char *key, char *country, int *lnr)
 
   do
     {
-      if (!es_fgets (line, DIM(line)-1, listfp) )
+      if (!fgets (line, DIM(line)-1, listfp) )
         {
-          if (es_feof (listfp))
+          if (feof (listfp))
             return gpg_error (GPG_ERR_EOF);
           return gpg_error_from_syserror ();
         }
@@ -83,7 +83,7 @@ read_list (char *key, char *country, int *lnr)
       if (!*line || line[strlen(line)-1] != '\n')
         {
           /* Eat until end of line. */
-          while ((c = es_getc (listfp)) != EOF && c != '\n')
+          while ( (c=getc (listfp)) != EOF && c != '\n')
             ;
           return gpg_error (*line? GPG_ERR_LINE_TOO_LONG
                                  : GPG_ERR_INCOMPLETE_LINE);
@@ -163,8 +163,8 @@ gpgsm_is_in_qualified_list (ctrl_t ctrl, ksba_cert_t cert, char *country)
   if (listfp)
     {
       /* W32ce has no rewind, thus we use the equivalent code.  */
-      es_fseek (listfp, 0, SEEK_SET);
-      es_clearerr (listfp);
+      fseek (listfp, 0, SEEK_SET);
+      clearerr (listfp);
     }
   while (!(err = read_list (key, mycountry, &lnr)))
     {

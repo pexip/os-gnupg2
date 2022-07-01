@@ -1,6 +1,6 @@
 /* gpgconf.c - Configuration utility for GnuPG
  * Copyright (C) 2003, 2007, 2009, 2011 Free Software Foundation, Inc.
- * Copyright (C) 2016, 2020 g10 Code GmbH.
+ * Copyright (C) 2016 g10 Code GmbH.
  *
  * This file is part of GnuPG.
  *
@@ -16,7 +16,6 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
- * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include <config.h>
@@ -26,13 +25,11 @@
 #include <string.h>
 #include <unistd.h>
 
-#define INCLUDED_BY_MAIN_MODULE 1
 #include "gpgconf.h"
 #include "../common/i18n.h"
 #include "../common/sysutils.h"
 #include "../common/init.h"
 #include "../common/status.h"
-#include "../common/exechelp.h"
 
 
 /* Constants to identify the commands and options. */
@@ -50,7 +47,6 @@ enum cmd_and_opt_values
     oHomedir,
     oBuilddir,
     oStatusFD,
-    oShowSocket,
 
     aListComponents,
     aCheckPrograms,
@@ -67,8 +63,7 @@ enum cmd_and_opt_values
     aCreateSocketDir,
     aRemoveSocketDir,
     aApplyProfile,
-    aReload,
-    aShowVersions
+    aReload
   };
 
 
@@ -99,8 +94,6 @@ static ARGPARSE_OPTS opts[] =
     { aKill,          "kill", 256,   N_("kill a given component")},
     { aCreateSocketDir, "create-socketdir", 256, "@"},
     { aRemoveSocketDir, "remove-socketdir", 256, "@"},
-    ARGPARSE_c (aShowVersions, "show-versions", "@"),
-
 
     { 301, NULL, 0, N_("@\nOptions:\n ") },
 
@@ -115,7 +108,6 @@ static ARGPARSE_OPTS opts[] =
     { oBuilddir, "build-prefix", 2, "@" },
     { oNull, "null", 0, "@" },
     { oNoVerbose, "no-verbose",  0, "@"},
-    ARGPARSE_s_n (oShowSocket, "show-socket", "@"),
 
     ARGPARSE_end(),
   };
@@ -124,9 +116,6 @@ static ARGPARSE_OPTS opts[] =
 /* The stream to output the status information.  Status Output is disabled if
  * this is NULL.  */
 static estream_t statusfp;
-
-static void show_versions (estream_t fp);
-
 
 
 /* Print usage information and provide strings for help. */
@@ -137,11 +126,9 @@ my_strusage( int level )
 
   switch (level)
     {
-    case  9: p = "GPL-3.0-or-later"; break;
     case 11: p = "@GPGCONF@ (@GNUPG@)";
       break;
     case 13: p = VERSION; break;
-    case 14: p = GNUPG_DEF_COPYRIGHT_LINE; break;
     case 17: p = PRINTABLE_OS_NAME; break;
     case 19: p = _("Please report bugs to <@EMAIL@>.\n"); break;
 
@@ -285,20 +272,6 @@ list_dirs (estream_t fp, char **names)
 
       xfree (tmp);
     }
-
-
-#ifdef HAVE_W32_SYSTEM
-  tmp = read_w32_registry_string (NULL,
-                                  GNUPG_REGISTRY_DIR,
-                                  "HomeDir");
-  if (tmp)
-    {
-      es_fflush (fp);
-      log_info ("Warning: homedir taken from registry key (%s %s)\n",
-                GNUPG_REGISTRY_DIR, "HomeDir");
-      xfree (tmp);
-    }
-#endif /*HAVE_W32_SYSTEM*/
 }
 
 
@@ -552,7 +525,6 @@ main (int argc, char **argv)
   int no_more_options = 0;
   enum cmd_and_opt_values cmd = 0;
   estream_t outfp = NULL;
-  int show_socket = 0;
 
   early_system_init ();
   gnupg_reopen_std (GPGCONF_NAME);
@@ -567,15 +539,17 @@ main (int argc, char **argv)
   /* Parse the command line. */
   pargs.argc  = &argc;
   pargs.argv  = &argv;
-  pargs.flags = ARGPARSE_FLAG_KEEP;
-  while (!no_more_options && gnupg_argparse (NULL, &pargs, opts))
+  pargs.flags =  1;  /* Do not remove the args.  */
+  while (!no_more_options && optfile_parse (NULL, NULL, NULL, &pargs, opts))
     {
       switch (pargs.r_opt)
         {
         case oOutput:    opt.outfile = pargs.r.ret_str; break;
 	case oQuiet:     opt.quiet = 1; break;
         case oDryRun:    opt.dry_run = 1; break;
-        case oRuntime:   opt.runtime = 1; break;
+        case oRuntime:
+	  opt.runtime = 1;
+	  break;
         case oVerbose:   opt.verbose++; break;
         case oNoVerbose: opt.verbose = 0; break;
         case oHomedir:   gnupg_set_homedir (pargs.r.ret_str); break;
@@ -584,7 +558,6 @@ main (int argc, char **argv)
         case oStatusFD:
           set_status_fd (translate_sys2libc_fd_int (pargs.r.ret_int, 1));
           break;
-        case oShowSocket: show_socket = 1; break;
 
 	case aListDirs:
         case aListComponents:
@@ -602,14 +575,12 @@ main (int argc, char **argv)
         case aKill:
         case aCreateSocketDir:
         case aRemoveSocketDir:
-        case aShowVersions:
 	  cmd = pargs.r_opt;
 	  break;
 
-        default: pargs.err = ARGPARSE_PRINT_ERROR; break;
+        default: pargs.err = 2; break;
 	}
     }
-  gnupg_argparse (NULL, &pargs, NULL);  /* Release internal state.  */
 
   if (log_get_errorcount (0))
     gpgconf_failure (GPG_ERR_USER_2);
@@ -711,22 +682,7 @@ main (int argc, char **argv)
             }
           else if (cmd == aLaunch)
             {
-              err = gc_component_launch (idx);
-              if (show_socket)
-                {
-                  char *names[2];
-
-                  if (idx == GC_COMPONENT_GPG_AGENT)
-                    names[0] = "agent-socket";
-                  else if (idx == GC_COMPONENT_DIRMNGR)
-                    names[0] = "dirmngr-socket";
-                  else
-                    names[0] = NULL;
-                  names[1] = NULL;
-                  get_outfp (&outfp);
-                  list_dirs (outfp, names);
-                }
-              if (err)
+              if (gc_component_launch (idx))
                 gpgconf_failure (0);
             }
           else
@@ -783,16 +739,12 @@ main (int argc, char **argv)
 	  es_putc ('\n', es_stderr);
 	  gpgconf_failure (GPG_ERR_USER_2);
 	}
-      if (!opt.dry_run && gnupg_access (gnupg_homedir (), F_OK))
-        gnupg_maybe_make_homedir (gnupg_homedir (), opt.quiet);
       gc_component_retrieve_options (-1);
       if (gc_process_gpgconf_conf (NULL, 1, 1, NULL))
         gpgconf_failure (0);
       break;
 
     case aApplyProfile:
-      if (!opt.dry_run && gnupg_access (gnupg_homedir (), F_OK))
-        gnupg_maybe_make_homedir (gnupg_homedir (), opt.quiet);
       gc_component_retrieve_options (-1);
       if (gc_apply_profile (fname))
         gpgconf_failure (0);
@@ -911,13 +863,6 @@ main (int argc, char **argv)
       }
       break;
 
-    case aShowVersions:
-      {
-        get_outfp (&outfp);
-        show_versions (outfp);
-      }
-      break;
-
     }
 
   if (outfp != es_stdout)
@@ -936,163 +881,10 @@ main (int argc, char **argv)
 void
 gpgconf_failure (gpg_error_t err)
 {
-  log_flush ();
   if (!err)
     err = gpg_error (GPG_ERR_GENERAL);
   gpgconf_write_status
     (STATUS_FAILURE, "- %u",
      gpg_err_code (err) == GPG_ERR_USER_2? GPG_ERR_EINVAL : err);
   exit (gpg_err_code (err) == GPG_ERR_USER_2? 2 : 1);
-}
-
-
-
-/* Parse the revision part from the extended version blurb.  */
-static const char *
-get_revision_from_blurb (const char *blurb, int *r_len)
-{
-  const char *s = blurb? blurb : "";
-  int n;
-
-  for (; *s; s++)
-    if (*s == '\n' && s[1] == '(')
-      break;
-  if (s)
-    {
-      s += 2;
-      for (n=0; s[n] && s[n] != ' '; n++)
-        ;
-    }
-  else
-    {
-      s = "?";
-      n = 1;
-    }
-  *r_len = n;
-  return s;
-}
-
-
-static void
-show_version_gnupg (estream_t fp)
-{
-  es_fprintf (fp, "* GnuPG %s (%s)\n%s\n",
-              strusage (13), BUILD_REVISION, strusage (17));
-#ifdef HAVE_W32_SYSTEM
-  {
-    OSVERSIONINFO osvi = { sizeof (osvi) };
-
-    GetVersionEx (&osvi);
-    es_fprintf (fp, "Windows %lu.%lu build %lu%s%s%s\n",
-                (unsigned long)osvi.dwMajorVersion,
-                (unsigned long)osvi.dwMinorVersion,
-                (unsigned long)osvi.dwBuildNumber,
-                *osvi.szCSDVersion? " (":"",
-                osvi.szCSDVersion,
-                *osvi.szCSDVersion? ")":""
-                );
-  }
-#endif /*HAVE_W32_SYSTEM*/
-}
-
-
-static void
-show_version_libgcrypt (estream_t fp)
-{
-  const char *s;
-  int n;
-
-  s = get_revision_from_blurb (gcry_check_version ("\x01\x01"), &n);
-  es_fprintf (fp, "* Libgcrypt %s (%.*s)\n",
-              gcry_check_version (NULL), n, s);
-  s = gcry_get_config (0, NULL);
-  if (s)
-    es_fputs (s, fp);
-}
-
-
-static void
-show_version_gpgrt (estream_t fp)
-{
-  const char *s;
-  int n;
-
-  s = get_revision_from_blurb (gpg_error_check_version ("\x01\x01"), &n);
-  es_fprintf (fp, "* GpgRT %s (%.*s)\n",
-              gpg_error_check_version (NULL), n, s);
-}
-
-
-/* Printing version information for other libraries is problematic
- * because we don't want to link gpgconf to all these libraries.  The
- * best solution is delegating this to dirmngr which uses libassuan,
- * libksba, libnpth and ntbtls anyway.  */
-static void
-show_versions_via_dirmngr (estream_t fp)
-{
-  gpg_error_t err;
-  const char *pgmname;
-  const char *argv[2];
-  estream_t outfp;
-  pid_t pid;
-  char *line = NULL;
-  size_t line_len = 0;
-  ssize_t length;
-  int exitcode;
-
-  pgmname = gnupg_module_name (GNUPG_MODULE_NAME_DIRMNGR);
-  argv[0] = "--gpgconf-versions";
-  argv[1] = NULL;
-  err = gnupg_spawn_process (pgmname, argv, NULL, NULL, 0,
-                             NULL, &outfp, NULL, &pid);
-  if (err)
-    {
-      log_error ("error spawning %s: %s", pgmname, gpg_strerror (err));
-      es_fprintf (fp, "[error: can't get further info]\n");
-      return;
-    }
-
-  while ((length = es_read_line (outfp, &line, &line_len, NULL)) > 0)
-    {
-      /* Strip newline and carriage return, if present.  */
-      while (length > 0
-	     && (line[length - 1] == '\n' || line[length - 1] == '\r'))
-	line[--length] = '\0';
-      es_fprintf (fp, "%s\n", line);
-    }
-  if (length < 0 || es_ferror (outfp))
-    {
-      err = gpg_error_from_syserror ();
-      log_error ("error reading from %s: %s\n", pgmname, gpg_strerror (err));
-    }
-  if (es_fclose (outfp))
-    {
-      err = gpg_error_from_syserror ();
-      log_error ("error closing output stream of %s: %s\n",
-                 pgmname, gpg_strerror (err));
-    }
-
-  err = gnupg_wait_process (pgmname, pid, 1, &exitcode);
-  if (err)
-    {
-      log_error ("running %s failed (exitcode=%d): %s\n",
-                 pgmname, exitcode, gpg_strerror (err));
-      es_fprintf (fp, "[error: can't get further info]\n");
-    }
-  gnupg_release_process (pid);
-  xfree (line);
-}
-
-
-/* Show all kind of version information.  */
-static void
-show_versions (estream_t fp)
-{
-  show_version_gnupg (fp);
-  es_fputc ('\n', fp);
-  show_version_libgcrypt (fp);
-  es_fputc ('\n', fp);
-  show_version_gpgrt (fp);
-  es_fputc ('\n', fp);
-  show_versions_via_dirmngr (fp);
 }

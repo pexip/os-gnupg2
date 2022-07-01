@@ -16,7 +16,6 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
- * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include <config.h>
@@ -159,11 +158,9 @@ my_strusage (int level)
 
   switch(level)
     {
-    case  9: p = "GPL-3.0-or-later"; break;
     case 11: p = "dirmngr-client (@GNUPG@)";
       break;
     case 13: p = VERSION; break;
-    case 14: p = GNUPG_DEF_COPYRIGHT_LINE; break;
     case 17: p = PRINTABLE_OS_NAME; break;
     case 19: p = _("Please report bugs to <@EMAIL@>.\n"); break;
     case 49: p = PACKAGE_BUGREPORT; break;
@@ -205,9 +202,6 @@ main (int argc, char **argv )
   set_strusage (my_strusage);
   log_set_prefix ("dirmngr-client",
                   GPGRT_LOG_WITH_PREFIX);
-  /* Register our string mapper.  Usually done in
-   * init_common_subsystems, but we don't use that here.  */
-  gnupg_set_fixed_string_mapper (map_static_macro_string);
 
   /* For W32 we need to initialize the socket subsystem.  Because we
      don't use Pth we need to do this explicit. */
@@ -229,8 +223,8 @@ main (int argc, char **argv )
   /* Parse the command line.  */
   pargs.argc = &argc;
   pargs.argv = &argv;
-  pargs.flags= ARGPARSE_FLAG_KEEP;
-  while (gnupg_argparse (NULL, &pargs, opts))
+  pargs.flags= 1;  /* Do not remove the args. */
+  while (arg_parse (&pargs, opts) )
     {
       switch (pargs.r_opt)
         {
@@ -253,11 +247,9 @@ main (int argc, char **argv )
           break;
         case oForceDefaultResponder: opt.force_default_responder = 1; break;
 
-        default : pargs.err = ARGPARSE_PRINT_ERROR; break;
+        default : pargs.err = 2; break;
 	}
     }
-  gnupg_argparse (NULL, &pargs, NULL);  /* Release internal state.  */
-
   if (log_get_errorcount (0))
     exit (2);
 
@@ -476,7 +468,7 @@ read_pem_certificate (const char *fname, unsigned char **rbuf, size_t *rbuflen)
 
   init_asctobin ();
 
-  fp = fname? gnupg_fopen (fname, "r") : stdin;
+  fp = fname? fopen (fname, "r") : stdin;
   if (!fp)
     return gpg_error_from_errno (errno);
 
@@ -637,7 +629,7 @@ read_certificate (const char *fname, unsigned char **rbuf, size_t *rbuflen)
         return 0;
     }
 
-  fp = fname? gnupg_fopen (fname, "rb") : stdin;
+  fp = fname? fopen (fname, "rb") : stdin;
   if (!fp)
     return gpg_error_from_errno (errno);
 

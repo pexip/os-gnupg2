@@ -837,11 +837,8 @@ proc_wkd_get (ctrl_t ctrl, assuan_context_t ctx, char *line)
   gpg_error_t err = 0;
   char *mbox = NULL;
   char *domainbuf = NULL;
-  char *domain;     /* Points to mbox or domainbuf.  This is used to
-                     * connect to the host.  */
-  char *domain_orig;/* Points to mbox.  This is the used for the
-                     * query; i.e. the domain part of the
-                     * addrspec.  */
+  char *domain;     /* Points to mbox or domainbuf.  */
+  char *domain_orig;/* Points to mbox.  */
   char sha1buf[20];
   char *uri = NULL;
   char *encodedhash = NULL;
@@ -850,7 +847,6 @@ proc_wkd_get (ctrl_t ctrl, assuan_context_t ctx, char *line)
   int is_wkd_query;   /* True if this is a real WKD query.  */
   int no_log = 0;
   char portstr[20] = { 0 };
-  int subdomain_mode = 0;
 
   opt_submission_addr = has_option (line, "--submission-address");
   opt_policy_flags = has_option (line, "--policy-flags");
@@ -868,54 +864,19 @@ proc_wkd_get (ctrl_t ctrl, assuan_context_t ctx, char *line)
   *domain++ = 0;
   domain_orig = domain;
 
-
-  /* Let's check whether we already know that the domain does not
+  /* First check whether we already know that the domain does not
    * support WKD.  */
   if (is_wkd_query)
     {
       if (domaininfo_is_wkd_not_supported (domain_orig))
         {
           err = gpg_error (GPG_ERR_NO_DATA);
-          dirmngr_status_printf (ctrl, "NOTE", "wkd_cached_result %u", err);
           goto leave;
         }
     }
 
-
-  /* First try the new "openpgp" subdomain.  We check that the domain
-   * is valid because it is later used as an unescaped filename part
-   * of the URI.  */
-  if (is_valid_domain_name (domain_orig))
-    {
-      dns_addrinfo_t aibuf;
-
-      domainbuf = strconcat ( "openpgpkey.", domain_orig, NULL);
-      if (!domainbuf)
-        {
-          err = gpg_error_from_syserror ();
-          goto leave;
-        }
-
-      /* FIXME: We should put a cache into dns-stuff because the same
-       * query (with a different port and socket type, though) will be
-       * done later by http function.  */
-      err = resolve_dns_name (domainbuf, 0, 0, 0, &aibuf, NULL);
-      if (err)
-        {
-          err = 0;
-          xfree (domainbuf);
-          domainbuf = NULL;
-        }
-      else /* Got a subdomain. */
-        {
-          free_dns_addrinfo (aibuf);
-          subdomain_mode = 1;
-          domain = domainbuf;
-        }
-    }
-
-  /* Check for SRV records unless we have a subdomain. */
-  if (!subdomain_mode)
+  /* Check for SRV records.  */
+  if (1)
     {
       struct srventry *srvs;
       unsigned int srvscount;
@@ -970,7 +931,6 @@ proc_wkd_get (ctrl_t ctrl, assuan_context_t ctx, char *line)
       xfree (srvs);
     }
 
-  /* Prepare the hash of the local part.  */
   gcry_md_hash_buffer (GCRY_MD_SHA1, sha1buf, mbox, strlen (mbox));
   encodedhash = zb32_encode (sha1buf, 8*20);
   if (!encodedhash)
@@ -984,10 +944,7 @@ proc_wkd_get (ctrl_t ctrl, assuan_context_t ctx, char *line)
       uri = strconcat ("https://",
                        domain,
                        portstr,
-                       "/.well-known/openpgpkey/",
-                       subdomain_mode? domain_orig : "",
-                       subdomain_mode? "/" : "",
-                       "submission-address",
+                       "/.well-known/openpgpkey/submission-address",
                        NULL);
     }
   else if (opt_policy_flags)
@@ -995,10 +952,7 @@ proc_wkd_get (ctrl_t ctrl, assuan_context_t ctx, char *line)
       uri = strconcat ("https://",
                        domain,
                        portstr,
-                       "/.well-known/openpgpkey/",
-                       subdomain_mode? domain_orig : "",
-                       subdomain_mode? "/" : "",
-                       "policy",
+                       "/.well-known/openpgpkey/policy",
                        NULL);
     }
   else
@@ -1011,10 +965,7 @@ proc_wkd_get (ctrl_t ctrl, assuan_context_t ctx, char *line)
           uri = strconcat ("https://",
                            domain,
                            portstr,
-                           "/.well-known/openpgpkey/",
-                           subdomain_mode? domain_orig : "",
-                           subdomain_mode? "/" : "",
-                           "hu/",
+                           "/.well-known/openpgpkey/hu/",
                            encodedhash,
                            "?l=",
                            escapedmbox,
@@ -2526,7 +2477,7 @@ static const char hlp_ks_put[] =
   "  INQUIRE KEYBLOCK_INFO\n"
   "\n"
   "The client shall respond with a colon delimited info lines (the output\n"
-  "of 'gpg --list-keys --with-colons KEYID').\n";
+  "of 'for x in keys sigs; do gpg --list-$x --with-colons KEYID; done').\n";
 static gpg_error_t
 cmd_ks_put (assuan_context_t ctx, char *line)
 {
@@ -2559,7 +2510,8 @@ cmd_ks_put (assuan_context_t ctx, char *line)
       goto leave;
     }
 
-  /* Ask for the key meta data.  */
+  /* Ask for the key meta data. Not actually needed for HKP servers
+     but we do it anyway to test the client implementation.  */
   err = assuan_inquire (ctx, "KEYBLOCK_INFO",
                         &info, &infolen, MAX_KEYBLOCK_LENGTH);
   if (err)
@@ -2717,7 +2669,7 @@ cmd_killdirmngr (assuan_context_t ctx, char *line)
 
   ctrl->server_local->stopme = 1;
   assuan_set_flag (ctx, ASSUAN_FORCE_CLOSE, 1);
-  return 0;
+  return gpg_error (GPG_ERR_EOF);
 }
 
 

@@ -333,7 +333,7 @@ parse_keyserver_uri (const char *string,int require_scheme)
     {
       /* Three slashes means network path with a default host name.
          This is a hack because it does not crok all possible
-         combinations.  We should better replace all code by the parser
+         combiantions.  We should better repalce all code bythe parser
          from http.c.  */
       keyserver->path = xstrdup (uri+2);
     }
@@ -1159,21 +1159,6 @@ keyserver_import_name (ctrl_t ctrl, const char *name,
 }
 
 
-/* Import the keys that match exactly MBOX */
-int
-keyserver_import_ntds (ctrl_t ctrl, const char *mbox,
-                       unsigned char **fpr, size_t *fprlen)
-{
-  KEYDB_SEARCH_DESC desc = { 0 };
-  struct keyserver_spec keyserver = { NULL, "ldap:///" };
-
-  desc.mode = KEYDB_SEARCH_MODE_MAIL;
-  desc.u.name = mbox;
-
-  return keyserver_get (ctrl, &desc, 1, &keyserver, 0, fpr, fprlen);
-}
-
-
 int
 keyserver_import_fprint (ctrl_t ctrl, const byte *fprint,size_t fprint_len,
 			 struct keyserver_spec *keyserver, int quick)
@@ -1552,7 +1537,9 @@ keyserver_search (ctrl_t ctrl, strlist_t tokens)
         log_info (_("key not found on keyserver\n"));
     }
 
-  if (gpg_err_code (err) == GPG_ERR_NO_DATA)
+  if (gpg_err_code (err) == GPG_ERR_NO_KEYSERVER)
+    log_error (_("no keyserver known (use option --keyserver)\n"));
+  else if (gpg_err_code (err) == GPG_ERR_NO_DATA)
     err = gpg_error (GPG_ERR_NOT_FOUND);
   else if (err)
     log_error ("error searching keyserver: %s\n", gpg_strerror (err));
@@ -1705,25 +1692,6 @@ keyserver_get_chunk (ctrl_t ctrl, KEYDB_SEARCH_DESC *desc, int ndesc,
               quiet = 1;
             }
         }
-      else if(desc[idx].mode == KEYDB_SEARCH_MODE_MAIL)
-        {
-          n = 1 + strlen (desc[idx].u.name) + 1 + 1;
-          if (idx && linelen + n > MAX_KS_GET_LINELEN)
-            break; /* Declare end of this chunk.  */
-          linelen += n;
-
-          if (desc[idx].u.name[0] == '<')
-            pattern[npat] = xtrystrdup (desc[idx].u.name);
-          else
-            pattern[npat] = strconcat ("<", desc[idx].u.name, ">", NULL);
-          if (!pattern[npat])
-            err = gpg_error_from_syserror ();
-          else
-            {
-              npat++;
-              quiet = 1;
-            }
-        }
       else if (desc[idx].mode == KEYDB_SEARCH_MODE_NONE)
         continue;
       else
@@ -1861,16 +1829,15 @@ keyserver_put (ctrl_t ctrl, strlist_t keyspecs)
 
       err = export_pubkey_buffer (ctrl, kspec->d,
                                   opt.keyserver_options.export_options,
-                                  NULL, 0, NULL,
+                                  NULL,
                                   &keyblock, &data, &datalen);
       if (err)
         log_error (_("skipped \"%s\": %s\n"), kspec->d, gpg_strerror (err));
       else
         {
-          if (!opt.quiet)
-            log_info (_("sending key %s to %s\n"),
-                      keystr (keyblock->pkt->pkt.public_key->keyid),
-                      ksurl?ksurl:"[?]");
+          log_info (_("sending key %s to %s\n"),
+                    keystr (keyblock->pkt->pkt.public_key->keyid),
+                    ksurl?ksurl:"[?]");
 
           err = gpg_dirmngr_ks_put (ctrl, data, datalen, keyblock);
           release_kbnode (keyblock);
@@ -2105,9 +2072,8 @@ keyserver_import_wkd (ctrl_t ctrl, const char *name, int quick,
       int armor_status = opt.no_armor;
       import_filter_t save_filt;
 
-      /* Keys returned via WKD are in binary format.  However, we
-       * relax that requirement and allow also for armored data.  */
-      opt.no_armor = 0;
+      /* Keys returned via WKD are in binary format. */
+      opt.no_armor = 1;
       save_filt = save_and_clear_import_filter ();
       if (!save_filt)
         err = gpg_error_from_syserror ();

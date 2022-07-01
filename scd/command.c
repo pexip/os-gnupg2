@@ -138,10 +138,9 @@ hex_to_buffer (const char *string, size_t *r_length)
 
 /* Reset the card and free the application context.  With SEND_RESET
    set to true actually send a RESET to the reader; this is the normal
-   way of calling the function.  If KEEP_LOCK is set and the session
-   is locked that lock wil not be released.  */
+   way of calling the function.  */
 static void
-do_reset (ctrl_t ctrl, int send_reset, int keep_lock)
+do_reset (ctrl_t ctrl, int send_reset)
 {
   app_t app = ctrl->app_ctx;
 
@@ -149,7 +148,7 @@ do_reset (ctrl_t ctrl, int send_reset, int keep_lock)
     app_reset (app, ctrl, IS_LOCKED (ctrl)? 0: send_reset);
 
   /* If we hold a lock, unlock now. */
-  if (!keep_lock && locked_session && ctrl->server_local == locked_session)
+  if (locked_session && ctrl->server_local == locked_session)
     {
       locked_session = NULL;
       log_info ("implicitly unlocking due to RESET\n");
@@ -161,7 +160,9 @@ reset_notify (assuan_context_t ctx, char *line)
 {
   ctrl_t ctrl = assuan_get_pointer (ctx);
 
-  do_reset (ctrl, 1, has_option (line, "--keep-lock"));
+  (void) line;
+
+  do_reset (ctrl, 1);
   return 0;
 }
 
@@ -290,8 +291,6 @@ cmd_serialno (assuan_context_t ctx, char *line)
   else
     demand = NULL;
 
-  line = skip_options (line);
-
   /* Clear the remove flag so that the open_card is able to reread it.  */
   if (ctrl->server_local->card_removed)
     ctrl->server_local->card_removed = 0;
@@ -334,7 +333,7 @@ static const char hlp_learn[] =
   "or a \"CANCEL\" to force the function to terminate with a Cancel\n"
   "error message.\n"
   "\n"
-  "With the option --keypairinfo only KEYPARIINFO status lines are\n"
+  "With the option --keypairinfo only KEYPARIINFO lstatus lines are\n"
   "returned.\n"
   "\n"
   "The response of this command is a list of status lines formatted as\n"
@@ -347,7 +346,6 @@ static const char hlp_learn[] =
   "    P15     = PKCS-15 structure used\n"
   "    DINSIG  = DIN SIG\n"
   "    OPENPGP = OpenPGP card\n"
-  "    PIV     = PIV card\n"
   "    NKS     = NetKey card\n"
   "\n"
   "are implemented.  These strings are aliases for the AID\n"
@@ -1139,8 +1137,7 @@ cmd_genkey (assuan_context_t ctx, char *line)
   keyno = xtrystrdup (keyno);
   if (!keyno)
     return out_of_core ();
-  rc = app_genkey (ctrl->app_ctx, ctrl, keyno, NULL,
-                   force? APP_GENKEY_FLAG_FORCE : 0,
+  rc = app_genkey (ctrl->app_ctx, ctrl, keyno, force? 1:0,
                    timestamp, pin_cb, ctx);
   xfree (keyno);
 
@@ -1194,13 +1191,12 @@ cmd_random (assuan_context_t ctx, char *line)
 
 
 static const char hlp_passwd[] =
-  "PASSWD [--reset] [--nullpin] [--clear] <chvno>\n"
+  "PASSWD [--reset] [--nullpin] <chvno>\n"
   "\n"
   "Change the PIN or, if --reset is given, reset the retry counter of\n"
   "the card holder verification vector CHVNO.  The option --nullpin is\n"
-  "used for TCOS cards to set the initial PIN.  The option --clear clears\n"
-  "the security status associated with the PIN so that the PIN needs to\n"
-  "be presented again. The format of CHVNO depends on the card application.";
+  "used for TCOS cards to set the initial PIN.  The format of CHVNO\n"
+  "depends on the card application.";
 static gpg_error_t
 cmd_passwd (assuan_context_t ctx, char *line)
 {
@@ -1213,8 +1209,6 @@ cmd_passwd (assuan_context_t ctx, char *line)
     flags |= APP_CHANGE_FLAG_RESET;
   if (has_option (line, "--nullpin"))
     flags |= APP_CHANGE_FLAG_NULLPIN;
-  if (has_option (line, "--clear"))
-    flags |= APP_CHANGE_FLAG_CLEAR;
 
   line = skip_options (line);
 
@@ -1224,11 +1218,6 @@ cmd_passwd (assuan_context_t ctx, char *line)
   while (*line && !spacep (line))
     line++;
   *line = 0;
-
-  /* Do not allow other flags aside of --clear. */
-  if ((flags & APP_CHANGE_FLAG_CLEAR) && (flags & ~APP_CHANGE_FLAG_CLEAR))
-    return set_error (GPG_ERR_UNSUPPORTED_OPERATION,
-                      "--clear used with other options");
 
   if ((rc = open_card (ctrl)))
     return rc;
@@ -1263,7 +1252,7 @@ static const char hlp_checkpin[] =
   "   entry system, only the regular CHV will get blocked and not the\n"
   "   dangerous CHV3.  IDSTR is the usual card's serial number in hex\n"
   "   notation; an optional fingerprint part will get ignored.  There\n"
-  "   is however a special mode if the IDSTR is suffixed with the\n"
+  "   is however a special mode if the IDSTR is sffixed with the\n"
   "   literal string \"[CHV3]\": In this case the Admin PIN is checked\n"
   "   if and only if the retry counter is still at 3.\n"
   "\n"
@@ -1341,10 +1330,9 @@ cmd_lock (assuan_context_t ctx, char *line)
       npth_sleep (1); /* Better implement an event mechanism. However,
                          for card operations this should be
                          sufficient. */
-      /* Send a progress so that we can detect a connection loss.  */
-      rc = send_status_printf (ctrl, "PROGRESS", "scd_locked . 0 0");
-      if (!rc)
-        goto retry;
+      /* FIXME: Need to check that the connection is still alive.
+         This can be done by issuing status messages. */
+      goto retry;
     }
 #endif /*USE_NPTH*/
 
@@ -1652,7 +1640,7 @@ cmd_apdu (assuan_context_t ctx, char *line)
 
       rc = apdu_send_direct (app->slot, exlen,
                              apdu, apdulen, handle_more,
-                             NULL, &result, &resultlen);
+                             &result, &resultlen);
       if (rc)
         log_error ("apdu_send_direct failed: %s\n", gpg_strerror (rc));
       else
@@ -1816,7 +1804,7 @@ scd_command_handler (ctrl_t ctrl, int fd)
     }
 
   /* Cleanup.  We don't send an explicit reset to the card.  */
-  do_reset (ctrl, 0, 0);
+  do_reset (ctrl, 0);
 
   /* Release the server object.  */
   if (session_list == ctrl->server_local)
@@ -1907,54 +1895,6 @@ send_status_direct (ctrl_t ctrl, const char *keyword, const char *args)
     log_error ("error: LF detected in status line - not sending\n");
   else
     assuan_write_status (ctx, keyword, args);
-}
-
-
-/* This status functions expects a printf style format string.  No
- * filtering of the data is done instead the orintf formatted data is
- * send using assuan_send_status. */
-gpg_error_t
-send_status_printf (ctrl_t ctrl, const char *keyword, const char *format, ...)
-{
-  gpg_error_t err;
-  va_list arg_ptr;
-  assuan_context_t ctx;
-
-  if (!ctrl || !ctrl->server_local || !(ctx = ctrl->server_local->assuan_ctx))
-    return 0;
-
-  va_start (arg_ptr, format);
-  err = vprint_assuan_status (ctx, keyword, format, arg_ptr);
-  va_end (arg_ptr);
-  return err;
-}
-
-
-void
-popup_prompt (void *opaque, int on)
-{
-  ctrl_t ctrl = opaque;
-
-  if (ctrl)
-    {
-      assuan_context_t ctx = ctrl->server_local->assuan_ctx;
-
-      if (ctx)
-        {
-          const char *cmd;
-          gpg_error_t err;
-          unsigned char *value;
-          size_t valuelen;
-
-          if (on)
-            cmd = "POPUPPINPADPROMPT --ack";
-          else
-            cmd = "DISMISSPINPADPROMPT";
-          err = assuan_inquire (ctx, cmd, &value, &valuelen, 100);
-          if (!err)
-            xfree (value);
-        }
-    }
 }
 
 

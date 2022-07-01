@@ -62,7 +62,7 @@ progress_cb (void *ctx, const char *what, int printchar,
 
 
 /* Return true if the status message NO may currently be issued.  We
-   need this to avoid synchronization problem while auto retrieving a
+   need this to avoid syncronisation problem while auto retrieving a
    key.  There it may happen that a status NODATA is issued for a non
    available key and the user may falsely interpret this has a missing
    signature. */
@@ -142,8 +142,7 @@ write_status ( int no )
 
 
 /* Write a status line with code NO followed by the string TEXT and
- * directly followed by the remaining strings up to a NULL.  Embedded
- * CR and LFs in the strings (but not in TEXT) are C-style escaped.*/
+   directly followed by the remaining strings up to a NULL. */
 void
 write_status_strings (int no, const char *text, ...)
 {
@@ -188,13 +187,13 @@ write_status_text (int no, const char *text)
 }
 
 
-/* Write a status line with code NO followed by the output of the
- * printf style FORMAT.  Embedded CR and LFs are C-style escaped.  */
+/* Write a status line with code NO followed by the outout of the
+ * printf style FORMAT.  The caller needs to make sure that LFs and
+ * CRs are not printed.  */
 void
 write_status_printf (int no, const char *format, ...)
 {
   va_list arg_ptr;
-  char *buf;
 
   if (!statusfp || !status_currently_allowed (no) )
     return;  /* Not enabled or allowed. */
@@ -205,30 +204,7 @@ write_status_printf (int no, const char *format, ...)
     {
       es_putc ( ' ', statusfp);
       va_start (arg_ptr, format);
-      buf = gpgrt_vbsprintf (format, arg_ptr);
-      if (!buf)
-        log_error ("error printing status line: %s\n",
-                   gpg_strerror (gpg_err_code_from_syserror ()));
-      else
-        {
-          if (strpbrk (buf, "\r\n"))
-            {
-              const byte *s;
-              for (s=buf; *s; s++)
-                {
-                  if (*s == '\n')
-                    es_fputs ("\\n", statusfp);
-                  else if (*s == '\r')
-                    es_fputs ("\\r", statusfp);
-                  else
-                    es_fputc (*s, statusfp);
-                }
-            }
-          else
-            es_fputs (buf, statusfp);
-          gpgrt_free (buf);
-        }
-
+      es_vfprintf (statusfp, format, arg_ptr);
       va_end (arg_ptr);
     }
   es_putc ('\n', statusfp);

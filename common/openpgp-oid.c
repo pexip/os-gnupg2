@@ -184,36 +184,48 @@ openpgp_oid_from_str (const char *string, gcry_mpi_t *r_mpi)
 }
 
 
-/* Return a malloced string representation of the OID in the buffer
- * (BUF,LEN).  In case of an error NULL is returned and ERRNO is set.
- * As per OpenPGP spec the first byte of the buffer is the length of
- * the rest; the function performs a consistency check.  */
+/* Return a malloced string represenation of the OID in the opaque MPI
+   A.  In case of an error NULL is returned and ERRNO is set.  */
 char *
-openpgp_oidbuf_to_str (const unsigned char *buf, size_t len)
+openpgp_oid_to_str (gcry_mpi_t a)
 {
+  const unsigned char *buf;
+  size_t length;
+  unsigned int lengthi;
   char *string, *p;
   int n = 0;
   unsigned long val, valmask;
 
   valmask = (unsigned long)0xfe << (8 * (sizeof (valmask) - 1));
-  /* The first bytes gives the length; check consistency.  */
 
-  if (!len || buf[0] != len -1)
+  if (!a
+      || !gcry_mpi_get_flag (a, GCRYMPI_FLAG_OPAQUE)
+      || !(buf = gcry_mpi_get_opaque (a, &lengthi)))
+    {
+      gpg_err_set_errno (EINVAL);
+      return NULL;
+    }
+
+  buf = gcry_mpi_get_opaque (a, &lengthi);
+  length = (lengthi+7)/8;
+
+  /* The first bytes gives the length; check consistency.  */
+  if (!length || buf[0] != length -1)
     {
       gpg_err_set_errno (EINVAL);
       return NULL;
     }
   /* Skip length byte.  */
-  len--;
+  length--;
   buf++;
 
   /* To calculate the length of the string we can safely assume an
      upper limit of 3 decimal characters per byte.  Two extra bytes
      account for the special first octect */
-  string = p = xtrymalloc (len*(1+3)+2+1);
+  string = p = xtrymalloc (length*(1+3)+2+1);
   if (!string)
     return NULL;
-  if (!len)
+  if (!length)
     {
       *p = 0;
       return string;
@@ -225,7 +237,7 @@ openpgp_oidbuf_to_str (const unsigned char *buf, size_t len)
     p += sprintf (p, "1.%d", buf[n]-40);
   else {
     val = buf[n] & 0x7f;
-    while ( (buf[n]&0x80) && ++n < len )
+    while ( (buf[n]&0x80) && ++n < length )
       {
         if ( (val & valmask) )
           goto badoid;  /* Overflow.  */
@@ -238,10 +250,10 @@ openpgp_oidbuf_to_str (const unsigned char *buf, size_t len)
     sprintf (p, "2.%lu", val);
     p += strlen (p);
   }
-  for (n++; n < len; n++)
+  for (n++; n < length; n++)
     {
       val = buf[n] & 0x7f;
-      while ( (buf[n]&0x80) && ++n < len )
+      while ( (buf[n]&0x80) && ++n < length )
         {
           if ( (val & valmask) )
             goto badoid;  /* Overflow.  */
@@ -266,35 +278,6 @@ openpgp_oidbuf_to_str (const unsigned char *buf, size_t len)
 }
 
 
-/* Return a malloced string representation of the OID in the opaque
- * MPI A.  In case of an error NULL is returned and ERRNO is set.  */
-char *
-openpgp_oid_to_str (gcry_mpi_t a)
-{
-  const unsigned char *buf;
-  unsigned int lengthi;
-
-  if (!a
-      || !gcry_mpi_get_flag (a, GCRYMPI_FLAG_OPAQUE)
-      || !(buf = gcry_mpi_get_opaque (a, &lengthi)))
-    {
-      gpg_err_set_errno (EINVAL);
-      return NULL;
-    }
-
-  buf = gcry_mpi_get_opaque (a, &lengthi);
-  return openpgp_oidbuf_to_str (buf, (lengthi+7)/8);
-}
-
-
-/* Return true if (BUF,LEN) represents the OID for Ed25519.  */
-int
-openpgp_oidbuf_is_ed25519 (const void *buf, size_t len)
-{
-  return (buf && len == DIM (oid_ed25519)
-          && !memcmp (buf, oid_ed25519, DIM (oid_ed25519)));
-}
-
 
 /* Return true if A represents the OID for Ed25519.  */
 int
@@ -302,36 +285,32 @@ openpgp_oid_is_ed25519 (gcry_mpi_t a)
 {
   const unsigned char *buf;
   unsigned int nbits;
+  size_t n;
 
   if (!a || !gcry_mpi_get_flag (a, GCRYMPI_FLAG_OPAQUE))
     return 0;
 
   buf = gcry_mpi_get_opaque (a, &nbits);
-  return openpgp_oidbuf_is_ed25519 (buf, (nbits+7)/8);
+  n = (nbits+7)/8;
+  return (n == DIM (oid_ed25519)
+          && !memcmp (buf, oid_ed25519, DIM (oid_ed25519)));
 }
 
 
-/* Return true if (BUF,LEN) represents the OID for Curve25519.  */
-int
-openpgp_oidbuf_is_cv25519 (const void *buf, size_t len)
-{
-  return (buf && len == DIM (oid_cv25519)
-          && !memcmp (buf, oid_cv25519, DIM (oid_cv25519)));
-}
-
-
-/* Return true if the MPI A represents the OID for Curve25519.  */
 int
 openpgp_oid_is_cv25519 (gcry_mpi_t a)
 {
   const unsigned char *buf;
   unsigned int nbits;
+  size_t n;
 
   if (!a || !gcry_mpi_get_flag (a, GCRYMPI_FLAG_OPAQUE))
     return 0;
 
   buf = gcry_mpi_get_opaque (a, &nbits);
-  return openpgp_oidbuf_is_cv25519 (buf, (nbits+7)/8);
+  n = (nbits+7)/8;
+  return (n == DIM (oid_cv25519)
+          && !memcmp (buf, oid_cv25519, DIM (oid_cv25519)));
 }
 
 

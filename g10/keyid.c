@@ -953,7 +953,7 @@ keygrip_from_pk (PKT_public_key *pk, unsigned char *array)
   else
     {
       if (DBG_PACKET)
-        log_printhex (array, 20, "keygrip=");
+        log_printhex ("keygrip=", array, 20);
       /* FIXME: Save the keygrip in PK.  */
     }
   gcry_sexp_release (s_pkey);

@@ -756,12 +756,6 @@ static gc_option_t gc_options_gpg[] =
    { "auto-key-locate", GC_OPT_FLAG_NONE, GC_LEVEL_ADVANCED,
      "gnupg", N_("|MECHANISMS|use MECHANISMS to locate keys by mail address"),
      GC_ARG_TYPE_STRING, GC_BACKEND_GPG },
-   { "auto-key-import", GC_OPT_FLAG_NONE, GC_LEVEL_BASIC,
-     "gnupg", N_("import missing key from a signature"),
-     GC_ARG_TYPE_NONE, GC_BACKEND_GPG },
-   { "include-key-block", GC_OPT_FLAG_NONE, GC_LEVEL_BASIC,
-     "gnupg", N_("include the public key in signatures"),
-     GC_ARG_TYPE_NONE, GC_BACKEND_GPG },
    { "auto-key-retrieve", GC_OPT_FLAG_NONE, GC_LEVEL_EXPERT,
      NULL, NULL, GC_ARG_TYPE_NONE, GC_BACKEND_GPG },
    { "no-auto-key-retrieve", GC_OPT_FLAG_NONE, GC_LEVEL_INVISIBLE,
@@ -1072,6 +1066,34 @@ static gc_option_t gc_options_pinentry[] =
 
 
 
+/* Component system.  Each component is a set of options that can be
+   configured at the same time.  If you change this, don't forget to
+   update GC_COMPONENT below.  */
+typedef enum
+  {
+    /* The classic GPG for OpenPGP.  */
+    GC_COMPONENT_GPG,
+
+    /* The GPG Agent.  */
+    GC_COMPONENT_GPG_AGENT,
+
+    /* The Smardcard Daemon.  */
+    GC_COMPONENT_SCDAEMON,
+
+    /* GPG for S/MIME.  */
+    GC_COMPONENT_GPGSM,
+
+    /* The LDAP Directory Manager for CRLs.  */
+    GC_COMPONENT_DIRMNGR,
+
+    /* The external Pinentry.  */
+    GC_COMPONENT_PINENTRY,
+
+    /* The number of components.  */
+    GC_COMPONENT_NR
+  } gc_component_t;
+
+
 /* The information associated with each component.  */
 static const struct
 {
@@ -1158,8 +1180,12 @@ gpg_agent_runtime_change (int killflag)
   pgmname = gnupg_module_name (GNUPG_MODULE_NAME_CONNECT_AGENT);
   if (!gnupg_default_homedir_p ())
     {
+      abs_homedir = make_absfilename_try (gnupg_homedir (), NULL);
+      if (!abs_homedir)
+        err = gpg_error_from_syserror ();
+
       argv[i++] = "--homedir";
-      argv[i++] = gnupg_homedir ();
+      argv[i++] = abs_homedir;
     }
   argv[i++] = "--no-autostart";
   argv[i++] = killflag? "KILLAGENT" : "RELOADAGENT";
@@ -1197,8 +1223,12 @@ scdaemon_runtime_change (int killflag)
   pgmname = gnupg_module_name (GNUPG_MODULE_NAME_CONNECT_AGENT);
   if (!gnupg_default_homedir_p ())
     {
+      abs_homedir = make_absfilename_try (gnupg_homedir (), NULL);
+      if (!abs_homedir)
+        err = gpg_error_from_syserror ();
+
       argv[i++] = "--homedir";
-      argv[i++] = gnupg_homedir ();
+      argv[i++] = abs_homedir;
     }
   argv[i++] = "-s";
   argv[i++] = "--no-autostart";
@@ -1237,8 +1267,12 @@ dirmngr_runtime_change (int killflag)
     argv[3] = NULL;
   else
     {
+      abs_homedir = make_absfilename_try (gnupg_homedir (), NULL);
+      if (!abs_homedir)
+        err = gpg_error_from_syserror ();
+
       argv[3] = "--homedir";
-      argv[4] = gnupg_homedir ();
+      argv[4] = abs_homedir;
       argv[5] = NULL;
     }
 
@@ -1260,7 +1294,7 @@ gc_component_launch (int component)
 {
   gpg_error_t err;
   const char *pgmname;
-  const char *argv[5];
+  const char *argv[3];
   int i;
   pid_t pid;
 
@@ -1275,27 +1309,13 @@ gc_component_launch (int component)
   if (!(component == GC_COMPONENT_GPG_AGENT
         || component == GC_COMPONENT_DIRMNGR))
     {
-      log_error ("%s\n", _("Component not suitable for launching"));
-      gpgconf_failure (0);
-    }
-
-  if (gc_component_check_options (component, NULL, NULL))
-    {
-      log_error (_("Configuration file of component %s is broken\n"),
-                 gc_component[component].name);
-      if (!opt.quiet)
-        log_info (_("Note: Use the command \"%s%s\" to get details.\n"),
-                  gc_component[component].name, " --gpgconf-test");
+      es_fputs (_("Component not suitable for launching"), es_stderr);
+      es_putc ('\n', es_stderr);
       gpgconf_failure (0);
     }
 
   pgmname = gnupg_module_name (GNUPG_MODULE_NAME_CONNECT_AGENT);
   i = 0;
-  if (!gnupg_default_homedir_p ())
-    {
-      argv[i++] = "--homedir";
-      argv[i++] = gnupg_homedir ();
-    }
   if (component == GC_COMPONENT_DIRMNGR)
     argv[i++] = "--dirmngr";
   argv[i++] = "NOP";
@@ -1345,7 +1365,7 @@ gc_component_kill (int component)
     }
 
   /* Do the restart for the selected backends.  */
-  for (backend = GC_BACKEND_NR-1; backend; backend--)
+  for (backend = 0; backend < GC_BACKEND_NR; backend++)
     {
       if (runtime[backend] && gc_backend[backend].runtime_change)
         (*gc_backend[backend].runtime_change) (1);
@@ -1696,9 +1716,8 @@ collect_error_output (estream_t fp, const char *tag)
 }
 
 
-/* Check the options of a single component.  If CONF_FILE is NULL the
- * standard config file is used.  If OUT is not NULL the output is
- * written to that stream.  Returns 0 if everything is OK.  */
+/* Check the options of a single component.  Returns 0 if everything
+   is OK.  */
 int
 gc_component_check_options (int component, estream_t out, const char *conf_file)
 {
@@ -1708,7 +1727,7 @@ gc_component_check_options (int component, estream_t out, const char *conf_file)
   gc_backend_t backend;
   gc_option_t *option;
   const char *pgmname;
-  const char *argv[6];
+  const char *argv[4];
   int i;
   pid_t pid;
   int exitcode;
@@ -1740,14 +1759,6 @@ gc_component_check_options (int component, estream_t out, const char *conf_file)
 
   pgmname = gnupg_module_name (gc_backend[backend].module_name);
   i = 0;
-  if (!gnupg_default_homedir_p ()
-      && backend != GC_BACKEND_ANY
-      && backend != GC_BACKEND_DIRMNGR_LDAP_SERVER_LIST
-      && backend != GC_BACKEND_PINENTRY)
-    {
-      argv[i++] = "--homedir";
-      argv[i++] = gnupg_homedir ();
-    }
   if (conf_file)
     {
       argv[i++] = "--options";
@@ -2089,7 +2100,7 @@ retrieve_options_from_program (gc_component_t component, gc_backend_t backend,
 {
   gpg_error_t err;
   const char *pgmname;
-  const char *argv[4];
+  const char *argv[2];
   estream_t outfp;
   int exitcode;
   pid_t pid;
@@ -2098,24 +2109,14 @@ retrieve_options_from_program (gc_component_t component, gc_backend_t backend,
   ssize_t length;
   estream_t config;
   char *config_filename;
-  int i;
 
   pgmname = (gc_backend[backend].module_name
              ? gnupg_module_name (gc_backend[backend].module_name)
              : gc_backend[backend].program );
-  i = 0;
-  if (!gnupg_default_homedir_p ()
-      && backend != GC_BACKEND_ANY
-      && backend != GC_BACKEND_DIRMNGR_LDAP_SERVER_LIST
-      && backend != GC_BACKEND_PINENTRY)
-    {
-      argv[i++] = "--homedir";
-      argv[i++] = gnupg_homedir ();
-    }
-  argv[i++] = "--gpgconf-list";
-  argv[i++] = NULL;
+  argv[0] = "--gpgconf-list";
+  argv[1] = NULL;
 
-  if (only_installed && gnupg_access (pgmname, X_OK))
+  if (only_installed && access (pgmname, X_OK))
     {
       return;  /* The component is not installed.  */
     }
@@ -3016,9 +3017,8 @@ change_options_program (gc_component_t component, gc_backend_t backend,
   *dest_filenamep = dest_filename;
   *orig_filenamep = orig_filename;
 
-  /* Use open() so that we can use O_EXCL.
-   * FIXME: gpgrt has an x flag for quite some time now - use that.  */
-  fd = gnupg_open (src_filename, O_CREAT | O_EXCL | O_WRONLY, 0644);
+  /* Use open() so that we can use O_EXCL.  */
+  fd = open (src_filename, O_CREAT | O_EXCL | O_WRONLY, 0644);
   if (fd < 0)
     return -1;
   src_file = gpgrt_fdopen (fd, "w");
@@ -4056,7 +4056,7 @@ gc_apply_profile (const char *fname)
        * is installed and use that instead of the given file name.  */
       fname_buffer = xstrconcat (gnupg_datadir (), DIRSEP_S,
                                  fname, ".prf", NULL);
-      if (!gnupg_access (fname_buffer, F_OK))
+      if (!access (fname_buffer, F_OK))
         fname = fname_buffer;
     }
 

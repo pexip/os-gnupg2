@@ -77,7 +77,6 @@ typedef int socket_fd_t;
 #include <netdb.h>		/* struct addrinfo */
 #endif
 
-#include "gpgrt.h"   /* For GGPRT_GCC_VERSION */
 #include "dns.h"
 
 
@@ -944,11 +943,10 @@ static int dns_sa_cmp(void *a, void *b) {
 #if _WIN32
 static int dns_inet_pton(int af, const void *src, void *dst) {
 	union { struct sockaddr_in sin; struct sockaddr_in6 sin6; } u;
-	int size_of_u = (int)sizeof u;
 
 	u.sin.sin_family	= af;
 
-	if (0 != WSAStringToAddressA((void *)src, af, (void *)0, (struct sockaddr *)&u, &size_of_u))
+	if (0 != WSAStringToAddressA((void *)src, af, (void *)0, (struct sockaddr *)&u, &(int){ sizeof u }))
 		return -1;
 
 	switch (af) {
@@ -1126,7 +1124,6 @@ static inline _Bool dns_isgraph(unsigned char c) {
 
 static int dns_poll(int fd, short events, int timeout) {
 	fd_set rset, wset;
-	struct timeval tv = { timeout, 0 };
 
 	if (!events)
 		return 0;
@@ -1143,7 +1140,7 @@ static int dns_poll(int fd, short events, int timeout) {
 	if (events & DNS_POLLOUT)
 		FD_SET(fd, &wset);
 
-	select(fd + 1, &rset, &wset, 0, (timeout >= 0)? &tv : NULL);
+	select(fd + 1, &rset, &wset, 0, (timeout >= 0)? &(struct timeval){ timeout, 0 } : NULL);
 
 	return 0;
 } /* dns_poll() */
@@ -1217,10 +1214,9 @@ static size_t dns_send_nopipe(int fd, const void *src, size_t len, int flags, dn
 
 	if (!sigismember(&pending, SIGPIPE)) {
 		int saved = error;
-		const struct timespec ts = { 0, 0 };
 
 		if (!count && error == EPIPE) {
-			while (-1 == sigtimedwait(&piped, NULL, &ts) && errno == EINTR)
+			while (-1 == sigtimedwait(&piped, NULL, &(struct timespec){ 0, 0 }) && errno == EINTR)
 				;;
 		}
 
@@ -2150,7 +2146,6 @@ static size_t dns_p_lines_fmt(void *dst, size_t lim, dns_error_t *_error, const 
 static size_t dns_p_lines(void *dst, size_t lim, dns_error_t *_error, struct dns_packet *P, struct dns_rr_i *I, struct dns_p_lines_i *state) {
 	int error, pc;
 	size_t len;
-	char __dst[DNS_STRMAXLEN + 1] = { 0 };
 
 	*_error = 0;
 
@@ -2169,7 +2164,7 @@ static size_t dns_p_lines(void *dst, size_t lim, dns_error_t *_error, struct dns
 	while (dns_rr_grep(&state->rr, 1, I, P, &error)) {
 		if (state->section != state->rr.section) {
 			DNS_P_LINE("\n");
-			DNS_P_LINE(";; [%s:%d]\n", dns_strsection(state->rr.section, __dst), dns_p_count(P, state->rr.section));
+			DNS_P_LINE(";; [%s:%d]\n", dns_strsection(state->rr.section), dns_p_count(P, state->rr.section));
 		}
 
 		if (!(len = dns_rr_print(dst, lim, &state->rr, P, &error)))
@@ -2218,8 +2213,7 @@ static void dns_p_dump3(struct dns_packet *P, struct dns_rr_i *I, FILE *fp) {
 
 
 void dns_p_dump(struct dns_packet *P, FILE *fp) {
-	struct dns_rr_i I_instance = { 0 };
-	dns_p_dump3(P, &I_instance, fp);
+	dns_p_dump3(P, dns_rr_i_new(P, .section = 0), fp);
 } /* dns_p_dump() */
 
 
@@ -2798,7 +2792,8 @@ size_t dns_d_cname(void *dst, size_t lim, const void *dn, size_t len, struct dns
 		{ error = ENAMETOOLONG; goto error; }
 
 	for (depth = 0; depth < 7; depth++) {
-		memset(&i, 0, sizeof i);
+		dns_rr_i_init(memset(&i, 0, sizeof i), P);
+
 		i.section	= DNS_S_ALL & ~DNS_S_QD;
 		i.name		= host;
 		i.type		= DNS_T_CNAME;
@@ -3223,11 +3218,15 @@ int dns_rr_i_shuffle(struct dns_rr *a, struct dns_rr *b, struct dns_rr_i *i, str
 } /* dns_rr_i_shuffle() */
 
 
-void dns_rr_i_init(struct dns_rr_i *i) {
+struct dns_rr_i *dns_rr_i_init(struct dns_rr_i *i, struct dns_packet *P) {
 	static const struct dns_rr_i i_initializer;
+
+	(void)P;
 
 	i->state	= i_initializer.state;
 	i->saved	= i->state;
+
+	return i;
 } /* dns_rr_i_init() */
 
 
@@ -3263,8 +3262,7 @@ unsigned dns_rr_grep(struct dns_rr *rr, unsigned lim, struct dns_rr_i *i, struct
 
 	return count;
 error:
-	if (error_)
-		*error_	= error;
+	*error_	= error;
 
 	return count;
 } /* dns_rr_grep() */
@@ -3275,7 +3273,6 @@ size_t dns_rr_print(void *_dst, size_t lim, struct dns_rr *rr, struct dns_packet
 	union dns_any any;
 	size_t n;
 	int error;
-	char __dst[DNS_STRMAXLEN + 1] = { 0 };
 
 	if (rr->section == DNS_S_QD)
 		dns_b_putc(&dst, ';');
@@ -3290,9 +3287,9 @@ size_t dns_rr_print(void *_dst, size_t lim, struct dns_rr *rr, struct dns_packet
 	}
 
 	dns_b_putc(&dst, ' ');
-	dns_b_puts(&dst, dns_strclass(rr->class, __dst));
+	dns_b_puts(&dst, dns_strclass(rr->class));
 	dns_b_putc(&dst, ' ');
-	dns_b_puts(&dst, dns_strtype(rr->type, __dst));
+	dns_b_puts(&dst, dns_strtype(rr->type));
 
 	if (rr->section == DNS_S_QD)
 		goto epilog;
@@ -4866,7 +4863,6 @@ dns_error_t dns_trace_dump(struct dns_trace *trace, FILE *fp) {
 		dns_microseconds_t begin, elapsed;
 	} state = { 0 };
 	int error;
-	char __dst[DNS_STRMAXLEN + 1] = { 0 };
 
 	if (!trace || !trace->fp)
 		return EINVAL;
@@ -4889,8 +4885,8 @@ dns_error_t dns_trace_dump(struct dns_trace *trace, FILE *fp) {
 			fprintf(fp, "dns_res_submit:\n");
 			dns_trace_dump_meta(trace, "  ", te, state.elapsed, fp);
 			fprintf(fp, "  qname: %s\n", te->res_submit.qname);
-			fprintf(fp, "  qtype: %s\n", dns_strtype(te->res_submit.qtype, __dst));
-			fprintf(fp, "  qclass: %s\n", dns_strclass(te->res_submit.qclass, __dst));
+			fprintf(fp, "  qtype: %s\n", dns_strtype(te->res_submit.qtype));
+			fprintf(fp, "  qclass: %s\n", dns_strclass(te->res_submit.qclass));
 			dns_trace_dump_error(trace, "  error: ", te->res_submit.error, fp);
 			break;
 		case DNS_TE_RES_FETCH:
@@ -5278,8 +5274,7 @@ error:
 
 
 struct dns_packet *dns_hosts_query(struct dns_hosts *hosts, struct dns_packet *Q, int *error_) {
-	union { unsigned char b[dns_p_calcsize((512))]; struct dns_packet p; } P_instance = { 0 };
-	struct dns_packet *P	= dns_p_init(&P_instance.p, 512);
+	struct dns_packet *P	= dns_p_new(512);
 	struct dns_packet *A	= 0;
 	struct dns_rr rr;
 	struct dns_hosts_entry *ent;
@@ -6840,7 +6835,6 @@ unsigned dns_hints_grep(struct sockaddr **sa, socklen_t *sa_len, unsigned lim, s
 
 
 struct dns_packet *dns_hints_query(struct dns_hints *hints, struct dns_packet *Q, int *error_) {
-	union { unsigned char b[dns_p_calcsize((512))]; struct dns_packet p; } P_instance = { 0 };
 	struct dns_packet *A, *P;
 	struct dns_rr rr;
 	char zone[DNS_D_MAXNAME + 1];
@@ -6849,11 +6843,8 @@ struct dns_packet *dns_hints_query(struct dns_hints *hints, struct dns_packet *Q
 	struct sockaddr *sa;
 	socklen_t slen;
 	int error;
-	struct dns_rr_i I_instance = { 0 };
 
-	I_instance.section = DNS_S_QUESTION;
-
-	if (!dns_rr_grep(&rr, 1, &I_instance, Q, &error))
+	if (!dns_rr_grep(&rr, 1, dns_rr_i_new(Q, .section = DNS_S_QUESTION), Q, &error))
 		goto error;
 
 	if (!(zlen = dns_d_expand(zone, sizeof zone, rr.dn.p, Q, &error)))
@@ -6861,7 +6852,7 @@ struct dns_packet *dns_hints_query(struct dns_hints *hints, struct dns_packet *Q
 	else if (zlen >= sizeof zone)
 		goto toolong;
 
-	P			= dns_p_init(&P_instance.p, 512);
+	P			= dns_p_new(512);
 	dns_header(P)->qr	= 1;
 
 	if ((error = dns_rr_copy(P, &rr, Q)))
@@ -7119,8 +7110,7 @@ static int dns_socket(struct sockaddr *local, int type, int *error_) {
 
 #if defined SO_NOSIGPIPE
 	if (type != SOCK_DGRAM) {
-		const int v = 1;
-		if (0 != setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &v, sizeof (int)))
+		if (0 != setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &(int){ 1 }, sizeof (int)))
 			goto soerr;
 	}
 #endif
@@ -7496,12 +7486,11 @@ error:
 
 static _Bool dns_so_tcp_keep(struct dns_socket *so) {
 	struct sockaddr_storage remote;
-	socklen_t l = sizeof remote;
 
 	if (so->tcp == -1)
 		return 0;
 
-	if (0 != getpeername(so->tcp, (struct sockaddr *)&remote, &l))
+	if (0 != getpeername(so->tcp, (struct sockaddr *)&remote, &(socklen_t){ sizeof remote }))
 		return 0;
 
 	return 0 == dns_sa_cmp(&remote, &so->remote);
@@ -7532,13 +7521,9 @@ static unsigned char *dns_so_tcp_recv_buffer(struct dns_socket *so) {
 }
 
 
-
-#if GPGRT_GCC_VERSION >= 80000
-# pragma GCC diagnostic push
-# pragma GCC diagnostic ignored "-Warray-bounds"
-#elif defined __clang__
-# pragma clang diagnostic push
-# pragma clang diagnostic ignored "-Warray-bounds"
+#if defined __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warray-bounds"
 #endif
 
 static int dns_so_tcp_send(struct dns_socket *so) {
@@ -7604,10 +7589,8 @@ static int dns_so_tcp_recv(struct dns_socket *so) {
 	return 0;
 } /* dns_so_tcp_recv() */
 
-#if GPGRT_GCC_VERSION >= 80000
-# pragma GCC diagnostic pop
-#elif __clang__
-# pragma clang diagnostic pop
+#if __clang__
+#pragma clang diagnostic pop
 #endif
 
 
@@ -8466,8 +8449,7 @@ error:
 
 
 static struct dns_packet *dns_res_glue(struct dns_resolver *R, struct dns_packet *Q) {
-	union { unsigned char b[dns_p_calcsize((512))]; struct dns_packet p; } P_instance = { 0 };
-	struct dns_packet *P	= dns_p_init(&P_instance.p, 512);
+	struct dns_packet *P	= dns_p_new(512);
 	char qname[DNS_D_MAXNAME + 1];
 	size_t qlen;
 	enum dns_type qtype;
@@ -8539,22 +8521,12 @@ static int dns_res_nameserv_cmp(struct dns_rr *a, struct dns_rr *b, struct dns_r
 	struct dns_ns ns;
 	int cmp, error;
 
-	if (!(error = dns_ns_parse(&ns, a, P))) {
-		struct dns_rr_i I_instance = { 0 };
+	if (!(error = dns_ns_parse(&ns, a, P)))
+		glued[0] = !!dns_rr_grep(&x, 1, dns_rr_i_new(P, .section = (DNS_S_ALL & ~DNS_S_QD), .name = ns.host, .type = DNS_T_A), P, &error);
 
-		I_instance.section = (DNS_S_ALL & ~DNS_S_QD);
-		I_instance.name = ns.host;
-		I_instance.type = DNS_T_A;
-		glued[0] = !!dns_rr_grep(&x, 1, &I_instance, P, &error);
-	}
-	if (!(error = dns_ns_parse(&ns, b, P))) {
-		struct dns_rr_i I_instance = { 0 };
+	if (!(error = dns_ns_parse(&ns, b, P)))
+		glued[1] = !!dns_rr_grep(&y, 1, dns_rr_i_new(P, .section = (DNS_S_ALL & ~DNS_S_QD), .name = ns.host, .type = DNS_T_A), P, &error);
 
-		I_instance.section = (DNS_S_ALL & ~DNS_S_QD);
-		I_instance.name = ns.host;
-		I_instance.type = DNS_T_A;
-		glued[1] = !!dns_rr_grep(&y, 1, &I_instance, P, &error);
-	}
 	if ((cmp = glued[1] - glued[0])) {
 		return cmp;
 	} else if ((cmp = (dns_rr_offset(&y) < i->args[0]) - (dns_rr_offset(&x) < i->args[0]))) {
@@ -8755,7 +8727,7 @@ exec:
 
 		F->state++;	/* FALL THROUGH */
 	case DNS_R_ITERATE:
-		dns_rr_i_init(&F->hints_i);
+		dns_rr_i_init(&F->hints_i, F->hints);
 
 		F->hints_i.section	= DNS_S_AUTHORITY;
 		F->hints_i.type		= DNS_T_NS;
@@ -8774,7 +8746,7 @@ exec:
 			dgoto(R->sp, DNS_R_SWITCH);
 		}
 
-		dns_rr_i_init(&F->hints_j);
+		dns_rr_i_init(&F->hints_j, F->hints);
 
 		/* Assume there are glue records */
 		dgoto(R->sp, DNS_R_FOREACH_A);
@@ -8827,14 +8799,14 @@ exec:
 			if (!dns_rr_i_count(&F->hints_j)) {
 				/* Check if we have in fact servers
 				   with an IPv6 address.  */
-				dns_rr_i_init(&F->hints_j);
+				dns_rr_i_init(&F->hints_j, F->hints);
 				F->hints_j.name		= u.ns.host;
 				F->hints_j.type		= DNS_T_AAAA;
 				F->hints_j.section	= DNS_S_ALL & ~DNS_S_QD;
 				if (dns_rr_grep(&rr, 1, &F->hints_j, F->hints, &error)) {
 					/* We do.  Reinitialize
 					   iterator and handle it.  */
-					dns_rr_i_init(&F->hints_j);
+					dns_rr_i_init(&F->hints_j, F->hints);
 					dgoto(R->sp, DNS_R_FOREACH_AAAA);
 				}
 
@@ -8963,14 +8935,14 @@ exec:
 			if (!dns_rr_i_count(&F->hints_j)) {
 				/* Check if we have in fact servers
 				   with an IPv4 address.  */
-				dns_rr_i_init(&F->hints_j);
+				dns_rr_i_init(&F->hints_j, F->hints);
 				F->hints_j.name		= u.ns.host;
 				F->hints_j.type		= DNS_T_A;
 				F->hints_j.section	= DNS_S_ALL & ~DNS_S_QD;
 				if (dns_rr_grep(&rr, 1, &F->hints_j, F->hints, &error)) {
 					/* We do.  Reinitialize
 					   iterator and handle it.  */
-					dns_rr_i_init(&F->hints_j);
+					dns_rr_i_init(&F->hints_j, F->hints);
 					dgoto(R->sp, DNS_R_FOREACH_A);
 				}
 
@@ -9108,7 +9080,7 @@ exec:
 		R->smart.section	= DNS_S_AN;
 		R->smart.type		= R->qtype;
 
-		dns_rr_i_init(&R->smart);
+		dns_rr_i_init(&R->smart, F->answer);
 
 		F->state++;	/* FALL THROUGH */
 	case DNS_R_SMART0_A:
@@ -9852,7 +9824,7 @@ exec:
 			return error;
 
 		dns_strlcpy(ai->i_cname, ai->cname, sizeof ai->i_cname);
-		dns_rr_i_init(&ai->i);
+		dns_rr_i_init(&ai->i, ai->answer);
 		ai->i.section = DNS_S_AN;
 		ai->i.name    = ai->i_cname;
 		ai->i.type    = dns_ai_qtype(ai);
@@ -9899,7 +9871,7 @@ exec:
 		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_ITERATE_G:
 		dns_strlcpy(ai->g_cname, ai->cname, sizeof ai->g_cname);
-		dns_rr_i_init(&ai->g);
+		dns_rr_i_init(&ai->g, ai->glue);
 		ai->g.section = DNS_S_ALL & ~DNS_S_QD;
 		ai->g.name    = ai->g_cname;
 		ai->g.type    = ai->af.qtype;
@@ -9918,14 +9890,8 @@ exec:
 
 		return dns_ai_setent(ent, &any, rr.type, ai);
 	case DNS_AI_S_SUBMIT_G:
-	{
-		struct dns_rr_i I_instance = { 0 };
-
-		I_instance.section = DNS_S_QD;
-		I_instance.name = ai->g.name;
-		I_instance.type = ai->g.type;
 		/* skip if already queried */
-		if (dns_rr_grep(&rr, 1, &I_instance, ai->glue, &error))
+		if (dns_rr_grep(&rr, 1, dns_rr_i_new(ai->glue, .section = DNS_S_QD, .name = ai->g.name, .type = ai->g.type), ai->glue, &error))
 			dns_ai_goto(DNS_AI_S_FOREACH_I);
 		/* skip if we recursed (CNAME chains should have been handled in the resolver) */
 		if (++ai->g_depth > 1)
@@ -9934,8 +9900,7 @@ exec:
 		if ((error = dns_res_submit(ai->res, ai->g.name, ai->g.type, DNS_C_IN)))
 			return error;
 
-		ai->state++;
-	}	/* FALL THROUGH */
+		ai->state++;	/* FALL THROUGH */
 	case DNS_AI_S_CHECK_G:
 		if ((error = dns_res_check(ai->res)))
 			return error;
@@ -10013,17 +9978,16 @@ int dns_ai_poll(struct dns_addrinfo *ai, int timeout) {
 size_t dns_ai_print(void *_dst, size_t lim, struct addrinfo *ent, struct dns_addrinfo *ai) {
 	struct dns_buf dst = DNS_B_INTO(_dst, lim);
 	char addr[DNS_PP_MAX(INET_ADDRSTRLEN, INET6_ADDRSTRLEN) + 1];
-	char __dst[DNS_STRMAXLEN + 1] = { 0 };
 
 	dns_b_puts(&dst, "[ ");
 	dns_b_puts(&dst, ai->qname);
 	dns_b_puts(&dst, " IN ");
 	if (ai->qtype) {
-		dns_b_puts(&dst, dns_strtype(ai->qtype, __dst));
+		dns_b_puts(&dst, dns_strtype(ai->qtype));
 	} else if (ent->ai_family == AF_INET) {
-		dns_b_puts(&dst, dns_strtype(DNS_T_A, __dst));
+		dns_b_puts(&dst, dns_strtype(DNS_T_A));
 	} else if (ent->ai_family == AF_INET6) {
-		dns_b_puts(&dst, dns_strtype(DNS_T_AAAA, __dst));
+		dns_b_puts(&dst, dns_strtype(DNS_T_AAAA));
 	} else {
 		dns_b_puts(&dst, "0");
 	}
@@ -10110,8 +10074,8 @@ static const struct {
 	{ "AR",         DNS_S_ADDITIONAL },
 };
 
-const char *(dns_strsection)(enum dns_section section, char *_dst) {
-	struct dns_buf dst = DNS_B_INTO(_dst, DNS_STRMAXLEN + 1);
+const char *(dns_strsection)(enum dns_section section, void *_dst, size_t lim) {
+	struct dns_buf dst = DNS_B_INTO(_dst, lim);
 	unsigned i;
 
 	for (i = 0; i < lengthof(dns_sections); i++) {
@@ -10159,8 +10123,8 @@ static const struct {
 	{ "IN", DNS_C_IN },
 };
 
-const char *(dns_strclass)(enum dns_class type, char *_dst) {
-	struct dns_buf dst = DNS_B_INTO(_dst, DNS_STRMAXLEN + 1);
+const char *(dns_strclass)(enum dns_class type, void *_dst, size_t lim) {
+	struct dns_buf dst = DNS_B_INTO(_dst, lim);
 	unsigned i;
 
 	for (i = 0; i < lengthof(dns_classes); i++) {
@@ -10195,8 +10159,8 @@ enum dns_class dns_iclass(const char *name) {
 } /* dns_iclass() */
 
 
-const char *(dns_strtype)(enum dns_type type, char *_dst) {
-	struct dns_buf dst = DNS_B_INTO(_dst, DNS_STRMAXLEN + 1);
+const char *(dns_strtype)(enum dns_type type, void *_dst, size_t lim) {
+	struct dns_buf dst = DNS_B_INTO(_dst, lim);
 	unsigned i;
 
 	for (i = 0; i < lengthof(dns_rrtypes); i++) {
@@ -10599,9 +10563,7 @@ static struct dns_trace *trace(const char *mode) {
 
 
 static void print_packet(struct dns_packet *P, FILE *fp) {
-	struct dns_rr_i I_instance = { 0 };
-	I.sort = MAIN.sort;
-	dns_p_dump3(P, &I, fp);
+	dns_p_dump3(P, dns_rr_i_new(P, .sort = MAIN.sort), fp);
 
 	if (MAIN.verbose > 2)
 		hexdump(P->data, P->end, fp);
@@ -10609,17 +10571,14 @@ static void print_packet(struct dns_packet *P, FILE *fp) {
 
 
 static int parse_packet(int argc DNS_NOTUSED, char *argv[] DNS_NOTUSED) {
-	union { unsigned char b[dns_p_calcsize((512))]; struct dns_packet p; } P_instance = { 0 };
-	union { unsigned char b[dns_p_calcsize((512))]; struct dns_packet p; } Q_instance = { 0 };
-	struct dns_packet *P	= dns_p_init(&P_instance.p, 512);
-	struct dns_packet *Q	= dns_p_init(&Q_instance.p, 512);
+	struct dns_packet *P	= dns_p_new(512);
+	struct dns_packet *Q	= dns_p_new(512);
 	enum dns_section section;
 	struct dns_rr rr;
 	int error;
 	union dns_any any;
 	char pretty[sizeof any * 2];
 	size_t len;
-	char __dst[DNS_STRMAXLEN + 1] = { 0 };
 
 	P->end	= fread(P->data, 1, P->size, stdin);
 
@@ -10636,7 +10595,7 @@ static int parse_packet(int argc DNS_NOTUSED, char *argv[] DNS_NOTUSED) {
 
 	dns_rr_foreach(&rr, P, .sort = MAIN.sort) {
 		if (section != rr.section)
-			fprintf(stdout, "\n;; [%s:%d]\n", dns_strsection(rr.section, __dst), dns_p_count(P, rr.section));
+			fprintf(stdout, "\n;; [%s:%d]\n", dns_strsection(rr.section), dns_p_count(P, rr.section));
 
 		if ((len = dns_rr_print(pretty, sizeof pretty, &rr, P, &error)))
 			fprintf(stdout, "%s\n", pretty);
@@ -10653,21 +10612,15 @@ static int parse_packet(int argc DNS_NOTUSED, char *argv[] DNS_NOTUSED) {
 #if 0
 	dns_rr_foreach(&rr, Q, .name = "ns8.yahoo.com.") {
 #else
-	char _p[DNS_D_MAXNAME + 1] = { 0 };
-	const char *dn = "ns8.yahoo.com";
-	char *_name = dns_d_init(_p, sizeof _p, dn, strlen (dn), DNS_D_ANCHOR);
 	struct dns_rr rrset[32];
-	struct dns_rr_i I_instance = { 0 };
-	struct dns_rr_i *rri	= &I;
+	struct dns_rr_i *rri	= dns_rr_i_new(Q, .name = dns_d_new("ns8.yahoo.com", DNS_D_ANCHOR), .sort = MAIN.sort);
 	unsigned rrcount	= dns_rr_grep(rrset, lengthof(rrset), rri, Q, &error);
 
-	I.name = _name;
-	I.sort = MAIN.sort;
 	for (unsigned i = 0; i < rrcount; i++) {
 		rr	= rrset[i];
 #endif
 		if (section != rr.section)
-			fprintf(stdout, "\n;; [%s:%d]\n", dns_strsection(rr.section, __dst), dns_p_count(Q, rr.section));
+			fprintf(stdout, "\n;; [%s:%d]\n", dns_strsection(rr.section), dns_p_count(Q, rr.section));
 
 		if ((len = dns_rr_print(pretty, sizeof pretty, &rr, Q, &error)))
 			fprintf(stdout, "%s\n", pretty);
@@ -10688,14 +10641,13 @@ static int parse_packet(int argc DNS_NOTUSED, char *argv[] DNS_NOTUSED) {
 
 
 static int parse_domain(int argc, char *argv[]) {
-	char _p[DNS_D_MAXNAME + 1] = { 0 };
 	char *dn;
 
 	dn	= (argc > 1)? argv[1] : "f.l.google.com";
 
 	printf("[%s]\n", dn);
 
-	dn	= dns_d_init(_p, sizeof _p, dn, strlen (dn), DNS_D_ANCHOR);
+	dn	= dns_d_new(dn);
 
 	do {
 		puts(dn);
@@ -10820,8 +10772,7 @@ static int show_hosts(int argc DNS_NOTUSED, char *argv[] DNS_NOTUSED) {
 
 
 static int query_hosts(int argc, char *argv[]) {
-	union { unsigned char b[dns_p_calcsize((512))]; struct dns_packet p; } Q_instance = { 0 };
-	struct dns_packet *Q	= dns_p_init(&Q_instance.p, 512);
+	struct dns_packet *Q	= dns_p_new(512);
 	struct dns_packet *A;
 	char qname[DNS_D_MAXNAME + 1];
 	size_t qlen;
@@ -10939,14 +10890,11 @@ static int dump_random(int argc, char *argv[]) {
 
 
 static int send_query(int argc, char *argv[]) {
-	union { unsigned char b[dns_p_calcsize((512))]; struct dns_packet p; } Q_instance = { 0 };
-	struct dns_packet *A, *Q	= dns_p_init(&Q_instance.p, 512);
+	struct dns_packet *A, *Q	= dns_p_new(512);
 	char host[INET6_ADDRSTRLEN + 1];
 	struct sockaddr_storage ss;
 	struct dns_socket *so;
 	int error, type;
-	struct dns_options opts = { 0 };
-	char __dst[DNS_STRMAXLEN + 1] = { 0 };
 
 	memset(&ss, 0, sizeof ss);
 	if (argc > 1) {
@@ -10979,9 +10927,9 @@ static int send_query(int argc, char *argv[]) {
 	else
 		type	= dns_res_tcp2type(resconf()->options.tcp);
 
-	fprintf(stderr, "querying %s for %s IN %s\n", host, MAIN.qname, dns_strtype(MAIN.qtype, __dst));
+	fprintf(stderr, "querying %s for %s IN %s\n", host, MAIN.qname, dns_strtype(MAIN.qtype));
 
-	if (!(so = dns_so_open((struct sockaddr *)&resconf()->iface, type, &opts, &error)))
+	if (!(so = dns_so_open((struct sockaddr *)&resconf()->iface, type, dns_opts(), &error)))
 		panic("dns_so_open: %s", dns_strerror(error));
 
 	while (!(A = dns_so_query(so, Q, (struct sockaddr *)&ss, &error))) {
@@ -11036,10 +10984,9 @@ static int show_hints(int argc, char *argv[]) {
 	if (0 == strcmp(how, "plain")) {
 		dns_hints_dump(hints, stdout);
 	} else {
-		union { unsigned char b[dns_p_calcsize((512))]; struct dns_packet p; } P_instance = { 0 };
 		struct dns_packet *query, *answer;
 
-		query	= dns_p_init(&P_instance.p, 512);
+		query	= dns_p_new(512);
 
 		if ((error = dns_p_push(query, DNS_S_QUESTION, who, strlen(who), DNS_T_A, DNS_C_IN, 0, 0)))
 			panic("%s: %s", who, dns_strerror(error));
@@ -11065,11 +11012,6 @@ static int resolve_query(int argc DNS_NOTUSED, char *argv[]) {
 	struct dns_packet *ans;
 	const struct dns_stat *st;
 	int error;
-	struct dns_options opts = { 0 };
-
-	opts.socks_host = &MAIN.socks_host;
-	opts.socks_user = MAIN.socks_user;
-	opts.socks_password = MAIN.socks_password;
 
 	if (!MAIN.qname)
 		MAIN.qname = "www.google.com";
@@ -11079,7 +11021,9 @@ static int resolve_query(int argc DNS_NOTUSED, char *argv[]) {
 	resconf()->options.recurse = recurse;
 
 	if (!(R = dns_res_open(resconf(), hosts(), dns_hints_mortal(hints(resconf(), &error)), cache(),
-			       &opts, &error)))
+			       dns_opts(.socks_host=&MAIN.socks_host,
+					.socks_user=MAIN.socks_user,
+					.socks_password=MAIN.socks_password), &error)))
 		panic("%s: %s", MAIN.qname, dns_strerror(error));
 
 	dns_res_settrace(R, trace("w+b"));
@@ -11123,7 +11067,6 @@ static int resolve_addrinfo(int argc DNS_NOTUSED, char *argv[]) {
 	struct addrinfo *ent;
 	char pretty[512];
 	int error;
-	struct dns_options opts = { 0 };
 
 	if (!MAIN.qname)
 		MAIN.qname = "www.google.com";
@@ -11131,7 +11074,7 @@ static int resolve_addrinfo(int argc DNS_NOTUSED, char *argv[]) {
 
 	resconf()->options.recurse = recurse;
 
-	if (!(res = dns_res_open(resconf(), hosts(), dns_hints_mortal(hints(resconf(), &error)), cache(), &opts, &error)))
+	if (!(res = dns_res_open(resconf(), hosts(), dns_hints_mortal(hints(resconf(), &error)), cache(), dns_opts(), &error)))
 		panic("%s: %s", MAIN.qname, dns_strerror(error));
 
 	if (!(ai = dns_ai_open(MAIN.qname, "80", MAIN.qtype, &ai_hints, res, &error)))
@@ -11202,8 +11145,7 @@ static int echo_port(int argc DNS_NOTUSED, char *argv[] DNS_NOTUSED) {
 		panic("127.0.0.1:5353: %s", dns_strerror(errno));
 
 	for (;;) {
-		union { unsigned char b[dns_p_calcsize((512))]; struct dns_packet p; } P_instance = { 0 };
-		struct dns_packet *pkt = dns_p_init(&P_instance.p, 512);
+		struct dns_packet *pkt = dns_p_new(512);
 		struct sockaddr_storage ss;
 		socklen_t slen = sizeof ss;
 		ssize_t count;
@@ -11230,12 +11172,11 @@ static int echo_port(int argc DNS_NOTUSED, char *argv[] DNS_NOTUSED) {
 
 
 static int isection(int argc, char *argv[]) {
-	char __dst[DNS_STRMAXLEN + 1] = { 0 };
 	const char *name = (argc > 1)? argv[1] : "";
 	int type;
 
 	type = dns_isection(name);
-	name = dns_strsection(type, __dst);
+	name = dns_strsection(type);
 
 	printf("%s (%d)\n", name, type);
 
@@ -11244,12 +11185,11 @@ static int isection(int argc, char *argv[]) {
 
 
 static int iclass(int argc, char *argv[]) {
-	char __dst[DNS_STRMAXLEN + 1] = { 0 };
 	const char *name = (argc > 1)? argv[1] : "";
 	int type;
 
 	type = dns_iclass(name);
-	name = dns_strclass(type, __dst);
+	name = dns_strclass(type);
 
 	printf("%s (%d)\n", name, type);
 
@@ -11258,12 +11198,11 @@ static int iclass(int argc, char *argv[]) {
 
 
 static int itype(int argc, char *argv[]) {
-	char __dst[DNS_STRMAXLEN + 1] = { 0 };
 	const char *name = (argc > 1)? argv[1] : "";
 	int type;
 
 	type = dns_itype(name);
-	name = dns_strtype(type, __dst);
+	name = dns_strtype(type);
 
 	printf("%s (%d)\n", name, type);
 

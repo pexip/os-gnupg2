@@ -463,19 +463,18 @@ make_url (char **url, const char *dn, const char *filter)
 }
 
 
-/* Prepare an LDAP query to return the cACertificate attribute for DN.
- * All configured default servers are queried until one responds.
- * This function returns an error code or 0 and stored a newly
- * allocated contect object at CONTEXT on success. */
+/* Prepare an LDAP query to return the attribute ATTR for the DN.  All
+   configured default servers are queried until one responds.  This
+   function returns an error code or 0 and a CONTEXT on success. */
 gpg_error_t
-start_cacert_fetch_ldap (ctrl_t ctrl, cert_fetch_context_t *r_context,
-                         const char *dn)
+start_default_fetch_ldap (ctrl_t ctrl, cert_fetch_context_t *context,
+                          const char *dn, const char *attr)
 {
   gpg_error_t err;
   struct ldapserver_iter iter;
 
-  *r_context = xtrycalloc (1, sizeof **r_context);
-  if (!*r_context)
+  *context = xtrycalloc (1, sizeof **context);
+  if (!*context)
     return gpg_error_from_errno (errno);
 
   /* FIXME; we might want to look at the Base SN to try matching
@@ -489,30 +488,30 @@ start_cacert_fetch_ldap (ctrl_t ctrl, cert_fetch_context_t *r_context,
 
       err = run_ldap_wrapper (ctrl,
                               0,
-                              1,  /* --multi (record format) */
+                              1,
                               opt.ldap_proxy,
                               server->host, server->port,
                               server->user, server->pass,
-                              dn, "objectClass=*", "cACertificate", NULL,
-                              &(*r_context)->reader);
+                              dn, "objectClass=*", attr, NULL,
+                              &(*context)->reader);
       if (!err)
         break; /* Probably found a result. */
     }
 
   if (err)
     {
-      xfree (*r_context);
-      *r_context = NULL;
+      xfree (*context);
+      *context = NULL;
     }
   return err;
 }
 
 
-/* Prepare an LDAP query to return certificates matching PATTERNS
- * using the SERVER.  This function returns an error code or 0 and
- * stores a newly allocated object at R_CONTEXT on success. */
+/* Prepare an LDAP query to return certificates matching PATTERNS using
+   the SERVER.  This function returns an error code or 0 and a CONTEXT
+   on success. */
 gpg_error_t
-start_cert_fetch_ldap (ctrl_t ctrl, cert_fetch_context_t *r_context,
+start_cert_fetch_ldap (ctrl_t ctrl, cert_fetch_context_t *context,
                        strlist_t patterns, const ldap_server_t server)
 {
   gpg_error_t err;
@@ -528,7 +527,7 @@ start_cert_fetch_ldap (ctrl_t ctrl, cert_fetch_context_t *r_context,
   char portbuf[30], timeoutbuf[30];
 
 
-  *r_context = NULL;
+  *context = NULL;
 
   if (opt.ldap_proxy && !(proxy = xtrystrdup (opt.ldap_proxy)))
     {
@@ -640,19 +639,19 @@ start_cert_fetch_ldap (ctrl_t ctrl, cert_fetch_context_t *r_context,
     }
   argv[argc] = NULL;
 
-  *r_context = xtrycalloc (1, sizeof **r_context);
-  if (!*r_context)
+  *context = xtrycalloc (1, sizeof **context);
+  if (!*context)
     {
       err = gpg_error_from_errno (errno);
       goto leave;
     }
 
-  err = ldap_wrapper (ctrl, &(*r_context)->reader, (const char**)argv);
+  err = ldap_wrapper (ctrl, &(*context)->reader, (const char**)argv);
 
   if (err)
     {
-      xfree (*r_context);
-      *r_context = NULL;
+      xfree (*context);
+      *context = NULL;
     }
 
  leave:
@@ -712,7 +711,8 @@ fetch_next_cert_ldap (cert_fetch_context_t context,
       n = buf32_to_ulong (hdr+1);
       if (*hdr == 'V' && okay)
         {
-#if 0  /* That code to extra a cert from a CMS object is not yet ready.  */
+#if 0  /* That code is not yet ready.  */
+
           if (is_cms)
             {
               /* The certificate needs to be parsed from CMS data. */
@@ -759,7 +759,7 @@ fetch_next_cert_ldap (cert_fetch_context_t context,
                 any = 1;
             }
           else
-#endif /* End unfinished code to extract from a CMS object.  */
+#endif
             {
               *value = xtrymalloc (n);
               if (!*value)

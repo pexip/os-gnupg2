@@ -20,35 +20,14 @@ EXTRA_DIST = \
 	Manifest watchgnupg.c no-libgcrypt.c \
 	addgnupghome applygnupgdefaults \
 	lspgpot mail-signed-keys convert-from-106 sockprox.c \
-	ccidmon.c ChangeLog-2011 \
-	gpgconf-w32info.rc           gpgconf.w32-manifest.in \
-	gpgtar-w32info.rc            gpgtar.w32-manifest.in \
-        gpg-connect-agent-w32info.rc gpg-connect-agent.w32-manifest.in \
-	gpg-check-pattern-w32info.rc gpg-check-pattern.w32-manifest.in \
-	gpg-wks-client-w32info.rc    gpg-wks-client.w32-manifest.in
+	ccidmon.c ChangeLog-2011 gpg-connect-agent-w32info.rc
 
 
 AM_CPPFLAGS =
 include $(top_srcdir)/am/cmacros.am
 
 if HAVE_W32_SYSTEM
-gpgconf_robjs =           $(resource_objs) gpgconf-w32info.o
-gpgtar_robjs =            $(resource_objs) gpgtar-w32info.o
-gpg_connect_agent_robjs = $(resource_objs) gpg-connect-agent-w32info.o
-gpg_check_pattern_robjs = $(resource_objs) gpg-check-pattern-w32info.o
-gpg_wks_client_robjs =    $(resource_objs) gpg-wks-client-w32info.o
-
-gpgconf-w32info.o:           gpgconf.w32-manifest
-gpgtar-w32info.o:            gpgtar.w32-manifest
-gpg-connect-agent-w32info.o: gpg-connect-agent.w32-manifest
-gpg-check-pattern-w32info.o: gpg-check-pattern.w32-manifest
-gpg-wks-client-w32info.o:    gpg-wks-client.w32-manifest
-else
-gpg_connect_agent_robjs =
-gpgconf_robjs =
-gpg_check_pattern_robjs =
-gpgtar_robjs =
-gpg_wks_client_robjs =
+resource_objs += gpg-connect-agent-w32info.o
 endif
 
 AM_CFLAGS = $(LIBGCRYPT_CFLAGS) $(GPG_ERROR_CFLAGS) $(LIBASSUAN_CFLAGS)
@@ -60,6 +39,12 @@ if HAVE_USTAR
 noinst_SCRIPTS = gpg-zip
 endif
 
+if BUILD_SYMCRYPTRUN
+  symcryptrun = symcryptrun
+else
+  symcryptrun =
+endif
+
 if BUILD_WKS_TOOLS
   gpg_wks_server = gpg-wks-server
 else
@@ -68,17 +53,17 @@ endif
 
 libexec_PROGRAMS = gpg-wks-client
 
-bin_PROGRAMS = gpgconf gpg-connect-agent
+bin_PROGRAMS = gpgconf gpg-connect-agent ${symcryptrun}
 if !HAVE_W32_SYSTEM
-bin_PROGRAMS += watchgnupg gpgparsemail ${gpg_wks_server} gpgsplit
-else
-bin_PROGRAMS += gpgconf-w32
+bin_PROGRAMS += watchgnupg gpgparsemail ${gpg_wks_server}
 endif
 
+if !DISABLE_REGEX
 libexec_PROGRAMS += gpg-check-pattern
+endif
 
 if !HAVE_W32CE_SYSTEM
-noinst_PROGRAMS = clean-sat make-dns-cert
+noinst_PROGRAMS = clean-sat make-dns-cert gpgsplit
 endif
 
 if !HAVE_W32CE_SYSTEM
@@ -109,9 +94,6 @@ if HAVE_W32CE_SYSTEM
 opt_libassuan_libs = $(LIBASSUAN_LIBS)
 endif
 
-regexp_libs = ../regexp/libregexp.a
-
-
 gpgsplit_LDADD = $(common_libs) \
 	         $(LIBGCRYPT_LIBS) $(GPG_ERROR_LIBS) \
 		 $(ZLIBS) $(LIBINTL) $(NETLIBS) $(LIBICONV)
@@ -122,16 +104,16 @@ gpgconf_SOURCES = gpgconf.c gpgconf.h gpgconf-comp.c
 # do not eliminate the supposed-to-be-unused-inline-functions).
 gpgconf_LDADD = $(maybe_commonpth_libs) $(opt_libassuan_libs) \
                 $(LIBINTL) $(LIBGCRYPT_LIBS) $(GPG_ERROR_LIBS) $(NETLIBS) \
-	        $(LIBICONV) $(W32SOCKLIBS) \
-	        $(gpgconf_robjs)
+	        $(LIBICONV) $(W32SOCKLIBS)
 gpgconf_LDFLAGS = $(extra_bin_ldflags)
-
-gpgconf_w32_SOURCES = $(gpgconf_SOURCES)
-gpgconf_w32_LDADD = $(gpgconf_LDADD)
-gpgconf_w32_LDFLAGS = $(gpgconf_LDFLAGS) -Wl,-subsystem,windows
 
 gpgparsemail_SOURCES = gpgparsemail.c rfc822parse.c rfc822parse.h
 gpgparsemail_LDADD =
+
+symcryptrun_SOURCES = symcryptrun.c
+symcryptrun_LDADD = $(LIBUTIL_LIBS) $(common_libs) $(pwquery_libs) \
+                    $(LIBGCRYPT_LIBS) $(GPG_ERROR_LIBS) $(LIBINTL) \
+                    $(LIBICONV) $(NETLIBS) $(W32SOCKLIBS) $(LIBASSUAN_LIBS)
 
 watchgnupg_SOURCES = watchgnupg.c
 watchgnupg_LDADD = $(NETLIBS)
@@ -141,14 +123,16 @@ gpg_connect_agent_LDADD = ../common/libgpgrl.a $(common_libs) \
 	                  $(LIBASSUAN_LIBS) $(LIBGCRYPT_LIBS) \
                           $(GPG_ERROR_LIBS) \
                           $(LIBREADLINE) $(LIBINTL) $(NETLIBS) $(LIBICONV) \
-                          $(gpg_connect_agent_robjs)
+                          $(resource_objs)
 
+
+if !DISABLE_REGEX
 gpg_check_pattern_SOURCES = gpg-check-pattern.c
 gpg_check_pattern_CFLAGS = $(LIBGCRYPT_CFLAGS) $(GPG_ERROR_CFLAGS) $(INCICONV)
-gpg_check_pattern_LDADD = $(common_libs) $(regexp_libs) $(LIBGCRYPT_LIBS) \
-			  $(GPG_ERROR_LIBS) \
+gpg_check_pattern_LDADD = $(common_libs) $(LIBGCRYPT_LIBS) $(GPG_ERROR_LIBS) \
 			  $(LIBINTL) $(NETLIBS) $(LIBICONV) $(W32SOCKLIBS) \
-			  $(LIBICONV) $(gpg_check_pattern_robjs)
+			  $(LIBICONV)
+endif
 
 gpgtar_SOURCES = \
 	gpgtar.c gpgtar.h \
@@ -157,8 +141,7 @@ gpgtar_SOURCES = \
 	gpgtar-list.c
 gpgtar_CFLAGS = $(GPG_ERROR_CFLAGS)
 gpgtar_LDADD = $(libcommon) $(LIBGCRYPT_LIBS) $(GPG_ERROR_LIBS) \
-               $(LIBINTL) $(NETLIBS) $(LIBICONV) $(W32SOCKLIBS) \
-	       $(gpgtar_robjs)
+               $(LIBINTL) $(NETLIBS) $(LIBICONV) $(W32SOCKLIBS)
 
 gpg_wks_server_SOURCES = \
 	gpg-wks-server.c \
@@ -188,8 +171,7 @@ gpg_wks_client_SOURCES = \
 gpg_wks_client_CFLAGS = $(LIBASSUAN_CFLAGS) $(GPG_ERROR_CFLAGS) $(INCICONV)
 gpg_wks_client_LDADD = $(libcommon) \
 		       $(LIBASSUAN_LIBS) $(LIBGCRYPT_LIBS) $(GPG_ERROR_LIBS) \
-		       $(LIBINTL) $(LIBICONV) $(NETLIBS) \
-		       $(gpg_wks_client_robjs)
+		       $(LIBINTL) $(LIBICONV)
 
 
 # Make sure that all libs are build before we use them.  This is

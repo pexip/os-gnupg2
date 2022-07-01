@@ -44,7 +44,6 @@
 
 
 /* A large struct name "opt" to keep global flags. */
-EXTERN_UNLESS_MAIN_MODULE
 struct
 {
   unsigned int debug; /* Debug flags (DBG_foo_VALUE). */
@@ -124,10 +123,6 @@ int  scd_command_handler (ctrl_t, int);
 void send_status_info (ctrl_t ctrl, const char *keyword, ...)
      GPGRT_ATTR_SENTINEL(1);
 void send_status_direct (ctrl_t ctrl, const char *keyword, const char *args);
-gpg_error_t send_status_printf (ctrl_t ctrl, const char *keyword,
-                                const char *format, ...) GPGRT_ATTR_PRINTF(3,4);
-
-void popup_prompt (void *opaque, int on);
 void send_client_notifications (app_t app, int removal);
 void scd_kick_the_loop (void);
 int get_active_connection_count (void);

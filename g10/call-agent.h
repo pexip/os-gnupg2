@@ -32,8 +32,6 @@ struct agent_card_info_s
   int error;         /* private. */
   char *reader;      /* Reader information.  */
   char *apptype;     /* Malloced application type string.  */
-  unsigned int manufacturer_id;
-  char *manufacturer_name; /* malloced.  */
   char *serialno;    /* malloced hex string. */
   char *disp_name;   /* malloced. */
   char *disp_lang;   /* malloced. */
@@ -73,7 +71,7 @@ struct agent_card_info_s
     unsigned int kdf:1;    /* KDF object to support PIN hashing available.  */
   } extcap;
   unsigned int status_indicator;
-  int kdf_do_enabled;      /* Non-zero if card has a KDF object, 0 if not.  */
+  int kdf_do_enabled;      /* Card has a KDF object */
 };
 
 
@@ -84,9 +82,6 @@ void agent_release_card_info (struct agent_card_info_s *info);
 /* Return card info. */
 int agent_scd_learn (struct agent_card_info_s *info, int force);
 
-/* Get the keypariinfo directly from scdaemon.  */
-gpg_error_t agent_scd_keypairinfo (ctrl_t ctrl, strlist_t *r_list);
-
 /* Return list of cards.  */
 int agent_scd_cardlist (strlist_t *result);
 
@@ -96,9 +91,6 @@ int agent_scd_serialno (char **r_serialno, const char *demand);
 /* Send an APDU to the card.  */
 gpg_error_t agent_scd_apdu (const char *hexapdu, unsigned int *r_sw);
 
-/* Get attribute NAME from the card and store at R_VALUE.  */
-gpg_error_t agent_scd_getattr_one (const char *name, char **r_value);
-
 /* Update INFO with the attribute NAME. */
 int agent_scd_getattr (const char *name, struct agent_card_info_s *info);
 
@@ -107,22 +99,24 @@ int agent_keytocard (const char *hexgrip, int keyno, int force,
                      const char *serialno, const char *timestamp);
 
 /* Send a SETATTR command to the SCdaemon. */
-gpg_error_t agent_scd_setattr (const char *name,
-                               const void *value, size_t valuelen);
+int agent_scd_setattr (const char *name,
+                       const unsigned char *value, size_t valuelen,
+                       const char *serialno);
 
 /* Send a WRITECERT command to the SCdaemon. */
 int agent_scd_writecert (const char *certidstr,
                           const unsigned char *certdata, size_t certdatalen);
 
+/* Send a WRITEKEY command to the SCdaemon. */
+int agent_scd_writekey (int keyno, const char *serialno,
+                        const unsigned char *keydata, size_t keydatalen);
+
 /* Send a GENKEY command to the SCdaemon. */
 int agent_scd_genkey (int keyno, int force, u32 *createtime);
 
-/* Send a READCERT command to the SCdaemon. */
+/* Send a READKEY command to the SCdaemon. */
 int agent_scd_readcert (const char *certidstr,
                         void **r_buf, size_t *r_buflen);
-
-/* Send a READKEY command to the SCdaemon.  */
-gpg_error_t agent_scd_readkey (const char *keyrefstr, gcry_sexp_t *r_result);
 
 /* Change the PIN of an OpenPGP card or reset the retry counter. */
 int agent_scd_change_pin (int chvno, const char *serialno);
@@ -130,12 +124,15 @@ int agent_scd_change_pin (int chvno, const char *serialno);
 /* Send the CHECKPIN command to the SCdaemon. */
 int agent_scd_checkpin  (const char *serialno);
 
+/* Dummy function, only implemented by gpg 1.4. */
+void agent_clear_pin_cache (const char *sn);
+
+
 /* Send the GET_PASSPHRASE command to the agent.  */
 gpg_error_t agent_get_passphrase (const char *cache_id,
                                   const char *err_msg,
                                   const char *prompt,
                                   const char *desc_msg,
-                                  int newsymkey,
                                   int repeat,
                                   int check,
                                   char **r_passphrase);
@@ -166,7 +163,7 @@ gpg_error_t agent_get_keyinfo (ctrl_t ctrl, const char *hexkeygrip,
 gpg_error_t agent_genkey (ctrl_t ctrl,
                           char **cache_nonce_addr, char **passwd_nonce_addr,
                           const char *keyparms, int no_protection,
-                          const char *passphrase, time_t timestamp,
+                          const char *passphrase,
                           gcry_sexp_t *r_pubkey);
 
 /* Read a public key.  */
@@ -196,8 +193,7 @@ gpg_error_t agent_keywrap_key (ctrl_t ctrl, int forexport,
 gpg_error_t agent_import_key (ctrl_t ctrl, const char *desc,
                               char **cache_nonce_addr, const void *key,
                               size_t keylen, int unattended, int force,
-                              u32 *keyid, u32 *mainkeyid, int pubkey_algo,
-                              u32 timestamp);
+                              u32 *keyid, u32 *mainkeyid, int pubkey_algo);
 
 /* Receive a key from the agent.  */
 gpg_error_t agent_export_key (ctrl_t ctrl, const char *keygrip,

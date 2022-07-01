@@ -36,10 +36,10 @@ Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
  1 file changed, 10 insertions(+), 13 deletions(-)
 
 diff --git a/dirmngr/ks-engine-hkp.c b/dirmngr/ks-engine-hkp.c
-index 14859c7..d425363 100644
+index 20d29e9..801e565 100644
 --- a/dirmngr/ks-engine-hkp.c
 +++ b/dirmngr/ks-engine-hkp.c
-@@ -225,29 +225,26 @@ host_in_pool_p (hostinfo_t hi, int tblidx)
+@@ -221,29 +221,26 @@ host_in_pool_p (hostinfo_t hi, int tblidx)
  static int
  select_random_host (hostinfo_t hi)
  {

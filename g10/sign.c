@@ -49,14 +49,7 @@
 #define LF "\n"
 #endif
 
-/* Bitflags to convey hints on what kind of signayire is created.  */
-#define SIGNHINT_KEYSIG  1
-#define SIGNHINT_SELFSIG 2
-
-
-/* Hack */
 static int recipient_digest_algo=0;
-
 
 /****************
  * Create notations and other stuff.  It is assumed that the stings in
@@ -185,91 +178,6 @@ mk_notation_policy_etc (PKT_signature *sig,
 }
 
 
-
-/*
- * Put the Key Block subpakcet into SIG for key PKSK.  Returns an
- * error code on failure.
- */
-static gpg_error_t
-mk_sig_subpkt_key_block (ctrl_t ctrl, PKT_signature *sig, PKT_public_key *pksk)
-{
-  gpg_error_t err;
-  char *mbox;
-  char *filterexp = NULL;
-  int save_opt_armor = opt.armor;
-  int save_opt_verbose = opt.verbose;
-  char hexfpr[2*MAX_FINGERPRINT_LEN + 1];
-  void *data = NULL;
-  size_t datalen;
-  kbnode_t keyblock = NULL;
-
-  push_export_filters ();
-  opt.armor = 0;
-
-  hexfingerprint (pksk, hexfpr, sizeof hexfpr);
-
-  /* Get the user id so that we know which one to insert into the
-   * key.  */
-  if (pksk->user_id
-      && (mbox = mailbox_from_userid (pksk->user_id->name)))
-    {
-      if (DBG_LOOKUP)
-        log_debug ("including key with UID '%s' (specified)\n", mbox);
-      filterexp = xasprintf ("keep-uid= -- mbox = %s", mbox);
-      xfree (mbox);
-    }
-  else if (opt.sender_list)
-    {
-      /* If --sender was given we use the first one from that list.  */
-      if (DBG_LOOKUP)
-        log_debug ("including key with UID '%s' (--sender)\n",
-                   opt.sender_list->d);
-      filterexp = xasprintf ("keep-uid= -- mbox = %s", opt.sender_list->d);
-    }
-  else  /* Use the primary user id.  */
-    {
-      if (DBG_LOOKUP)
-        log_debug ("including key with primary UID\n");
-      filterexp = xstrdup ("keep-uid= primary -t");
-    }
-
-  if (DBG_LOOKUP)
-    log_debug ("export filter expression: %s\n", filterexp);
-  err = parse_and_set_export_filter (filterexp);
-  if (err)
-    goto leave;
-  xfree (filterexp);
-  filterexp = xasprintf ("drop-subkey= fpr <> %s && usage !~ e", hexfpr);
-  if (DBG_LOOKUP)
-    log_debug ("export filter expression: %s\n", filterexp);
-  err = parse_and_set_export_filter (filterexp);
-  if (err)
-    goto leave;
-
-
-  opt.verbose = 0;
-  err = export_pubkey_buffer (ctrl, hexfpr, EXPORT_MINIMAL|EXPORT_CLEAN,
-                              "", 1, /* Prefix with the reserved byte. */
-                              NULL, &keyblock, &data, &datalen);
-  opt.verbose = save_opt_verbose;
-  if (err)
-    {
-      log_error ("failed to get to be included key: %s\n", gpg_strerror (err));
-      goto leave;
-    }
-
-  build_sig_subpkt (sig, SIGSUBPKT_KEY_BLOCK, data, datalen);
-
- leave:
-  xfree (data);
-  release_kbnode (keyblock);
-  xfree (filterexp);
-  opt.armor = save_opt_armor;
-  pop_export_filters ();
-  return err;
-}
-
-
 /*
  * Helper to hash a user ID packet.
  */
@@ -344,12 +252,10 @@ hash_sigversion_to_magic (gcry_md_hd_t md, const PKT_signature *sig)
 
 
 /* Perform the sign operation.  If CACHE_NONCE is given the agent is
- * advised to use that cached passphrase for the key.  SIGNHINTS has
- * hints so that we can do some additional checks. */
+   advised to use that cached passphrase for the key.  */
 static int
 do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
-	 gcry_md_hd_t md, int mdalgo,
-         const char *cache_nonce, unsigned int signhints)
+	 gcry_md_hd_t md, int mdalgo, const char *cache_nonce)
 {
   gpg_error_t err;
   byte *dp;
@@ -372,19 +278,6 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
   if (!mdalgo)
     mdalgo = gcry_md_get_algo (md);
 
-  if ((signhints & SIGNHINT_KEYSIG) && !(signhints & SIGNHINT_SELFSIG)
-      && mdalgo == GCRY_MD_SHA1
-      && !opt.flags.allow_weak_key_signatures)
-    {
-      /* We do not allow the creation of third-party key signatures
-       * using SHA-1 because we also reject them when verifying.  Note
-       * that this will render dsa1024 keys unsuitable for such
-       * keysigs and in turn the WoT. */
-      print_sha1_keysig_rejected_note ();
-      err = gpg_error (GPG_ERR_DIGEST_ALGO);
-      goto leave;
-    }
-
   /* Check compliance.  */
   if (! gnupg_digest_is_allowed (opt.compliance, 1, mdalgo))
     {
@@ -395,8 +288,7 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
       goto leave;
     }
 
-  if (! gnupg_pk_is_allowed (opt.compliance, PK_USE_SIGNING,
-                             pksk->pubkey_algo, 0,
+  if (! gnupg_pk_is_allowed (opt.compliance, PK_USE_SIGNING, pksk->pubkey_algo,
                              pksk->pkey, nbits_from_pk (pksk), NULL))
     {
       log_error (_("key %s may not be used for signing in %s mode\n"),
@@ -462,12 +354,7 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
 
  leave:
   if (err)
-    {
-      log_error (_("signing failed: %s\n"), gpg_strerror (err));
-      if (gpg_err_source (err) == GPG_ERR_SOURCE_SCD
-          && gpg_err_code (err) == GPG_ERR_INV_ID)
-        print_further_info ("a reason might be a card with replaced keys");
-    }
+    log_error (_("signing failed: %s\n"), gpg_strerror (err));
   else
     {
       if (opt.verbose)
@@ -487,12 +374,12 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
 static int
 complete_sig (ctrl_t ctrl,
               PKT_signature *sig, PKT_public_key *pksk, gcry_md_hd_t md,
-              const char *cache_nonce, unsigned int signhints)
+              const char *cache_nonce)
 {
   int rc;
 
   /* if (!(rc = check_secret_key (pksk, 0))) */
-  rc = do_sign (ctrl, pksk, sig, md, 0, cache_nonce, signhints);
+  rc = do_sign (ctrl, pksk, sig, md, 0, cache_nonce);
   return rc;
 }
 
@@ -539,7 +426,7 @@ openpgp_card_v1_p (PKT_public_key *pk)
 }
 
 
-/* Get a matching hash algorithm for DSA and ECDSA.  */
+
 static int
 match_dsa_hash (unsigned int qbytes)
 {
@@ -588,7 +475,7 @@ hash_for (PKT_public_key *pk)
     {
       return opt.def_digest_algo;
     }
-  else if (recipient_digest_algo && !is_weak_digest (recipient_digest_algo))
+  else if (recipient_digest_algo)
     {
       return recipient_digest_algo;
     }
@@ -614,13 +501,9 @@ hash_for (PKT_public_key *pk)
 	 160-bit hash unless --enable-dsa2 is set, in which case act
 	 like a new DSA key that just happens to have a 160-bit q
 	 (i.e. allow truncation).  If q is not 160, by definition it
-	 must be a new DSA key.  We ignore the personal_digest_prefs
-	 for ECDSA because they should always macth the curve and
-	 truncated hashes are not useful either.  Even worse,
-	 smartcards may reject non matching hash lengths for curves
-	 (e.g. using SHA-512 with brainpooolP385r1 on a Yubikey).  */
+	 must be a new DSA key. */
 
-      if (pk->pubkey_algo == PUBKEY_ALGO_DSA && opt.personal_digest_prefs)
+      if (opt.personal_digest_prefs)
 	{
 	  prefitem_t *prefs;
 
@@ -832,7 +715,7 @@ write_signature_packets (ctrl_t ctrl,
       PKT_public_key *pk;
       PKT_signature *sig;
       gcry_md_hd_t md;
-      gpg_error_t err;
+      int rc;
 
       pk = sk_rover->pk;
 
@@ -865,20 +748,14 @@ write_signature_packets (ctrl_t ctrl,
         {
           build_sig_subpkt_from_sig (sig, pk);
           mk_notation_policy_etc (sig, NULL, pk);
-          if (opt.flags.include_key_block && IS_SIG (sig))
-            err = mk_sig_subpkt_key_block (ctrl, sig, pk);
-          else
-            err = 0;
         }
-      else
-        err = 0;  /* Actually never reached.  */
+
       hash_sigversion_to_magic (md, sig);
       gcry_md_final (md);
 
-      if (!err)
-        err = do_sign (ctrl, pk, sig, md, hash_for (pk), cache_nonce, 0);
+      rc = do_sign (ctrl, pk, sig, md, hash_for (pk), cache_nonce);
       gcry_md_close (md);
-      if (!err)
+      if (!rc)
         {
           /* Write the packet.  */
           PACKET pkt;
@@ -886,19 +763,19 @@ write_signature_packets (ctrl_t ctrl,
           init_packet (&pkt);
           pkt.pkttype = PKT_SIGNATURE;
           pkt.pkt.signature = sig;
-          err = build_packet (out, &pkt);
-          if (!err && is_status_enabled())
+          rc = build_packet (out, &pkt);
+          if (!rc && is_status_enabled())
             print_status_sig_created (pk, sig, status_letter);
           free_packet (&pkt, NULL);
-          if (err)
+          if (rc)
             log_error ("build signature packet failed: %s\n",
-                       gpg_strerror (err));
+                       gpg_strerror (rc));
 	}
       else
         free_seckey_enc (sig);
 
-      if (err)
-        return err;
+      if (rc)
+        return rc;
     }
 
   return 0;
@@ -912,8 +789,7 @@ write_signature_packets (ctrl_t ctrl,
  * and ignore the detached mode.  Sign the file with all secret keys
  * which can be taken from LOCUSR, if this is NULL, use the default one
  * If ENCRYPTFLAG is true, use REMUSER (or ask if it is NULL) to encrypt the
- * signed data for these users.  If ENCRYPTFLAG is 2 symmetric encryption
- * is also used.
+ * signed data for these users.
  * If OUTFILE is not NULL; this file is used for output and the function
  * does not ask for overwrite permission; output is then always
  * uncompressed, non-armored and in binary mode.
@@ -1043,16 +919,17 @@ sign_file (ctrl_t ctrl, strlist_t filenames, int detached, strlist_t locusr,
 	       select_algo_from_prefs(pk_list,PREFTYPE_HASH,
 				      opt.def_digest_algo,
 				      NULL)!=opt.def_digest_algo)
-              log_info(_("WARNING: forcing digest algorithm %s (%d)"
-                         " violates recipient preferences\n"),
-                       gcry_md_algo_name (opt.def_digest_algo),
-                       opt.def_digest_algo );
+	  log_info(_("WARNING: forcing digest algorithm %s (%d)"
+		     " violates recipient preferences\n"),
+		   gcry_md_algo_name (opt.def_digest_algo),
+		   opt.def_digest_algo );
 	  }
 	else
 	  {
-	    int algo;
-            int conflict = 0;
-	    struct pref_hint hint = { 0 };
+	    int algo, smartcard=0;
+	    union pref_hint hint;
+
+            hint.digest_length = 0;
 
 	    /* Of course, if the recipient asks for something
 	       unreasonable (like the wrong hash for a DSA key) then
@@ -1080,44 +957,32 @@ sign_file (ctrl_t ctrl, strlist_t filenames, int detached, strlist_t locusr,
                                         (sk_rover->pk->pkey[1]));
 
 		    if (sk_rover->pk->pubkey_algo == PUBKEY_ALGO_ECDSA)
-                      {
-                        temp_hashlen = ecdsa_qbits_from_Q (temp_hashlen);
-                        if (!temp_hashlen)
-                          conflict = 1;  /* Better don't use the prefs. */
-                        temp_hashlen = (temp_hashlen+7)/8;
-                        /* Fixup for that funny nistp521 (yes, 521)
-                         * were we need to use a 512 bit hash algo.  */
-                        if (temp_hashlen == 66)
-                          temp_hashlen = 64;
-                      }
-                    else
-                      temp_hashlen = (temp_hashlen+7)/8;
+		      temp_hashlen = ecdsa_qbits_from_Q (temp_hashlen);
+		    temp_hashlen = (temp_hashlen+7)/8;
 
 		    /* Pick a hash that is large enough for our
-		       largest q or matches our Q but if tehreare
-		       several of them we run into a conflict and
-		       don't use the preferences.  */
+		       largest q */
 
-		    if (hint.digest_length < temp_hashlen)
-                      {
-                        if (sk_rover->pk->pubkey_algo == PUBKEY_ALGO_ECDSA)
-                          {
-                            if (hint.exact)
-                              conflict = 1;
-                            hint.exact = 1;
-                          }
-                        hint.digest_length = temp_hashlen;
-                      }
+		    if (hint.digest_length<temp_hashlen)
+		      hint.digest_length=temp_hashlen;
 		  }
+                /* FIXME: need to check gpg-agent for this. */
+		/* else if (sk_rover->pk->is_protected */
+                /*          && sk_rover->pk->protect.s2k.mode == 1002) */
+		/*   smartcard = 1;  */
 	      }
 
-	    if (!conflict
-                && (algo = select_algo_from_prefs (pk_list,PREFTYPE_HASH,
-                                                   -1,&hint)) > 0)
-                {
-                  /* Note that we later check that the algo is not weak.  */
-                  recipient_digest_algo = algo;
-                }
+	    /* Current smartcards only do 160-bit hashes.  If we have
+	       to have a >160-bit hash, then we can't use the
+	       recipient prefs as we'd need both =160 and >160 at the
+	       same time and recipient prefs currently require a
+	       single hash for all signatures.  All this may well have
+	       to change as the cards add algorithms. */
+
+	    if (!smartcard || (smartcard && hint.digest_length==20))
+	      if ( (algo=
+                   select_algo_from_prefs(pk_list,PREFTYPE_HASH,-1,&hint)) > 0)
+		recipient_digest_algo=algo;
 	  }
       }
 
@@ -1603,8 +1468,6 @@ make_keysig_packet (ctrl_t ctrl,
     int rc=0;
     int sigversion;
     gcry_md_hd_t md;
-    u32 pk_keyid[2], pksk_keyid[2];
-    unsigned int signhints;
 
     log_assert ((sigclass >= 0x10 && sigclass <= 0x13) || sigclass == 0x1F
                 || sigclass == 0x20 || sigclass == 0x18 || sigclass == 0x19
@@ -1640,12 +1503,6 @@ make_keysig_packet (ctrl_t ctrl,
 	else
 	  digest_algo = DEFAULT_DIGEST_ALGO;
       }
-
-    signhints = SIGNHINT_KEYSIG;
-    keyid_from_pk (pk, pk_keyid);
-    keyid_from_pk (pksk, pksk_keyid);
-    if (pk_keyid[0] == pksk_keyid[0] && pk_keyid[1] == pksk_keyid[1])
-      signhints |= SIGNHINT_SELFSIG;
 
     if ( gcry_md_open (&md, digest_algo, 0 ) )
       BUG ();
@@ -1692,7 +1549,7 @@ make_keysig_packet (ctrl_t ctrl,
         hash_sigversion_to_magic (md, sig);
 	gcry_md_final (md);
 
-	rc = complete_sig (ctrl, sig, pksk, md, cache_nonce, signhints);
+	rc = complete_sig (ctrl, sig, pksk, md, cache_nonce);
     }
 
     gcry_md_close (md);
@@ -1728,8 +1585,6 @@ update_keysig_packet (ctrl_t ctrl,
     gpg_error_t rc = 0;
     int digest_algo;
     gcry_md_hd_t md;
-    u32 pk_keyid[2], pksk_keyid[2];
-    unsigned int signhints;
 
     if ((!orig_sig || !pk || !pksk)
 	|| (orig_sig->sig_class >= 0x10 && orig_sig->sig_class <= 0x13 && !uid)
@@ -1738,21 +1593,8 @@ update_keysig_packet (ctrl_t ctrl,
 
     if ( opt.cert_digest_algo )
       digest_algo = opt.cert_digest_algo;
-    else if (pksk->pubkey_algo == PUBKEY_ALGO_DSA
-             || pksk->pubkey_algo == PUBKEY_ALGO_ECDSA
-             || pksk->pubkey_algo == PUBKEY_ALGO_EDDSA)
-      digest_algo = orig_sig->digest_algo;
-    else if (orig_sig->digest_algo == DIGEST_ALGO_SHA1
-             || orig_sig->digest_algo == DIGEST_ALGO_RMD160)
-      digest_algo = DEFAULT_DIGEST_ALGO;
     else
       digest_algo = orig_sig->digest_algo;
-
-    signhints = SIGNHINT_KEYSIG;
-    keyid_from_pk (pk, pk_keyid);
-    keyid_from_pk (pksk, pksk_keyid);
-    if (pk_keyid[0] == pksk_keyid[0] && pk_keyid[1] == pksk_keyid[1])
-      signhints |= SIGNHINT_SELFSIG;
 
     if ( gcry_md_open (&md, digest_algo, 0 ) )
       BUG ();
@@ -1807,7 +1649,7 @@ update_keysig_packet (ctrl_t ctrl,
         hash_sigversion_to_magic (md, sig);
 	gcry_md_final (md);
 
-	rc = complete_sig (ctrl, sig, pksk, md, NULL, signhints);
+	rc = complete_sig (ctrl, sig, pksk, md, NULL);
     }
 
  leave:

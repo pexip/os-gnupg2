@@ -234,17 +234,6 @@ keyserver_import_name (const char *name,struct keyserver_spec *spec)
 }
 
 int
-keyserver_import_ntds (ctrl_t ctrl, const char *mbox,
-                       unsigned char **fpr, size_t *fprlen)
-{
-  (void)ctrl;
-  (void)mbox;
-  (void)fpr;
-  (void)fprlen;
-  return -1;
-}
-
-int
 keyserver_import_ldap (const char *name)
 {
   (void)name;
@@ -252,26 +241,13 @@ keyserver_import_ldap (const char *name)
 }
 
 gpg_error_t
-read_key_from_file_or_buffer (ctrl_t ctrl, const char *fname,
-                              const void *buffer, size_t buflen,
-                              kbnode_t *r_keyblock)
+read_key_from_file (ctrl_t ctrl, const char *fname, kbnode_t *r_keyblock)
 {
   (void)ctrl;
   (void)fname;
-  (void)buffer;
-  (void)buflen;
   (void)r_keyblock;
   return -1;
 }
-
-gpg_error_t
-import_included_key_block (ctrl_t ctrl, kbnode_t keyblock)
-{
-  (void)ctrl;
-  (void)keyblock;
-  return -1;
-}
-
 
 /* Stub:
  * No encryption here but mainproc links to these functions.
@@ -495,15 +471,12 @@ gpg_dirmngr_get_pka (ctrl_t ctrl, const char *userid,
 
 gpg_error_t
 export_pubkey_buffer (ctrl_t ctrl, const char *keyspec, unsigned int options,
-                      const void *prefix, size_t prefixlen,
                       export_stats_t stats,
                       kbnode_t *r_keyblock, void **r_data, size_t *r_datalen)
 {
   (void)ctrl;
   (void)keyspec;
   (void)options;
-  (void)prefix;
-  (void)prefixlen;
   (void)stats;
 
   *r_keyblock = NULL;

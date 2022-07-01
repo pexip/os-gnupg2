@@ -55,7 +55,6 @@
 
 
 /* A large struct name "opt" to keep global flags */
-EXTERN_UNLESS_MAIN_MODULE
 struct
 {
   unsigned int debug;  /* Debug flags (DBG_foo_VALUE) */
@@ -125,11 +124,7 @@ struct
      passphrase change.  */
   int enable_passphrase_history;
 
-  /* If set the extended key format is used for new keys.  Note that
-   * this may have the value 2 in which case
-   * --disable-extended-key-format won't have any effect and thus
-   * effectivley locking it.  This is required to support existing
-   * profiles which lock the use of --enable-extended-key-format. */
+  /* If set the extended key format is used for new keys.  */
   int enable_extended_key_format;
 
   int running_detached; /* We are running detached from the tty. */
@@ -270,14 +265,6 @@ struct server_control_s
 };
 
 
-/* Status of pinentry.  */
-enum
-  {
-    PINENTRY_STATUS_CLOSE_BUTTON = 1 << 0,
-    PINENTRY_STATUS_PIN_REPEATED = 1 << 8,
-    PINENTRY_STATUS_PASSWORD_FROM_CACHE = 1 << 9
-  };
-
 /* Information pertaining to pinentry requests.  */
 struct pin_entry_info_s
 {
@@ -287,8 +274,7 @@ struct pin_entry_info_s
   int failed_tries; /* Number of tries so far failed.  */
   int with_qualitybar; /* Set if the quality bar should be displayed.  */
   int with_repeat;  /* Request repetition of the passphrase.  */
-  int repeat_okay;  /* Repetition worked.  */
-  unsigned int status; /* Status.  */
+  int repeat_okay;  /* Repetition worked. */
   gpg_error_t (*check_cb)(struct pin_entry_info_s *); /* CB used to check
                                                          the PIN */
   void *check_cb_arg;  /* optional argument which might be of use in the CB */
@@ -413,8 +399,7 @@ void start_command_handler_ssh (ctrl_t, gnupg_fd_t);
 gpg_error_t agent_modify_description (const char *in, const char *comment,
                                       const gcry_sexp_t key, char **result);
 int agent_write_private_key (const unsigned char *grip,
-                             const void *buffer, size_t length, int force,
-                             time_t timestamp);
+                             const void *buffer, size_t length, int force);
 gpg_error_t agent_key_from_file (ctrl_t ctrl,
                                  const char *cache_nonce,
                                  const char *desc_text,
@@ -452,8 +437,7 @@ gpg_error_t agent_askpin (ctrl_t ctrl,
 int agent_get_passphrase (ctrl_t ctrl, char **retpass,
                           const char *desc, const char *prompt,
                           const char *errtext, int with_qualitybar,
-			  const char *keyinfo, cache_mode_t cache_mode,
-                          struct pin_entry_info_s *pininfo);
+			  const char *keyinfo, cache_mode_t cache_mode);
 int agent_get_confirmation (ctrl_t ctrl, const char *desc, const char *ok,
 			    const char *notokay, int with_cancel);
 int agent_show_message (ctrl_t ctrl, const char *desc, const char *ok_btn);
@@ -490,11 +474,11 @@ int agent_pkdecrypt (ctrl_t ctrl, const char *desc_text,
                      membuf_t *outbuf, int *r_padding);
 
 /*-- genkey.c --*/
-int check_passphrase_constraints (ctrl_t ctrl, const char *pw, int no_empty,
+int check_passphrase_constraints (ctrl_t ctrl, const char *pw,
 				  char **failed_constraint);
 gpg_error_t agent_ask_new_passphrase (ctrl_t ctrl, const char *prompt,
                                       char **r_passphrase);
-int agent_genkey (ctrl_t ctrl, const char *cache_nonce, time_t timestamp,
+int agent_genkey (ctrl_t ctrl, const char *cache_nonce,
                   const char *keyparam, size_t keyparmlen,
                   int no_protection, const char *override_passphrase,
                   int preset, membuf_t *outbuf);
@@ -545,12 +529,10 @@ void agent_reload_trustlist (void);
 /*-- divert-scd.c --*/
 int divert_pksign (ctrl_t ctrl, const char *desc_text,
                    const unsigned char *digest, size_t digestlen, int algo,
-                   const unsigned char *grip,
                    const unsigned char *shadow_info, unsigned char **r_sig,
                    size_t *r_siglen);
 int divert_pkdecrypt (ctrl_t ctrl, const char *desc_text,
                       const unsigned char *cipher,
-                      const unsigned char *grip,
                       const unsigned char *shadow_info,
                       char **r_buf, size_t *r_len, int *r_padding);
 int divert_generic_cmd (ctrl_t ctrl,
@@ -606,7 +588,6 @@ int agent_card_scd (ctrl_t ctrl, const char *cmdline,
                     int (*getpin_cb)(void *, const char *,
                                      const char *, char*, size_t),
                     void *getpin_cb_arg, void *assuan_context);
-void agent_card_killscd (void);
 
 
 /*-- learncard.c --*/

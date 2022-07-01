@@ -1,0 +1,27 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Tue, 14 May 2019 10:07:06 +0200
+Subject: doc: Minor edit for a gpg option.
+
+--
+GnuPG-bug-id: 4507
+
+(cherry picked from commit 49a679eb3596ef273afacb49ef9044c4a063694b)
+---
+ doc/gpg.texi | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/doc/gpg.texi b/doc/gpg.texi
+index 22813c7..e3efb3d 100644
+--- a/doc/gpg.texi
++++ b/doc/gpg.texi
+@@ -1330,8 +1330,8 @@ give the opposite meaning.  The options are:
+ 
+   @item show-only-fpr-mbox
+   @opindex list-options:show-only-fpr-mbox
+-  For each valid user-id which also has a valid mail address print
+-  only the fingerprint and the mail address.
++  For each user-id which has a valid mail address print
++  only the fingerprint followed by the mail address.
+ @end table
+ 
+ @item --verify-options @var{parameters}

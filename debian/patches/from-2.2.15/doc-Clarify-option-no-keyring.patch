@@ -1,0 +1,27 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Mon, 25 Mar 2019 14:47:31 +0100
+Subject: doc: Clarify option --no-keyring.
+
+--
+GnuPG-bug-id: 4424
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 7a38af6a1015a7a0b47502850cf3bfd60d61ee56)
+---
+ doc/gpg.texi | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/doc/gpg.texi b/doc/gpg.texi
+index b6eda9d..22813c7 100644
+--- a/doc/gpg.texi
++++ b/doc/gpg.texi
+@@ -3230,7 +3230,8 @@ secret keyrings.
+ 
+ @item --no-keyring
+ @opindex no-keyring
+-Do not add use any keyrings even if specified as options.
++Do not use any keyring at all.  This overrides the default and all
++options which specify keyrings.
+ 
+ @item --skip-verify
+ @opindex skip-verify

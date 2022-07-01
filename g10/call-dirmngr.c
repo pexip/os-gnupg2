@@ -240,9 +240,8 @@ create_context (ctrl_t ctrl, assuan_context_t *r_ctx)
           err = assuan_transact (ctx, "OPTION honor-keyserver-url-used",
                                  NULL, NULL, NULL, NULL, NULL, NULL);
           if (gpg_err_code (err) == GPG_ERR_FORBIDDEN)
-            log_error (_("keyserver option \"%s\""
-                         " may not be used in %s mode\n"),
-                       "honor-keyserver-url", "Tor");
+            log_error (_("keyserver option \"honor-keyserver-url\""
+                         " may not be used in Tor mode\n"));
           else if (gpg_err_code (err) == GPG_ERR_UNKNOWN_OPTION)
             err = 0; /* Old dirmngr versions do not support this option.  */
         }
@@ -395,8 +394,7 @@ ks_status_cb (void *opaque, const char *line)
   struct ks_status_parm_s *parm = opaque;
   gpg_error_t err = 0;
   const char *s, *s2;
-  const char *warn = NULL;
-  int is_note = 0;
+  const char *warn;
 
   if ((s = has_leading_keyword (line, parm->keyword? parm->keyword : "SOURCE")))
     {
@@ -408,35 +406,18 @@ ks_status_cb (void *opaque, const char *line)
             err = gpg_error_from_syserror ();
         }
     }
-  else if ((s = has_leading_keyword (line, "WARNING"))
-           || (is_note = !!(s = has_leading_keyword (line, "NOTE"))))
+  else if ((s = has_leading_keyword (line, "WARNING")))
     {
-      if ((s2 = has_leading_keyword (s, "wkd_cached_result")))
-        {
-          if (opt.verbose)
-            warn = _("WKD uses a cached result");
-        }
-      else if ((s2 = has_leading_keyword (s, "tor_not_running")))
+      if ((s2 = has_leading_keyword (s, "tor_not_running")))
         warn = _("Tor is not running");
       else if ((s2 = has_leading_keyword (s, "tor_config_problem")))
         warn = _("Tor is not properly configured");
-      else if ((s2 = has_leading_keyword (s, "dns_config_problem")))
-        warn = _("DNS is not properly configured");
-      else if ((s2 = has_leading_keyword (s, "http_redirect")))
-        warn = _("unacceptable HTTP redirect from server");
-      else if ((s2 = has_leading_keyword (s, "http_redirect_cleanup")))
-        warn = _("unacceptable HTTP redirect from server was cleaned up");
-      else if ((s2 = has_leading_keyword (s, "tls_cert_error")))
-        warn = _("server uses an invalid certificate");
       else
         warn = NULL;
 
       if (warn)
         {
-          if (is_note)
-            log_info (_("Note: %s\n"), warn);
-          else
-            log_info (_("WARNING: %s\n"), warn);
+          log_info (_("WARNING: %s\n"), warn);
           if (s2)
             {
               while (*s2 && !spacep (s2))
@@ -963,7 +944,6 @@ ks_put_inq_cb (void *opaque, const char *line)
     {
       kbnode_t node;
       estream_t fp;
-      char hexfpr[2*MAX_FINGERPRINT_LEN+1];
 
       /* Parse the keyblock and send info lines back to the server.  */
       fp = es_fopenmem (0, "rw,samethread");
@@ -1021,8 +1001,6 @@ ks_put_inq_cb (void *opaque, const char *line)
 			       nbits_from_pk (pk), pk->pubkey_algo,
 			       pk->keyid, pk->timestamp, pk->expiredate,
 			       NULL);
-                es_fprintf (fp, "fpr:::::::::%s:\n",
-                            hexfingerprint (pk, hexfpr, sizeof hexfpr));
               }
               break;
 
@@ -1047,6 +1025,21 @@ ks_put_inq_cb (void *opaque, const char *line)
 				   uid->created, uid->expiredate,
 				   uid->name);
                   }
+              }
+              break;
+
+              /* This bit is really for the benefit of people who
+                 store their keys in LDAP servers.  It makes it easy
+                 to do queries for things like "all keys signed by
+                 Isabella".  */
+            case PKT_SIGNATURE:
+              {
+                PKT_signature *sig = node->pkt->pkt.signature;
+
+                if (IS_UID_SIG (sig))
+		  record_output (fp, node->pkt->pkttype, NULL,
+				 -1, -1, sig->keyid,
+				 sig->timestamp, sig->expiredate, NULL);
               }
               break;
 

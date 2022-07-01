@@ -1,0 +1,35 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Tue, 14 May 2019 07:56:10 +0200
+Subject: gpg: Do not print a hint to use the deprecated --keyserver option.
+
+* g10/keyserver.c (keyserver_search): Remove a specialized error
+message.
+--
+
+Dirmngr comes with a default keyserver and the suggestion to use
+gpg --keyserver
+is not good because that option is deprecated.  An error message
+"No keyserver available" is sufficient.
+
+GnuPG-bug-id: 4512
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit 8d645f1d1f2b0f4e2d3b72f2a585acac4bdd8846)
+---
+ g10/keyserver.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/g10/keyserver.c b/g10/keyserver.c
+index 865e1e9..cadb71f 100644
+--- a/g10/keyserver.c
++++ b/g10/keyserver.c
+@@ -1537,9 +1537,7 @@ keyserver_search (ctrl_t ctrl, strlist_t tokens)
+         log_info (_("key not found on keyserver\n"));
+     }
+ 
+-  if (gpg_err_code (err) == GPG_ERR_NO_KEYSERVER)
+-    log_error (_("no keyserver known (use option --keyserver)\n"));
+-  else if (gpg_err_code (err) == GPG_ERR_NO_DATA)
++  if (gpg_err_code (err) == GPG_ERR_NO_DATA)
+     err = gpg_error (GPG_ERR_NOT_FOUND);
+   else if (err)
+     log_error ("error searching keyserver: %s\n", gpg_strerror (err));

@@ -1,0 +1,33 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Thu, 11 Apr 2019 09:54:28 +0200
+Subject: gpg: Accept also armored data from the WKD.
+
+* g10/keyserver.c (keyserver_import_wkd): Clear NO_ARMOR.
+--
+
+We may even adjust the specs to allow that.  It should not be a
+problem for any OpenPGP implementation because armored keys are very
+common and de-armoring code is de-facto a mandatory feature.
+
+Signed-off-by: Werner Koch <wk@gnupg.org>
+(cherry picked from commit dc4c7f65e32a0cddc075d06fa0132e099bcb6455)
+---
+ g10/keyserver.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/g10/keyserver.c b/g10/keyserver.c
+index 8509d83..865e1e9 100644
+--- a/g10/keyserver.c
++++ b/g10/keyserver.c
+@@ -2072,8 +2072,9 @@ keyserver_import_wkd (ctrl_t ctrl, const char *name, int quick,
+       int armor_status = opt.no_armor;
+       import_filter_t save_filt;
+ 
+-      /* Keys returned via WKD are in binary format. */
+-      opt.no_armor = 1;
++      /* Keys returned via WKD are in binary format.  However, we
++       * relax that requirement and allow also for armored data.  */
++      opt.no_armor = 0;
+       save_filt = save_and_clear_import_filter ();
+       if (!save_filt)
+         err = gpg_error_from_syserror ();

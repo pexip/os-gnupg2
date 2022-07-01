@@ -548,7 +548,7 @@ check_signatures_trust (ctrl_t ctrl, PKT_signature *sig)
   unsigned int trustlevel = TRUST_UNKNOWN;
   int rc=0;
 
-  rc = get_pubkey_for_sig (ctrl, pk, sig, NULL);
+  rc = get_pubkey_for_sig (ctrl, pk, sig);
   if (rc)
     { /* this should not happen */
       log_error("Ooops; the key vanished  - can't check the trust\n");
@@ -834,8 +834,7 @@ find_and_check_key (ctrl_t ctrl, const char *name, unsigned int use,
   if (from_file)
     rc = get_pubkey_fromfile (ctrl, pk, name);
   else
-    rc = get_best_pubkey_byname (ctrl, GET_PUBKEY_NORMAL,
-                                 NULL, pk, name, &keyblock, 0);
+    rc = get_best_pubkey_byname (ctrl, NULL, pk, name, &keyblock, 0);
   if (rc)
     {
       int code;
@@ -976,8 +975,8 @@ build_pk_list (ctrl_t ctrl, strlist_t rcpts, PK_LIST *ret_pk_list)
           r->pk = xmalloc_clear (sizeof *r->pk);
           r->pk->req_usage = PUBKEY_USAGE_ENC;
 
-          rc = get_pubkey_byname (ctrl, GET_PUBKEY_NO_AKL,
-                                  NULL, r->pk, default_key, NULL, NULL, 0);
+          rc = get_pubkey_byname (ctrl, NULL, r->pk, default_key,
+                                   NULL, NULL, 0, 1);
           if (rc)
             {
               xfree (r->pk);
@@ -1042,8 +1041,8 @@ build_pk_list (ctrl_t ctrl, strlist_t rcpts, PK_LIST *ret_pk_list)
           /* We explicitly allow encrypt-to to an disabled key; thus
              we pass 1 for the second last argument and 1 as the last
              argument to disable AKL. */
-          if ((rc = get_pubkey_byname (ctrl, GET_PUBKEY_NO_AKL,
-                                       NULL, pk, rov->d, NULL, NULL, 1)))
+          if ( (rc = get_pubkey_byname (ctrl,
+                                        NULL, pk, rov->d, NULL, NULL, 1, 1)) )
             {
               free_public_key ( pk ); pk = NULL;
               log_error (_("%s: skipped: %s\n"), rov->d, gpg_strerror (rc) );
@@ -1180,8 +1179,7 @@ build_pk_list (ctrl_t ctrl, strlist_t rcpts, PK_LIST *ret_pk_list)
           free_public_key (pk);
           pk = xmalloc_clear( sizeof *pk );
           pk->req_usage = PUBKEY_USAGE_ENC;
-          rc = get_pubkey_byname (ctrl, GET_PUBKEY_NORMAL,
-                                  NULL, pk, answer, NULL, NULL, 0);
+          rc = get_pubkey_byname (ctrl, NULL, pk, answer, NULL, NULL, 0, 0 );
           if (rc)
             tty_printf(_("No such user ID.\n"));
           else if ( !(rc=openpgp_pk_test_algo2 (pk->pubkey_algo,
@@ -1259,8 +1257,7 @@ build_pk_list (ctrl_t ctrl, strlist_t rcpts, PK_LIST *ret_pk_list)
 
       /* The default recipient is allowed to be disabled; thus pass 1
          as second last argument.  We also don't want an AKL. */
-      rc = get_pubkey_byname (ctrl, GET_PUBKEY_NO_AKL,
-                              NULL, pk, def_rec, NULL, NULL, 1);
+      rc = get_pubkey_byname (ctrl, NULL, pk, def_rec, NULL, NULL, 1, 1);
       if (rc)
         log_error(_("unknown default recipient \"%s\"\n"), def_rec );
       else if ( !(rc=openpgp_pk_test_algo2(pk->pubkey_algo,
@@ -1369,7 +1366,7 @@ build_pk_list (ctrl_t ctrl, strlist_t rcpts, PK_LIST *ret_pk_list)
    preference list, so I'm including it. -dms */
 
 int
-algo_available( preftype_t preftype, int algo, const struct pref_hint *hint)
+algo_available( preftype_t preftype, int algo, const union pref_hint *hint)
 {
   if( preftype == PREFTYPE_SYM )
     {
@@ -1395,26 +1392,16 @@ algo_available( preftype_t preftype, int algo, const struct pref_hint *hint)
     {
       if (hint && hint->digest_length)
 	{
-          unsigned int n = gcry_md_get_algo_dlen (algo);
-
-          if (hint->exact)
-            {
-              /* For example ECDSA requires an exact hash value so
-               * that we do not truncate.  For DSA we allow truncation
-               * and thus exact is not set.  */
-              if (hint->digest_length != n)
-                return 0;
-            }
-	  else if (hint->digest_length!=20 || opt.flags.dsa2)
+	  if (hint->digest_length!=20 || opt.flags.dsa2)
 	    {
 	      /* If --enable-dsa2 is set or the hash isn't 160 bits
 		 (which implies DSA2), then we'll accept a hash that
 		 is larger than we need.  Otherwise we won't accept
 		 any hash that isn't exactly the right size. */
-	      if (hint->digest_length > n)
+	      if (hint->digest_length > gcry_md_get_algo_dlen (algo))
 		return 0;
 	    }
-	  else if (hint->digest_length != n)
+	  else if (hint->digest_length != gcry_md_get_algo_dlen (algo))
 	    return 0;
 	}
 
@@ -1451,7 +1438,7 @@ algo_available( preftype_t preftype, int algo, const struct pref_hint *hint)
  */
 int
 select_algo_from_prefs(PK_LIST pk_list, int preftype,
-		       int request, const struct pref_hint *hint)
+		       int request, const union pref_hint *hint)
 {
   PK_LIST pkr;
   u32 bits[8];
