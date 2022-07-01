@@ -21,3 +21,4 @@ Make-gpg-zip-use-tar-from-PATH.patch
 gpg-drop-import-clean-from-default-keyserver-import-optio.patch
 from-master/gpg-change-agent-spawn-2019-07-24-v2.patch
 cherry-picked/1617856888.gnupg-2.3.0-4-gab66c4357.scd-fix-ccid-driver-for-scm-spr332-spr532.patch
+cherry-picked/g10-Fix-garbled-status-messages-in-NOTATION_DATA.patch

@@ -1,3 +1,9 @@
+gnupg2 (2.2.27-2+deb11u2) bullseye-security; urgency=high
+
+  * fix broken status line (Closes: #1014157)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Fri, 01 Jul 2022 03:03:46 -0400
+
 gnupg2 (2.2.27-2+deb11u1) bullseye; urgency=medium
 
   [ Raphaël Hertzog ]
