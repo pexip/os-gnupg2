@@ -1,3 +1,9 @@
+gnupg2 (2.2.27-2+deb11u2pexip1) pexip-bullseye; urgency=medium
+
+  * New upstream release: point release.
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Mon, 25 Jul 2022 11:27:05 +0100
+
 gnupg2 (2.2.27-2+deb11u2) bullseye-security; urgency=high
 
   * fix broken status line (Closes: #1014157)
