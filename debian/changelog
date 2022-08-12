@@ -1,3 +1,9 @@
+gnupg2 (2.2.12-1+deb10u2pexip1) pexip; urgency=medium
+
+  * New upstream release.
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Fri, 12 Aug 2022 10:50:13 +0100
+
 gnupg2 (2.2.12-1+deb10u2) buster-security; urgency=high
 
   [ Roger Shimizu ]
