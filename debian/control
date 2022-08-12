@@ -19,7 +19,7 @@ Build-Depends:
  libbz2-dev,
  libcurl4-openssl-dev,
  libgcrypt20-dev (>= 1.7.0),
- libgpg-error-dev (>= 1.26-2~),
+ libgpg-error-dev (>= 1.35),
  libksba-dev (>= 1.3.4),
  libldap2-dev,
  libnpth0-dev (>= 1.2),

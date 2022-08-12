@@ -97,3 +97,4 @@ keyserver-cleanup/Use-hkps-keys.openpgp.org-as-the-default-keyserver.patch
 import-merge-without-userid/tests-add-test-cases-for-import-without-uid.patch
 import-merge-without-userid/gpg-allow-import-of-previously-known-keys-even-without-UI.patch
 import-merge-without-userid/gpg-accept-subkeys-with-a-good-revocation-but-no-self-sig.patch
+from-master/g10-Fix-garbled-status-messages-in-NOTATION_DATA.patch

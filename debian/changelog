@@ -1,3 +1,13 @@
+gnupg2 (2.2.12-1+deb10u2) buster-security; urgency=high
+
+  [ Roger Shimizu ]
+  * d/control: Update Build-Depends: libgpg-error-dev (>= 1.35)
+
+  [ Daniel Kahn Gillmor ]
+  * fix broken status line (Closes: #1014157)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Fri, 01 Jul 2022 12:06:43 -0400
+
 gnupg2 (2.2.12-1+deb10u1pexip2) pexip; urgency=medium
 
   * Rebuild in buster environment
