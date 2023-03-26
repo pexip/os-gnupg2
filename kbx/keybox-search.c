@@ -497,6 +497,58 @@ blob_cmp_mail (KEYBOXBLOB blob, const char *name, size_t namelen, int substr,
 }
 
 
+/* Return true if the key in BLOB matches the 20 bytes keygrip GRIP.
+ * We don't have the keygrips as meta data, thus we need to parse the
+ * certificate. Fixme: We might want to return proper error codes
+ * instead of failing a search for invalid certificates etc.  */
+static int
+blob_openpgp_has_grip (KEYBOXBLOB blob, const unsigned char *grip)
+{
+  int rc = 0;
+  const unsigned char *buffer;
+  size_t length;
+  size_t cert_off, cert_len;
+  struct _keybox_openpgp_info info;
+  struct _keybox_openpgp_key_info *k;
+
+  buffer = _keybox_get_blob_image (blob, &length);
+  if (length < 40)
+    return 0; /* Too short. */
+  cert_off = get32 (buffer+8);
+  cert_len = get32 (buffer+12);
+  if ((uint64_t)cert_off+(uint64_t)cert_len > (uint64_t)length)
+    return 0; /* Too short.  */
+
+  if (_keybox_parse_openpgp (buffer + cert_off, cert_len, NULL, &info))
+    return 0; /* Parse error.  */
+
+  if (!memcmp (info.primary.grip, grip, 20))
+    {
+      rc = 1;
+      goto leave;
+    }
+
+  if (info.nsubkeys)
+    {
+      k = &info.subkeys;
+      do
+        {
+          if (!memcmp (k->grip, grip, 20))
+            {
+              rc = 1;
+              goto leave;
+            }
+          k = k->next;
+        }
+      while (k);
+    }
+
+ leave:
+  _keybox_destroy_openpgp_info (&info);
+  return rc;
+}
+
+
 #ifdef KEYBOX_WITH_X509
 /* Return true if the key in BLOB matches the 20 bytes keygrip GRIP.
    We don't have the keygrips as meta data, thus we need to parse the
@@ -606,12 +658,11 @@ has_fingerprint (KEYBOXBLOB blob, const unsigned char *fpr)
 static inline int
 has_keygrip (KEYBOXBLOB blob, const unsigned char *grip)
 {
+  if (blob_get_type (blob) == KEYBOX_BLOBTYPE_PGP)
+    return blob_openpgp_has_grip (blob, grip);
 #ifdef KEYBOX_WITH_X509
   if (blob_get_type (blob) == KEYBOX_BLOBTYPE_X509)
     return blob_x509_has_grip (blob, grip);
-#else
-  (void)blob;
-  (void)grip;
 #endif
   return 0;
 }
@@ -731,7 +782,7 @@ static gpg_error_t
 open_file (KEYBOX_HANDLE hd)
 {
 
-  hd->fp = fopen (hd->kb->fname, "rb");
+  hd->fp = es_fopen (hd->kb->fname, "rb");
   if (!hd->fp)
     {
       hd->error = gpg_error_from_syserror ();
@@ -763,13 +814,18 @@ keybox_search_reset (KEYBOX_HANDLE hd)
 
   if (hd->fp)
     {
-      if (fseeko (hd->fp, 0, SEEK_SET))
+#if HAVE_W32_SYSTEM
+      es_fclose (hd->fp);
+      hd->fp = NULL;
+#else
+      if (es_fseeko (hd->fp, 0, SEEK_SET))
         {
           /* Ooops.  Seek did not work.  Close so that the search will
            * open the file again.  */
-          fclose (hd->fp);
+          es_fclose (hd->fp);
           hd->fp = NULL;
         }
+#endif
     }
   hd->error = 0;
   hd->eof = 0;
@@ -793,16 +849,21 @@ keybox_search (KEYBOX_HANDLE hd, KEYBOX_SEARCH_DESC *desc, size_t ndesc,
   KEYBOXBLOB blob = NULL;
   struct sn_array_s *sn_array = NULL;
   int pk_no, uid_no;
+  off_t lastfoundoff;
 
   if (!hd)
     return gpg_error (GPG_ERR_INV_VALUE);
 
-  /* clear last found result */
+  /* Clear last found result but reord the offset of the last found
+   * blob which we may need later. */
   if (hd->found.blob)
     {
+      lastfoundoff = _keybox_get_blob_fileoffset (hd->found.blob);
       _keybox_release_blob (hd->found.blob);
       hd->found.blob = NULL;
     }
+  else
+    lastfoundoff = 0;
 
   if (hd->error)
     return hd->error; /* still in error state */
@@ -821,6 +882,7 @@ keybox_search (KEYBOX_HANDLE hd, KEYBOX_SEARCH_DESC *desc, size_t ndesc,
         case KEYDB_SEARCH_MODE_FIRST:
           /* always restart the search in this mode */
           keybox_search_reset (hd);
+          lastfoundoff = 0;
           break;
         default:
           break;
@@ -844,6 +906,32 @@ keybox_search (KEYBOX_HANDLE hd, KEYBOX_SEARCH_DESC *desc, size_t ndesc,
         {
           xfree (sn_array);
           return rc;
+        }
+      /* log_debug ("%s: re-opened file\n", __func__); */
+      if (ndesc && desc[0].mode != KEYDB_SEARCH_MODE_FIRST && lastfoundoff)
+        {
+          /* Search mode is not first and the last search operation
+           * returned a blob which also was not the first one.  We now
+           * need to skip over that blob and hope that the file has
+           * not changed.  */
+          if (es_fseeko (hd->fp, lastfoundoff, SEEK_SET))
+            {
+              rc = gpg_error_from_syserror ();
+              log_debug ("%s: seeking to last found offset failed: %s\n",
+                         __func__, gpg_strerror (rc));
+              xfree (sn_array);
+              return gpg_error (GPG_ERR_NOTHING_FOUND);
+            }
+          /* log_debug ("%s: re-opened file and sought to last offset\n", */
+          /*            __func__); */
+          rc = _keybox_read_blob (NULL, hd->fp, NULL);
+          if (rc)
+            {
+              log_debug ("%s: skipping last found blob failed: %s\n",
+                         __func__, gpg_strerror (rc));
+              xfree (sn_array);
+              return gpg_error (GPG_ERR_NOTHING_FOUND);
+            }
         }
     }
 
@@ -1202,7 +1290,7 @@ keybox_offset (KEYBOX_HANDLE hd)
 {
   if (!hd->fp)
     return 0;
-  return ftello (hd->fp);
+  return es_ftello (hd->fp);
 }
 
 gpg_error_t
@@ -1227,7 +1315,7 @@ keybox_seek (KEYBOX_HANDLE hd, off_t offset)
         return err;
     }
 
-  err = fseeko (hd->fp, offset, SEEK_SET);
+  err = es_fseeko (hd->fp, offset, SEEK_SET);
   hd->error = gpg_error_from_errno (err);
 
   return hd->error;

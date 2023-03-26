@@ -1,6 +1,7 @@
 /* gpgv.c - The GnuPG signature verify utility
- * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2005, 2006,
- *               2008, 2009, 2012 Free Software Foundation, Inc.
+ * Copyright (C) 1998-2020 Free Software Foundation, Inc.
+ * Copyright (C) 1998-2019 Werner Koch
+ * Copyright (C) 2015-2020 g10 Code GmbH
  *
  * This file is part of GnuPG.
  *
@@ -16,6 +17,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include <config.h>
@@ -138,9 +140,11 @@ my_strusage( int level )
 
   switch (level)
     {
+    case  9: p = "GPL-3.0-or-later"; break;
     case 11: p = "@GPG@v (GnuPG)";
       break;
     case 13: p = VERSION; break;
+    case 14: p = GNUPG_DEF_COPYRIGHT_LINE; break;
     case 17: p = PRINTABLE_OS_NAME; break;
     case 19: p = _("Please report bugs to <@EMAIL@>.\n"); break;
 
@@ -172,7 +176,6 @@ main( int argc, char **argv )
   int rc=0;
   strlist_t sl;
   strlist_t nrings = NULL;
-  unsigned configlineno;
   ctrl_t ctrl;
 
   early_system_init ();
@@ -206,11 +209,13 @@ main( int argc, char **argv )
 
   pargs.argc = &argc;
   pargs.argv = &argv;
-  pargs.flags=  1;  /* do not remove the args */
-  while (optfile_parse( NULL, NULL, &configlineno, &pargs, opts))
+  pargs.flags= ARGPARSE_FLAG_KEEP;
+  while (gnupg_argparser (&pargs, opts, NULL))
     {
       switch (pargs.r_opt)
         {
+        case ARGPARSE_CONFFILE: break;
+
         case oQuiet: opt.quiet = 1; break;
         case oVerbose:
           opt.verbose++;
@@ -249,6 +254,8 @@ main( int argc, char **argv )
         default : pargs.err = ARGPARSE_PRINT_ERROR; break;
 	}
     }
+
+  gnupg_argparse (NULL, &pargs, NULL);  /* Release internal state.  */
 
   if (log_get_errorcount (0))
     g10_exit(2);
@@ -413,23 +420,33 @@ keyserver_any_configured (ctrl_t ctrl)
 }
 
 int
-keyserver_import_keyid (u32 *keyid, void *dummy, int quick)
+keyserver_import_keyid (u32 *keyid, void *dummy, unsigned int flags)
 {
   (void)keyid;
   (void)dummy;
-  (void)quick;
+  (void)flags;
   return -1;
 }
 
 int
 keyserver_import_fprint (ctrl_t ctrl, const byte *fprint,size_t fprint_len,
-			 struct keyserver_spec *keyserver, int quick)
+			 struct keyserver_spec *keyserver, unsigned int flags)
 {
   (void)ctrl;
   (void)fprint;
   (void)fprint_len;
   (void)keyserver;
-  (void)quick;
+  (void)flags;
+  return -1;
+}
+
+int
+keyserver_import_fprint_ntds (ctrl_t ctrl,
+                              const byte *fprint, size_t fprint_len)
+{
+  (void)ctrl;
+  (void)fprint;
+  (void)fprint_len;
   return -1;
 }
 
@@ -449,22 +466,33 @@ keyserver_import_pka (const char *name,unsigned char *fpr)
 }
 
 gpg_error_t
-keyserver_import_wkd (ctrl_t ctrl, const char *name, int quick,
+keyserver_import_wkd (ctrl_t ctrl, const char *name, unsigned int flags,
                       unsigned char **fpr, size_t *fpr_len)
 {
   (void)ctrl;
   (void)name;
-  (void)quick;
+  (void)flags;
   (void)fpr;
   (void)fpr_len;
   return GPG_ERR_BUG;
 }
 
 int
-keyserver_import_name (const char *name,struct keyserver_spec *spec)
+keyserver_import_mbox (const char *name,struct keyserver_spec *spec)
 {
   (void)name;
   (void)spec;
+  return -1;
+}
+
+int
+keyserver_import_ntds (ctrl_t ctrl, const char *mbox,
+                       unsigned char **fpr, size_t *fprlen)
+{
+  (void)ctrl;
+  (void)mbox;
+  (void)fpr;
+  (void)fprlen;
   return -1;
 }
 
@@ -477,11 +505,23 @@ keyserver_import_ldap (const char *name)
 
 
 gpg_error_t
-read_key_from_file (ctrl_t ctrl, const char *fname, kbnode_t *r_keyblock)
+read_key_from_file_or_buffer (ctrl_t ctrl, const char *fname,
+                              const void *buffer, size_t buflen,
+                              kbnode_t *r_keyblock)
 {
   (void)ctrl;
   (void)fname;
+  (void)buffer;
+  (void)buflen;
   (void)r_keyblock;
+  return -1;
+}
+
+gpg_error_t
+import_included_key_block (ctrl_t ctrl, kbnode_t keyblock)
+{
+  (void)ctrl;
+  (void)keyblock;
   return -1;
 }
 
@@ -509,12 +549,14 @@ get_override_session_key (DEK *dek, const char *string)
 
 /* Stub: */
 int
-decrypt_data (ctrl_t ctrl, void *procctx, PKT_encrypted *ed, DEK *dek)
+decrypt_data (ctrl_t ctrl, void *procctx, PKT_encrypted *ed, DEK *dek,
+              int *compliance_error)
 {
   (void)ctrl;
   (void)procctx;
   (void)ed;
   (void)dek;
+  (void)compliance_error;
   return GPG_ERR_GENERAL;
 }
 
@@ -544,13 +586,14 @@ check_secret_key (PKT_public_key *pk, int n)
  */
 DEK *
 passphrase_to_dek (int cipher_algo, STRING2KEY *s2k, int create, int nocache,
-                   const char *tmp, int *canceled)
+                   const char *tmp, unsigned int flags, int *canceled)
 {
   (void)cipher_algo;
   (void)s2k;
   (void)create;
   (void)nocache;
   (void)tmp;
+  (void)flags;
 
   if (canceled)
     *canceled = 0;
@@ -708,12 +751,15 @@ gpg_dirmngr_get_pka (ctrl_t ctrl, const char *userid,
 
 gpg_error_t
 export_pubkey_buffer (ctrl_t ctrl, const char *keyspec, unsigned int options,
+                      const void *prefix, size_t prefixlen,
                       export_stats_t stats,
                       kbnode_t *r_keyblock, void **r_data, size_t *r_datalen)
 {
   (void)ctrl;
   (void)keyspec;
   (void)options;
+  (void)prefix;
+  (void)prefixlen;
   (void)stats;
 
   *r_keyblock = NULL;

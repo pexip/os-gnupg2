@@ -44,6 +44,8 @@
 # endif
 #endif
 
+#include "gpgrt.h"   /* For GGPRT_GCC_VERSION */
+
 /* Used for documentation purposes, to signal functions in 'interface' */
 #define INTERFACE
 
@@ -170,6 +172,7 @@ type_to_string (enum scheme_types typ)
      case T_FRAME: return "frame";
      }
      assert (! "not reached");
+     return "?";
 }
 
 /* ADJ is enough slack to align cells in a TYPE_BITS-bit boundary */
@@ -872,7 +875,7 @@ gc_reservation_failure(struct scheme *sc)
 {
 #ifdef NDEBUG
   fprintf(stderr,
-	  "insufficient reservation\n")
+	  "insufficient reservation\n");
 #else
   fprintf(stderr,
 	  "insufficient %s reservation in line %d\n",
@@ -3438,6 +3441,11 @@ int list_length(scheme *sc, pointer a) {
 
 
 
+#if GPGRT_GCC_VERSION >= 80000
+# pragma GCC diagnostic push
+# pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+#endif
+
 #define s_retbool(tf)    s_return(sc,(tf) ? sc->T : sc->F)
 
 /* kernel of this interpreter */
@@ -5323,6 +5331,11 @@ Eval_Cycle(scheme *sc, enum scheme_opcodes op) {
   }
 }
 
+#if GPGRT_GCC_VERSION >= 80000
+# pragma GCC diagnostic pop
+#endif
+
+
 typedef int (*test_predicate)(pointer);
 
 static int is_any(pointer p) {
@@ -5615,7 +5628,9 @@ int scheme_init_custom_alloc(scheme *sc, func_alloc malloc, func_dealloc free) {
   sc->fcells = 0;
   sc->inhibit_gc = GC_ENABLED;
   sc->reserved_cells = 0;
+#ifndef NDEBUG
   sc->reserved_lineno = 0;
+#endif
   sc->no_memory=0;
   sc->inport=sc->NIL;
   sc->outport=sc->NIL;

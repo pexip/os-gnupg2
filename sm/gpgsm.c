@@ -1,6 +1,7 @@
 /* gpgsm.c - GnuPG for S/MIME
- * Copyright (C) 2001-2008, 2010  Free Software Foundation, Inc.
- * Copyright (C) 2001-2008, 2010  Werner Koch
+ * Copyright (C) 2001-2020 Free Software Foundation, Inc.
+ * Copyright (C) 2001-2019 Werner Koch
+ * Copyright (C) 2015-2020 g10 Code GmbH
  *
  * This file is part of GnuPG.
  *
@@ -16,6 +17,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include <config.h>
@@ -26,7 +28,8 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
-/*#include <mcheck.h>*/
+
+#define INCLUDED_BY_MAIN_MODULE 1
 
 #include "gpgsm.h"
 #include <gcrypt.h>
@@ -42,6 +45,7 @@
 #include "../common/asshelp.h"
 #include "../common/init.h"
 #include "../common/compliance.h"
+#include "minip12.h"
 
 
 #ifndef O_BINARY
@@ -142,6 +146,7 @@ enum cmd_and_opt_values {
   oDisableTrustedCertCRLCheck,
   oEnableTrustedCertCRLCheck,
   oForceCRLRefresh,
+  oEnableIssuerBasedCRLCheck,
 
   oDisableOCSP,
   oEnableOCSP,
@@ -151,6 +156,7 @@ enum cmd_and_opt_values {
   oDisablePolicyChecks,
   oEnablePolicyChecks,
   oAutoIssuerKeyRetrieve,
+  oMinRSALength,
 
   oWithFingerprint,
   oWithMD5Fingerprint,
@@ -182,6 +188,7 @@ enum cmd_and_opt_values {
   oSkipVerify,
   oValidationModel,
   oKeyServer,
+  oKeyServer_deprecated,
   oEncryptTo,
   oNoEncryptTo,
   oLoggerFD,
@@ -191,6 +198,9 @@ enum cmd_and_opt_values {
   oNoRandomSeedFile,
   oNoCommonCertsImport,
   oIgnoreCertExtension,
+  oIgnoreCertWithOID,
+  oRequireCompliance,
+  oCompatibilityFlags,
   oNoAutostart
  };
 
@@ -245,97 +255,14 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_c (aDumpSecretKeys, "dump-secret-keys", "@"),
   ARGPARSE_c (aKeydbClearSomeCertFlags, "keydb-clear-some-cert-flags", "@"),
 
-  ARGPARSE_group (301, N_("@\nOptions:\n ")),
 
-  ARGPARSE_s_n (oArmor, "armor", N_("create ascii armored output")),
-  ARGPARSE_s_n (oArmor, "armour", "@"),
-  ARGPARSE_s_n (oBase64, "base64", N_("create base-64 encoded output")),
+  ARGPARSE_header ("Monitor", N_("Options controlling the diagnostic output")),
 
-  ARGPARSE_s_s (oP12Charset, "p12-charset", "@"),
-
-  ARGPARSE_s_i (oPassphraseFD,    "passphrase-fd", "@"),
-  ARGPARSE_s_s (oPinentryMode,    "pinentry-mode", "@"),
-  ARGPARSE_s_s (oRequestOrigin,   "request-origin", "@"),
-
-  ARGPARSE_s_n (oAssumeArmor, "assume-armor",
-                N_("assume input is in PEM format")),
-  ARGPARSE_s_n (oAssumeBase64, "assume-base64",
-                N_("assume input is in base-64 format")),
-  ARGPARSE_s_n (oAssumeBinary, "assume-binary",
-                N_("assume input is in binary format")),
-
-  ARGPARSE_s_s (oRecipient, "recipient", N_("|USER-ID|encrypt for USER-ID")),
-
-  ARGPARSE_s_n (oPreferSystemDirmngr,"prefer-system-dirmngr", "@"),
-
-  ARGPARSE_s_n (oDisableCRLChecks, "disable-crl-checks",
-                N_("never consult a CRL")),
-  ARGPARSE_s_n (oEnableCRLChecks, "enable-crl-checks", "@"),
-  ARGPARSE_s_n (oDisableTrustedCertCRLCheck,
-                "disable-trusted-cert-crl-check", "@"),
-  ARGPARSE_s_n (oEnableTrustedCertCRLCheck,
-                "enable-trusted-cert-crl-check", "@"),
-
-  ARGPARSE_s_n (oForceCRLRefresh, "force-crl-refresh", "@"),
-
-  ARGPARSE_s_n (oDisableOCSP, "disable-ocsp", "@"),
-  ARGPARSE_s_n (oEnableOCSP,  "enable-ocsp", N_("check validity using OCSP")),
-
-  ARGPARSE_s_s (oValidationModel, "validation-model", "@"),
-
-  ARGPARSE_s_i (oIncludeCerts, "include-certs",
-                N_("|N|number of certificates to include") ),
-
-  ARGPARSE_s_s (oPolicyFile, "policy-file",
-                N_("|FILE|take policy information from FILE")),
-
-  ARGPARSE_s_n (oDisablePolicyChecks, "disable-policy-checks",
-                N_("do not check certificate policies")),
-  ARGPARSE_s_n (oEnablePolicyChecks, "enable-policy-checks", "@"),
-
-  ARGPARSE_s_n (oAutoIssuerKeyRetrieve, "auto-issuer-key-retrieve",
-                N_("fetch missing issuer certificates")),
-
-  ARGPARSE_s_s (oEncryptTo, "encrypt-to", "@"),
-  ARGPARSE_s_n (oNoEncryptTo, "no-encrypt-to", "@"),
-
-  ARGPARSE_s_s (oUser, "local-user",
-                N_("|USER-ID|use USER-ID to sign or decrypt")),
-
-  ARGPARSE_s_s (oOutput, "output", N_("|FILE|write output to FILE")),
   ARGPARSE_s_n (oVerbose, "verbose", N_("verbose")),
+  ARGPARSE_s_n (oNoVerbose, "no-verbose", "@"),
   ARGPARSE_s_n (oQuiet,	"quiet",  N_("be somewhat more quiet")),
   ARGPARSE_s_n (oNoTTY, "no-tty", N_("don't use the terminal at all")),
-  ARGPARSE_s_s (oLogFile, "log-file",
-                N_("|FILE|write a server mode log to FILE")),
-  ARGPARSE_s_n (oNoLogFile, "no-log-file", "@"),
-  ARGPARSE_s_i (oLoggerFD, "logger-fd", "@"),
-
-  ARGPARSE_s_s (oAuditLog, "audit-log",
-                N_("|FILE|write an audit log to FILE")),
-  ARGPARSE_s_s (oHtmlAuditLog, "html-audit-log", "@"),
-  ARGPARSE_s_n (oDryRun, "dry-run", N_("do not make any changes")),
-  ARGPARSE_s_n (oBatch, "batch", N_("batch mode: never ask")),
-  ARGPARSE_s_n (oAnswerYes, "yes", N_("assume yes on most questions")),
-  ARGPARSE_s_n (oAnswerNo,  "no",  N_("assume no on most questions")),
-
-  ARGPARSE_s_s (oKeyring, "keyring",
-                N_("|FILE|add keyring to the list of keyrings")),
-
-  ARGPARSE_s_s (oDefaultKey, "default-key",
-                N_("|USER-ID|use USER-ID as default secret key")),
-
-  /* Not yet used: */
-  /*   ARGPARSE_s_s (oDefRecipient, "default-recipient", */
-  /*                  N_("|NAME|use NAME as default recipient")), */
-  /*   ARGPARSE_s_n (oDefRecipientSelf, "default-recipient-self", */
-  /*                  N_("use the default key as default recipient")), */
-  /*   ARGPARSE_s_n (oNoDefRecipient, "no-default-recipient", "@"), */
-
-  ARGPARSE_s_s (oKeyServer, "keyserver",
-                N_("|SPEC|use this keyserver to lookup keys")),
-  ARGPARSE_s_s (oOptions, "options", N_("|FILE|read options from FILE")),
-
+  ARGPARSE_s_n (oNoGreeting, "no-greeting", "@"),
   ARGPARSE_s_s (oDebug, "debug", "@"),
   ARGPARSE_s_s (oDebugLevel, "debug-level",
                 N_("|LEVEL|set the debugging level to LEVEL")),
@@ -345,45 +272,90 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oDebugAllowCoreDump, "debug-allow-core-dump", "@"),
   ARGPARSE_s_n (oDebugNoChainValidation, "debug-no-chain-validation", "@"),
   ARGPARSE_s_n (oDebugIgnoreExpiration,  "debug-ignore-expiration", "@"),
-
-  ARGPARSE_s_i (oStatusFD, "status-fd",
-                N_("|FD|write status info to this FD")),
-
-  ARGPARSE_s_s (oCipherAlgo, "cipher-algo",
-                N_("|NAME|use cipher algorithm NAME")),
-  ARGPARSE_s_s (oDigestAlgo, "digest-algo",
-                N_("|NAME|use message digest algorithm NAME")),
-  ARGPARSE_s_s (oExtraDigestAlgo, "extra-digest-algo", "@"),
-
-
-  ARGPARSE_group (302, N_(
-  "@\n(See the man page for a complete listing of all commands and options)\n"
-  )),
-
-
-  /* Hidden options. */
-  ARGPARSE_s_s (oCompliance, "compliance",   "@"),
-  ARGPARSE_s_n (oNoVerbose, "no-verbose", "@"),
-  ARGPARSE_s_n (oEnableSpecialFilenames, "enable-special-filenames", "@"),
+  ARGPARSE_s_s (oLogFile, "log-file",
+                N_("|FILE|write server mode logs to FILE")),
+  ARGPARSE_s_n (oNoLogFile, "no-log-file", "@"),
+  ARGPARSE_s_i (oLoggerFD, "logger-fd", "@"),
   ARGPARSE_s_n (oNoSecmemWarn, "no-secmem-warning", "@"),
+
+
+  ARGPARSE_header ("Configuration",
+                   N_("Options controlling the configuration")),
+
+  ARGPARSE_s_s (oHomedir, "homedir", "@"),
+  ARGPARSE_s_s (oFakedSystemTime, "faked-system-time", "@"),
+  ARGPARSE_s_n (oPreferSystemDirmngr,"prefer-system-dirmngr", "@"),
+  ARGPARSE_s_s (oValidationModel, "validation-model", "@"),
+  ARGPARSE_s_i (oIncludeCerts, "include-certs",
+                N_("|N|number of certificates to include") ),
+  ARGPARSE_s_s (oPolicyFile, "policy-file",
+                N_("|FILE|take policy information from FILE")),
+  ARGPARSE_s_s (oCompliance, "compliance",   "@"),
+  ARGPARSE_p_u (oMinRSALength, "min-rsa-length", "@"),
+  ARGPARSE_s_n (oNoCommonCertsImport, "no-common-certs-import", "@"),
+  ARGPARSE_s_s (oIgnoreCertExtension, "ignore-cert-extension", "@"),
+  ARGPARSE_s_s (oIgnoreCertWithOID, "ignore-cert-with-oid", "@"),
+  ARGPARSE_s_n (oNoAutostart, "no-autostart", "@"),
+  ARGPARSE_s_s (oAgentProgram, "agent-program", "@"),
+  ARGPARSE_s_s (oDirmngrProgram, "dirmngr-program", "@"),
+  ARGPARSE_s_s (oProtectToolProgram, "protect-tool-program", "@"),
+
+
+  ARGPARSE_header ("Input", N_("Options controlling the input")),
+
+  ARGPARSE_s_n (oAssumeArmor, "assume-armor",
+                N_("assume input is in PEM format")),
+  ARGPARSE_s_n (oAssumeBase64, "assume-base64",
+                N_("assume input is in base-64 format")),
+  ARGPARSE_s_n (oAssumeBinary, "assume-binary",
+                N_("assume input is in binary format")),
+
+
+  ARGPARSE_header ("Output", N_("Options controlling the output")),
+
+  ARGPARSE_s_n (oArmor, "armor", N_("create ascii armored output")),
+  ARGPARSE_s_n (oArmor, "armour", "@"),
   ARGPARSE_s_n (oNoArmor, "no-armor", "@"),
   ARGPARSE_s_n (oNoArmor, "no-armour", "@"),
+  ARGPARSE_s_n (oBase64, "base64", N_("create base-64 encoded output")),
+  ARGPARSE_s_s (oOutput, "output", N_("|FILE|write output to FILE")),
+
+
+  ARGPARSE_header (NULL, N_("Options to specify keys")),
+
+  ARGPARSE_s_s (oRecipient, "recipient", N_("|USER-ID|encrypt for USER-ID")),
+  ARGPARSE_s_s (oUser, "local-user",
+                N_("|USER-ID|use USER-ID to sign or decrypt")),
+  ARGPARSE_s_s (oDefaultKey, "default-key",
+                N_("|USER-ID|use USER-ID as default secret key")),
+  ARGPARSE_s_s (oEncryptTo, "encrypt-to",
+                N_("|NAME|encrypt to user ID NAME as well")),
+  ARGPARSE_s_n (oNoEncryptTo, "no-encrypt-to", "@"),
+  /* Not yet used: */
+  /*   ARGPARSE_s_s (oDefRecipient, "default-recipient", */
+  /*                  N_("|NAME|use NAME as default recipient")), */
+  /*   ARGPARSE_s_n (oDefRecipientSelf, "default-recipient-self", */
+  /*                  N_("use the default key as default recipient")), */
+  /*   ARGPARSE_s_n (oNoDefRecipient, "no-default-recipient", "@"), */
+  ARGPARSE_s_s (oKeyring, "keyring",
+                N_("|FILE|add keyring to the list of keyrings")),
   ARGPARSE_s_n (oNoDefKeyring, "no-default-keyring", "@"),
-  ARGPARSE_s_n (oNoGreeting, "no-greeting", "@"),
-  ARGPARSE_s_n (oNoOptions, "no-options", "@"),
-  ARGPARSE_s_s (oHomedir, "homedir", "@"),
-  ARGPARSE_s_s (oAgentProgram, "agent-program", "@"),
-  ARGPARSE_s_s (oDisplay,    "display", "@"),
-  ARGPARSE_s_s (oTTYname,    "ttyname", "@"),
-  ARGPARSE_s_s (oTTYtype,    "ttytype", "@"),
-  ARGPARSE_s_s (oLCctype,    "lc-ctype", "@"),
-  ARGPARSE_s_s (oLCmessages, "lc-messages", "@"),
-  ARGPARSE_s_s (oXauthority, "xauthority", "@"),
-  ARGPARSE_s_s (oDirmngrProgram, "dirmngr-program", "@"),
-  ARGPARSE_s_n (oDisableDirmngr, "disable-dirmngr", "@"),
-  ARGPARSE_s_s (oProtectToolProgram, "protect-tool-program", "@"),
-  ARGPARSE_s_s (oFakedSystemTime, "faked-system-time", "@"),
-  ARGPARSE_s_n (oNoBatch, "no-batch", "@"),
+  ARGPARSE_s_s (oKeyServer_deprecated, "ldapserver", "@"),
+  ARGPARSE_s_s (oKeyServer, "keyserver", "@"),
+
+  ARGPARSE_header ("ImportExport",
+                   N_("Options controlling key import and export")),
+
+  ARGPARSE_s_n (oDisableDirmngr, "disable-dirmngr",
+                N_("disable all access to the dirmngr")),
+  ARGPARSE_s_n (oAutoIssuerKeyRetrieve, "auto-issuer-key-retrieve",
+                N_("fetch missing issuer certificates")),
+  ARGPARSE_s_s (oP12Charset, "p12-charset",
+                N_("|NAME|use encoding NAME for PKCS#12 passphrases")),
+
+
+  ARGPARSE_header ("Keylist", N_("Options controlling key listings")),
+
   ARGPARSE_s_n (oWithColons, "with-colons", "@"),
   ARGPARSE_s_n (oWithKeyData,"with-key-data", "@"),
   ARGPARSE_s_n (oWithValidation, "with-validation", "@"),
@@ -393,13 +365,68 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oWithFingerprint, "with-fingerprint", "@"),
   ARGPARSE_s_n (oWithKeygrip,     "with-keygrip", "@"),
   ARGPARSE_s_n (oWithSecret,      "with-secret", "@"),
+
+  ARGPARSE_header ("Security", N_("Options controlling the security")),
+
+  ARGPARSE_s_n (oDisableCRLChecks, "disable-crl-checks",
+                N_("never consult a CRL")),
+  ARGPARSE_s_n (oEnableCRLChecks, "enable-crl-checks", "@"),
+  ARGPARSE_s_n (oDisableTrustedCertCRLCheck,
+                "disable-trusted-cert-crl-check",
+                N_("do not check CRLs for root certificates")),
+  ARGPARSE_s_n (oEnableTrustedCertCRLCheck,
+                "enable-trusted-cert-crl-check", "@"),
+  ARGPARSE_s_n (oDisableOCSP, "disable-ocsp", "@"),
+  ARGPARSE_s_n (oEnableOCSP,  "enable-ocsp", N_("check validity using OCSP")),
+  ARGPARSE_s_n (oDisablePolicyChecks, "disable-policy-checks",
+                N_("do not check certificate policies")),
+  ARGPARSE_s_n (oEnablePolicyChecks, "enable-policy-checks", "@"),
+  ARGPARSE_s_s (oCipherAlgo, "cipher-algo",
+                N_("|NAME|use cipher algorithm NAME")),
+  ARGPARSE_s_s (oDigestAlgo, "digest-algo",
+                N_("|NAME|use message digest algorithm NAME")),
+  ARGPARSE_s_s (oExtraDigestAlgo, "extra-digest-algo", "@"),
   ARGPARSE_s_s (oDisableCipherAlgo,  "disable-cipher-algo", "@"),
   ARGPARSE_s_s (oDisablePubkeyAlgo,  "disable-pubkey-algo", "@"),
   ARGPARSE_s_n (oIgnoreTimeConflict, "ignore-time-conflict", "@"),
   ARGPARSE_s_n (oNoRandomSeedFile,  "no-random-seed-file", "@"),
-  ARGPARSE_s_n (oNoCommonCertsImport, "no-common-certs-import", "@"),
-  ARGPARSE_s_s (oIgnoreCertExtension, "ignore-cert-extension", "@"),
-  ARGPARSE_s_n (oNoAutostart, "no-autostart", "@"),
+  ARGPARSE_s_n (oRequireCompliance, "require-compliance", "@"),
+
+
+  ARGPARSE_header (NULL, N_("Options for unattended use")),
+
+  ARGPARSE_s_n (oBatch, "batch", N_("batch mode: never ask")),
+  ARGPARSE_s_n (oNoBatch, "no-batch", "@"),
+  ARGPARSE_s_n (oAnswerYes, "yes", N_("assume yes on most questions")),
+  ARGPARSE_s_n (oAnswerNo,  "no",  N_("assume no on most questions")),
+  ARGPARSE_s_i (oStatusFD, "status-fd", N_("|FD|write status info to this FD")),
+  ARGPARSE_s_n (oEnableSpecialFilenames, "enable-special-filenames", "@"),
+  ARGPARSE_s_i (oPassphraseFD,    "passphrase-fd", "@"),
+  ARGPARSE_s_s (oPinentryMode,    "pinentry-mode", "@"),
+
+
+  ARGPARSE_header (NULL, N_("Other options")),
+
+  ARGPARSE_conffile (oOptions, "options", N_("|FILE|read options from FILE")),
+  ARGPARSE_noconffile (oNoOptions, "no-options", "@"),
+  ARGPARSE_s_n (oDryRun, "dry-run", N_("do not make any changes")),
+  ARGPARSE_s_s (oRequestOrigin,   "request-origin", "@"),
+  ARGPARSE_s_n (oForceCRLRefresh, "force-crl-refresh", "@"),
+  ARGPARSE_s_n (oEnableIssuerBasedCRLCheck, "enable-issuer-based-crl-check",
+                "@"),
+  ARGPARSE_s_s (oAuditLog, "audit-log",
+                N_("|FILE|write an audit log to FILE")),
+  ARGPARSE_s_s (oHtmlAuditLog, "html-audit-log", "@"),
+  ARGPARSE_s_s (oDisplay,    "display", "@"),
+  ARGPARSE_s_s (oTTYname,    "ttyname", "@"),
+  ARGPARSE_s_s (oTTYtype,    "ttytype", "@"),
+  ARGPARSE_s_s (oLCctype,    "lc-ctype", "@"),
+  ARGPARSE_s_s (oLCmessages, "lc-messages", "@"),
+  ARGPARSE_s_s (oXauthority, "xauthority", "@"),
+  ARGPARSE_s_s (oCompatibilityFlags, "compatibility-flags", "@"),
+
+  ARGPARSE_header (NULL, ""),  /* Stop the header group.  */
+
 
   /* Command aliases.  */
   ARGPARSE_c (aListKeys, "list-key", "@"),
@@ -408,6 +435,10 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_c (aListChain, "check-signatures", "@"),
   ARGPARSE_c (aListChain, "check-sigs", "@"),
   ARGPARSE_c (aDeleteKey, "delete-key", "@"),
+
+  ARGPARSE_group (302, N_(
+  "@\n(See the man page for a complete listing of all commands and options)\n"
+  )),
 
   ARGPARSE_end ()
 };
@@ -424,6 +455,14 @@ static struct debug_flags_s debug_flags [] =
     { DBG_MEMSTAT_VALUE, "memstat" },
     { DBG_HASHING_VALUE, "hashing" },
     { DBG_IPC_VALUE    , "ipc"     },
+    { 0, NULL }
+  };
+
+
+/* The list of compatibility flags.  */
+static struct compatibility_flags_s compatibility_flags [] =
+  {
+    { COMPAT_ALLOW_KA_TO_ENCR, "allow-ka-to-encr" },
     { 0, NULL }
   };
 
@@ -552,9 +591,11 @@ my_strusage( int level )
 
   switch (level)
     {
+    case  9: p = "GPL-3.0-or-later"; break;
     case 11: p = "@GPGSM@ (@GNUPG@)";
       break;
     case 13: p = VERSION; break;
+    case 14: p = GNUPG_DEF_COPYRIGHT_LINE; break;
     case 17: p = PRINTABLE_OS_NAME; break;
     case 19: p = _("Please report bugs to <@EMAIL@>.\n"); break;
 
@@ -723,6 +764,10 @@ set_debug (void)
 
   if (opt.debug)
     parse_debug_flag (NULL, &opt.debug, debug_flags);
+
+  /* minip12.c may be used outside of GnuPG, thus we don't have the
+   * opt structure over there.  */
+  p12_set_verbosity (opt.verbose);
 }
 
 
@@ -783,99 +828,6 @@ parse_validation_model (const char *model)
 }
 
 
-/* Release the list of SERVERS.  As usual it is okay to call this
-   function with SERVERS passed as NULL.  */
-void
-keyserver_list_free (struct keyserver_spec *servers)
-{
-  while (servers)
-    {
-      struct keyserver_spec *tmp = servers->next;
-      xfree (servers->host);
-      xfree (servers->user);
-      if (servers->pass)
-        memset (servers->pass, 0, strlen (servers->pass));
-      xfree (servers->pass);
-      xfree (servers->base);
-      xfree (servers);
-      servers = tmp;
-    }
-}
-
-/* See also dirmngr ldapserver_parse_one().  */
-struct keyserver_spec *
-parse_keyserver_line (char *line,
-		      const char *filename, unsigned int lineno)
-{
-  char *p;
-  char *endp;
-  struct keyserver_spec *server;
-  int fieldno;
-  int fail = 0;
-
-  /* Parse the colon separated fields.  */
-  server = xcalloc (1, sizeof *server);
-  for (fieldno = 1, p = line; p; p = endp, fieldno++ )
-    {
-      endp = strchr (p, ':');
-      if (endp)
-	*endp++ = '\0';
-      trim_spaces (p);
-      switch (fieldno)
-	{
-	case 1:
-	  if (*p)
-	    server->host = xstrdup (p);
-	  else
-	    {
-	      log_error (_("%s:%u: no hostname given\n"),
-			 filename, lineno);
-	      fail = 1;
-	    }
-	  break;
-
-	case 2:
-	  if (*p)
-	    server->port = atoi (p);
-	  break;
-
-	case 3:
-	  if (*p)
-	    server->user = xstrdup (p);
-	  break;
-
-	case 4:
-	  if (*p && !server->user)
-	    {
-	      log_error (_("%s:%u: password given without user\n"),
-			 filename, lineno);
-	      fail = 1;
-	    }
-	  else if (*p)
-	    server->pass = xstrdup (p);
-	  break;
-
-	case 5:
-	  if (*p)
-	    server->base = xstrdup (p);
-	  break;
-
-	default:
-	  /* (We silently ignore extra fields.) */
-	  break;
-	}
-    }
-
-  if (fail)
-    {
-      log_info (_("%s:%u: skipping this line\n"), filename, lineno);
-      keyserver_list_free (server);
-      server = NULL;
-    }
-
-  return server;
-}
-
 
 int
 main ( int argc, char **argv)
@@ -888,12 +840,12 @@ main ( int argc, char **argv)
   strlist_t sl, remusr= NULL, locusr=NULL;
   strlist_t nrings=NULL;
   int detached_sig = 0;
-  FILE *configfp = NULL;
-  char *configname = NULL;
-  unsigned configlineno;
-  int parse_debug = 0;
+  char *last_configname = NULL;
+  const char *configname = NULL; /* NULL or points to last_configname.
+                                  * NULL also indicates that we are
+                                  * processing options from the cmdline.  */
+  int debug_argparser = 0;
   int no_more_options = 0;
-  int default_config =1;
   int default_keyring = 1;
   char *logfile = NULL;
   char *auditlog = NULL;
@@ -916,7 +868,8 @@ main ( int argc, char **argv)
   estream_t htmlauditfp = NULL;
   struct assuan_malloc_hooks malloc_hooks;
   int pwfd = -1;
-  /*mtrace();*/
+
+  static const char *homedirvalue;
 
   early_system_init ();
   gnupg_reopen_std (GPGSM_NAME);
@@ -928,7 +881,7 @@ main ( int argc, char **argv)
   /* Please note that we may running SUID(ROOT), so be very CAREFUL
      when adding any stuff between here and the call to secmem_init()
      somewhere after the option parsing */
-  log_set_prefix (GPGSM_NAME, GPGRT_LOG_WITH_PREFIX);
+  log_set_prefix (GPGSM_NAME, GPGRT_LOG_WITH_PREFIX|GPGRT_LOG_NO_REGISTRY);
 
   /* Make sure that our subsystems are ready.  */
   i18n_init ();
@@ -968,28 +921,35 @@ main ( int argc, char **argv)
   orig_argv = argv;
   pargs.argc = &argc;
   pargs.argv = &argv;
-  pargs.flags= 1|(1<<6);  /* do not remove the args, ignore version */
-  while (arg_parse( &pargs, opts))
+  pargs.flags= (ARGPARSE_FLAG_KEEP | ARGPARSE_FLAG_NOVERSION);
+  while (gnupg_argparse (NULL, &pargs, opts))
     {
-      if (pargs.r_opt == oDebug || pargs.r_opt == oDebugAll)
-        parse_debug++;
-      else if (pargs.r_opt == oOptions)
-        { /* yes there is one, so we do not try the default one but
-             read the config file when it is encountered at the
-             commandline */
-          default_config = 0;
-	}
-      else if (pargs.r_opt == oNoOptions)
+      switch (pargs.r_opt)
         {
-          default_config = 0; /* --no-options */
+        case oDebug:
+        case oDebugAll:
+          debug_argparser++;
+          break;
+
+        case oNoOptions:
+          /* Set here here because the homedir would otherwise be
+           * created before main option parsing starts.  */
           opt.no_homedir_creation = 1;
+          break;
+
+        case oHomedir:
+          homedirvalue = pargs.r.ret_str;
+          break;
+
+        case aCallProtectTool:
+          /* Make sure that --version and --help are passed to the
+           * protect-tool. */
+          goto leave_cmdline_parser;
         }
-      else if (pargs.r_opt == oHomedir)
-        gnupg_set_homedir (pargs.r.ret_str);
-      else if (pargs.r_opt == aCallProtectTool)
-        break; /* This break makes sure that --version and --help are
-                  passed to the protect-tool. */
     }
+ leave_cmdline_parser:
+  /* Reset the flags.  */
+  pargs.flags &= ~(ARGPARSE_FLAG_KEEP | ARGPARSE_FLAG_NOVERSION);
 
 
   /* Initialize the secure memory. */
@@ -997,8 +957,8 @@ main ( int argc, char **argv)
   maybe_setuid = 0;
 
   /*
-     Now we are now working under our real uid
-  */
+   * Now we are now working under our real uid
+   */
 
   ksba_set_malloc_hooks (gcry_malloc, gcry_realloc, gcry_free );
 
@@ -1009,6 +969,9 @@ main ( int argc, char **argv)
   assuan_set_gpg_err_source (GPG_ERR_SOURCE_DEFAULT);
   setup_libassuan_logging (&opt.debug, NULL);
 
+  /* Set homedir.  */
+  gnupg_set_homedir (homedirvalue);
+
   /* Setup a default control structure for command line mode */
   memset (&ctrl, 0, sizeof ctrl);
   gpgsm_init_default_ctrl (&ctrl);
@@ -1016,52 +979,48 @@ main ( int argc, char **argv)
   ctrl.status_fd = -1; /* No status output. */
   ctrl.autodetect_encoding = 1;
 
-  /* Set the default option file */
-  if (default_config )
-    configname = make_filename (gnupg_homedir (),
-                                GPGSM_NAME EXTSEP_S "conf", NULL);
   /* Set the default policy file */
   opt.policy_file = make_filename (gnupg_homedir (), "policies.txt", NULL);
 
+  /* The configuraton directories for use by gpgrt_argparser.  */
+  gnupg_set_confdir (GNUPG_CONFDIR_SYS, gnupg_sysconfdir ());
+  gnupg_set_confdir (GNUPG_CONFDIR_USER, gnupg_homedir ());
+
+  /* We are re-using the struct, thus the reset flag.  We OR the
+   * flags so that the internal intialized flag won't be cleared. */
   argc        = orig_argc;
   argv        = orig_argv;
   pargs.argc  = &argc;
   pargs.argv  = &argv;
-  pargs.flags =  1;  /* do not remove the args */
-
- next_pass:
-  if (configname) {
-    configlineno = 0;
-    configfp = fopen (configname, "r");
-    if (!configfp)
-      {
-        if (default_config)
-          {
-            if (parse_debug)
-              log_info (_("Note: no default option file '%s'\n"), configname);
-          }
-        else
-          {
-            log_error (_("option file '%s': %s\n"), configname, strerror(errno));
-            gpgsm_exit(2);
-          }
-        xfree(configname);
-        configname = NULL;
-      }
-    if (parse_debug && configname)
-      log_info (_("reading options from '%s'\n"), configname);
-    default_config = 0;
-  }
+  pargs.flags |=  (ARGPARSE_FLAG_RESET
+                   | ARGPARSE_FLAG_KEEP
+                   | ARGPARSE_FLAG_SYS
+                   | ARGPARSE_FLAG_USER);
 
   while (!no_more_options
-         && optfile_parse (configfp, configname, &configlineno, &pargs, opts))
+         && gnupg_argparser (&pargs, opts, GPGSM_NAME EXTSEP_S "conf"))
     {
       switch (pargs.r_opt)
         {
+        case ARGPARSE_CONFFILE:
+          if (debug_argparser)
+            log_info (_("reading options from '%s'\n"),
+                      pargs.r_type? pargs.r.ret_str: "[cmdline]");
+          if (pargs.r_type)
+            {
+              xfree (last_configname);
+              last_configname = xstrdup (pargs.r.ret_str);
+              configname = last_configname;
+            }
+          else
+            configname = NULL;
+          break;
+
 	case aGPGConfList:
 	case aGPGConfTest:
           set_cmd (&cmd, pargs.r_opt);
           do_not_setup_keys = 1;
+          default_keyring = 0;
           nogreeting = 1;
           break;
 
@@ -1200,6 +1159,9 @@ main ( int argc, char **argv)
         case oForceCRLRefresh:
           opt.force_crl_refresh = 1;
           break;
+        case oEnableIssuerBasedCRLCheck:
+          opt.enable_issuer_based_crl_check = 1;
+          break;
 
         case oDisableOCSP:
           ctrl.use_ocsp = opt.enable_ocsp = 0;
@@ -1281,8 +1243,21 @@ main ( int argc, char **argv)
         case oDebugNoChainValidation: opt.no_chain_validation = 1; break;
         case oDebugIgnoreExpiration: opt.ignore_expiration = 1; break;
 
-        case oStatusFD: ctrl.status_fd = pargs.r.ret_int; break;
-        case oLoggerFD: log_set_fd (pargs.r.ret_int ); break;
+        case oCompatibilityFlags:
+          if (parse_compatibility_flags (pargs.r.ret_str, &opt.compat_flags,
+                                         compatibility_flags))
+            {
+              pargs.r_opt = ARGPARSE_INVALID_ARG;
+              pargs.err = ARGPARSE_PRINT_ERROR;
+            }
+          break;
+
+        case oStatusFD:
+            ctrl.status_fd = translate_sys2libc_fd_int (pargs.r.ret_int, 1);
+            break;
+        case oLoggerFD:
+            log_set_fd (translate_sys2libc_fd_int (pargs.r.ret_int, 1));
+            break;
         case oWithMD5Fingerprint:
           opt.with_md5_fingerprint=1; /*fall through*/
         case oWithFingerprint:
@@ -1295,16 +1270,6 @@ main ( int argc, char **argv)
           opt.with_keygrip = 1;
           break;
 
-        case oOptions:
-          /* config files may not be nested (silently ignore them) */
-          if (!configfp)
-            {
-              xfree(configname);
-              configname = xstrdup (pargs.r.ret_str);
-              goto next_pass;
-	    }
-          break;
-        case oNoOptions: opt.no_homedir_creation = 1; break; /* no-options */
         case oHomedir: gnupg_set_homedir (pargs.r.ret_str); break;
         case oAgentProgram: opt.agent_program = pargs.r.ret_str;  break;
 
@@ -1429,25 +1394,19 @@ main ( int argc, char **argv)
         case oValidationModel: parse_validation_model (pargs.r.ret_str); break;
 
 	case oKeyServer:
-	  {
-	    struct keyserver_spec *keyserver;
-	    keyserver = parse_keyserver_line (pargs.r.ret_str,
-					      configname, configlineno);
-	    if (! keyserver)
-	      log_error (_("could not parse keyserver\n"));
-	    else
-	      {
-		/* FIXME: Keep last next pointer.  */
-		struct keyserver_spec **next_p = &opt.keyserver;
-		while (*next_p)
-		  next_p = &(*next_p)->next;
-		*next_p = keyserver;
-	      }
-	  }
+          append_to_strlist (&opt.keyserver, pargs.r.ret_str);
 	  break;
+
+        case oKeyServer_deprecated:
+          obsolete_option (configname, pargs.lineno, "ldapserver");
+          break;
 
         case oIgnoreCertExtension:
           add_to_strlist (&opt.ignored_cert_extensions, pargs.r.ret_str);
+          break;
+
+        case oIgnoreCertWithOID:
+          add_to_strlist (&opt.ignore_cert_with_oid, pargs.r.ret_str);
           break;
 
         case oNoAutostart: opt.autostart = 0; break;
@@ -1469,28 +1428,33 @@ main ( int argc, char **argv)
           }
           break;
 
+        case oMinRSALength: opt.min_rsa_length = pargs.r.ret_ulong; break;
+
+        case oRequireCompliance: opt.require_compliance = 1;  break;
+
         default:
-          pargs.err = configfp? ARGPARSE_PRINT_WARNING:ARGPARSE_PRINT_ERROR;
+          if (configname)
+            pargs.err = ARGPARSE_PRINT_WARNING;
+          else
+            {
+              pargs.err = ARGPARSE_PRINT_ERROR;
+              /* The argparse function calls a plain exit and thus we
+               * need to print a status here.  */
+              gpgsm_status_with_error (&ctrl, STATUS_FAILURE, "option-parser",
+                                       gpg_error (GPG_ERR_GENERAL));
+            }
           break;
 	}
     }
 
-  if (configfp)
-    {
-      fclose (configfp);
-      configfp = NULL;
-      /* Keep a copy of the config filename. */
-      opt.config_filename = configname;
-      configname = NULL;
-      goto next_pass;
-    }
-  xfree (configname);
-  configname = NULL;
+  gnupg_argparse (NULL, &pargs, NULL);  /* Release internal state.  */
 
-  if (!opt.config_filename)
+  if (!last_configname)
     opt.config_filename = make_filename (gnupg_homedir (),
                                          GPGSM_NAME EXTSEP_S "conf",
                                          NULL);
+  else
+    opt.config_filename = last_configname;
 
   if (log_get_errorcount(0))
     {
@@ -1564,6 +1528,9 @@ main ( int argc, char **argv)
   gcry_control (GCRYCTL_RESUME_SECMEM_WARN);
 
   set_debug ();
+  if (opt.verbose) /* Print the compatibility flags.  */
+    parse_compatibility_flags (NULL, &opt.compat_flags, compatibility_flags);
+  gnupg_set_compliance_extra_info (opt.min_rsa_length);
 
   /* Although we always use gpgsm_exit, we better install a regualr
      exit handler so that at least the secure memory gets wiped
@@ -1694,7 +1661,7 @@ main ( int argc, char **argv)
 
           filelist[0] = make_filename (gnupg_datadir (),"com-certs.pem", NULL);
           filelist[1] = NULL;
-          if (!access (filelist[0], F_OK))
+          if (!gnupg_access (filelist[0], F_OK))
             {
               log_info (_("importing common certificates '%s'\n"),
                         filelist[0]);
@@ -1732,6 +1699,8 @@ main ( int argc, char **argv)
 
   if (!do_not_setup_keys)
     {
+      int errcount = log_get_errorcount (0);
+
       for (sl = locusr; sl ; sl = sl->next)
         {
           int rc = gpgsm_add_to_certlist (&ctrl, sl->d, 1, &signerlist, 0);
@@ -1760,6 +1729,15 @@ main ( int argc, char **argv)
             if ((sl->flags & 1))
               do_add_recipient (&ctrl, sl->d, &recplist, 1, recp_required);
         }
+
+      /* We do not require a recipient for decryption but because
+       * recipients and signers are always checked and log_error is
+       * sometimes used (for failed signing keys or due to a failed
+       * CRL checking) that would have bumbed up the error counter.
+       * We clear the counter in the decryption case because there is
+       * no reason to force decryption to fail. */
+      if (cmd == aDecrypt && !errcount)
+        log_get_errorcount (1); /* clear counter */
     }
 
   if (log_get_errorcount(0))
@@ -1770,39 +1748,20 @@ main ( int argc, char **argv)
     {
     case aGPGConfList:
       { /* List options and default values in the GPG Conf format.  */
-	char *config_filename_esc = percent_escape (opt.config_filename, NULL);
 
-        es_printf ("%s-%s.conf:%lu:\"%s\n",
-                   GPGCONF_NAME, GPGSM_NAME,
-                   GC_OPT_FLAG_DEFAULT, config_filename_esc);
-        xfree (config_filename_esc);
-
-        es_printf ("verbose:%lu:\n", GC_OPT_FLAG_NONE);
-	es_printf ("quiet:%lu:\n", GC_OPT_FLAG_NONE);
 	es_printf ("debug-level:%lu:\"none:\n", GC_OPT_FLAG_DEFAULT);
-	es_printf ("log-file:%lu:\n", GC_OPT_FLAG_NONE);
-        es_printf ("disable-crl-checks:%lu:\n", GC_OPT_FLAG_NONE);
-        es_printf ("enable-crl-checks:%lu:\n", GC_OPT_FLAG_NONE);
-        es_printf ("disable-trusted-cert-crl-check:%lu:\n", GC_OPT_FLAG_NONE);
-        es_printf ("enable-ocsp:%lu:\n", GC_OPT_FLAG_NONE);
         es_printf ("include-certs:%lu:%d:\n", GC_OPT_FLAG_DEFAULT,
                    DEFAULT_INCLUDE_CERTS);
-        es_printf ("disable-policy-checks:%lu:\n", GC_OPT_FLAG_NONE);
-        es_printf ("auto-issuer-key-retrieve:%lu:\n", GC_OPT_FLAG_NONE);
-        es_printf ("disable-dirmngr:%lu:\n", GC_OPT_FLAG_NONE);
         es_printf ("cipher-algo:%lu:\"%s:\n", GC_OPT_FLAG_DEFAULT,
                    DEFAULT_CIPHER_ALGO);
         es_printf ("p12-charset:%lu:\n", GC_OPT_FLAG_DEFAULT);
         es_printf ("default-key:%lu:\n", GC_OPT_FLAG_DEFAULT);
         es_printf ("encrypt-to:%lu:\n", GC_OPT_FLAG_DEFAULT);
-	es_printf ("keyserver:%lu:\n", GC_OPT_FLAG_NONE);
 
         /* The next one is an info only item and should match what
            proc_parameters actually implements.  */
         es_printf ("default_pubkey_algo:%lu:\"%s:\n", GC_OPT_FLAG_DEFAULT,
-                   "RSA-2048");
-        es_printf ("compliance:%lu:\"%s:\n", GC_OPT_FLAG_DEFAULT, "gnupg");
-
+                   "RSA-3072");
       }
       break;
     case aGPGConfTest:
@@ -1903,16 +1862,22 @@ main ( int argc, char **argv)
     case aDecrypt:
       {
         estream_t fp = open_es_fwrite (opt.outfile?opt.outfile:"-");
+        gpg_error_t err;
 
         set_binary (stdin);
         if (!argc)
-          gpgsm_decrypt (&ctrl, 0, fp); /* from stdin */
+          err = gpgsm_decrypt (&ctrl, 0, fp); /* from stdin */
         else if (argc == 1)
-          gpgsm_decrypt (&ctrl, open_read (*argv), fp); /* from file */
+          err = gpgsm_decrypt (&ctrl, open_read (*argv), fp); /* from file */
         else
           wrong_args ("--decrypt [filename]");
 
-        es_fclose (fp);
+#if GPGRT_VERSION_NUMBER >= 0x012700  /* 1.39 */
+        if (err)
+          gpgrt_fcancel (fp);
+        else
+#endif
+          es_fclose (fp);
       }
       break;
 
@@ -2113,7 +2078,7 @@ main ( int argc, char **argv)
     }
 
   /* cleanup */
-  keyserver_list_free (opt.keyserver);
+  free_strlist (opt.keyserver);
   opt.keyserver = NULL;
   gpgsm_release_certlist (recplist);
   gpgsm_release_certlist (signerlist);
@@ -2189,7 +2154,7 @@ open_read (const char *filename)
   fd = check_special_filename (filename, 0, 0);
   if (fd != -1)
     return fd;
-  fd = open (filename, O_RDONLY | O_BINARY);
+  fd = gnupg_open (filename, O_RDONLY | O_BINARY, 0);
   if (fd == -1)
     {
       log_error (_("can't open '%s': %s\n"), filename, strerror (errno));

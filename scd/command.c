@@ -33,13 +33,9 @@
 #include "scdaemon.h"
 #include <assuan.h>
 #include <ksba.h>
-#include "app-common.h"
 #include "iso7816.h"
 #include "apdu.h" /* Required for apdu_*_reader (). */
 #include "atr.h"
-#ifdef HAVE_LIBUSB
-#include "ccid-driver.h"
-#endif
 #include "../common/asshelp.h"
 #include "../common/server-help.h"
 
@@ -138,9 +134,10 @@ hex_to_buffer (const char *string, size_t *r_length)
 
 /* Reset the card and free the application context.  With SEND_RESET
    set to true actually send a RESET to the reader; this is the normal
-   way of calling the function.  */
+   way of calling the function.  If KEEP_LOCK is set and the session
+   is locked that lock wil not be released.  */
 static void
-do_reset (ctrl_t ctrl, int send_reset)
+do_reset (ctrl_t ctrl, int send_reset, int keep_lock)
 {
   app_t app = ctrl->app_ctx;
 
@@ -148,7 +145,7 @@ do_reset (ctrl_t ctrl, int send_reset)
     app_reset (app, ctrl, IS_LOCKED (ctrl)? 0: send_reset);
 
   /* If we hold a lock, unlock now. */
-  if (locked_session && ctrl->server_local == locked_session)
+  if (!keep_lock && locked_session && ctrl->server_local == locked_session)
     {
       locked_session = NULL;
       log_info ("implicitly unlocking due to RESET\n");
@@ -160,9 +157,7 @@ reset_notify (assuan_context_t ctx, char *line)
 {
   ctrl_t ctrl = assuan_get_pointer (ctx);
 
-  (void) line;
-
-  do_reset (ctrl, 1);
+  do_reset (ctrl, 1, has_option (line, "--keep-lock"));
   return 0;
 }
 
@@ -291,6 +286,8 @@ cmd_serialno (assuan_context_t ctx, char *line)
   else
     demand = NULL;
 
+  line = skip_options (line);
+
   /* Clear the remove flag so that the open_card is able to reread it.  */
   if (ctrl->server_local->card_removed)
     ctrl->server_local->card_removed = 0;
@@ -333,7 +330,7 @@ static const char hlp_learn[] =
   "or a \"CANCEL\" to force the function to terminate with a Cancel\n"
   "error message.\n"
   "\n"
-  "With the option --keypairinfo only KEYPARIINFO lstatus lines are\n"
+  "With the option --keypairinfo only KEYPARIINFO status lines are\n"
   "returned.\n"
   "\n"
   "The response of this command is a list of status lines formatted as\n"
@@ -346,6 +343,7 @@ static const char hlp_learn[] =
   "    P15     = PKCS-15 structure used\n"
   "    DINSIG  = DIN SIG\n"
   "    OPENPGP = OpenPGP card\n"
+  "    PIV     = PIV card\n"
   "    NKS     = NetKey card\n"
   "\n"
   "are implemented.  These strings are aliases for the AID\n"
@@ -498,87 +496,98 @@ cmd_readcert (assuan_context_t ctx, char *line)
 
 
 static const char hlp_readkey[] =
-  "READKEY [--advanced] <keyid>\n"
+  "READKEY [--advanced] [--info[-only]] <keyid>\n"
   "\n"
   "Return the public key for the given cert or key ID as a standard\n"
-  "S-expression.\n"
-  "In --advanced mode it returns the S-expression in advanced format.\n"
-  "\n"
-  "Note that this function may even be used on a locked card.";
+  "S-expression.  With --advanced  the S-expression is returned in\n"
+  "advanced format.  With --info a KEYPAIRINFO status line is also\n"
+  "emitted; with --info-only the regular output is suppressed.";
 static gpg_error_t
 cmd_readkey (assuan_context_t ctx, char *line)
 {
   ctrl_t ctrl = assuan_get_pointer (ctx);
   int rc;
   int advanced = 0;
+  int opt_info = 0;
+  int opt_nokey = 0;
   unsigned char *cert = NULL;
-  size_t ncert, n;
-  ksba_cert_t kc = NULL;
-  ksba_sexp_t p;
+  size_t ncert;
   unsigned char *pk;
   size_t pklen;
+  int direct_readkey = 0;
 
   if ((rc = open_card (ctrl)))
     return rc;
 
   if (has_option (line, "--advanced"))
     advanced = 1;
+  if (has_option (line, "--info"))
+    opt_info = 1;
+  if (has_option (line, "--info-only"))
+    opt_info = opt_nokey = 1;
 
   line = skip_options (line);
-
   line = xstrdup (line); /* Need a copy of the line. */
+
   /* If the application supports the READKEY function we use that.
      Otherwise we use the old way by extracting it from the
      certificate.  */
   rc = app_readkey (ctrl->app_ctx, ctrl, advanced, line, &pk, &pklen);
   if (!rc)
-    { /* Yeah, got that key - send it back.  */
-      rc = assuan_send_data (ctx, pk, pklen);
-      xfree (pk);
-      xfree (line);
-      line = NULL;
-      goto leave;
-    }
-
-  if (gpg_err_code (rc) != GPG_ERR_UNSUPPORTED_OPERATION)
-    log_error ("app_readkey failed: %s\n", gpg_strerror (rc));
-  else
+    direct_readkey = 1; /* Yeah, got that key - send it back.  */
+  else if (gpg_err_code (rc) == GPG_ERR_UNSUPPORTED_OPERATION
+           || gpg_err_code (rc) == GPG_ERR_NOT_FOUND)
     {
+      /* Fall back to certificate reading.  */
       rc = app_readcert (ctrl->app_ctx, ctrl, line, &cert, &ncert);
       if (rc)
         log_error ("app_readcert failed: %s\n", gpg_strerror (rc));
+      else
+        {
+          rc = app_help_pubkey_from_cert (cert, ncert, &pk, &pklen);
+          if (rc)
+            log_error ("failed to parse the certificate: %s\n",
+                       gpg_strerror (rc));
+        }
     }
-  xfree (line);
-  line = NULL;
-  if (rc)
-    goto leave;
+  else
+    log_error ("app_readkey failed: %s\n", gpg_strerror (rc));
 
-  rc = ksba_cert_new (&kc);
-  if (rc)
-    goto leave;
-
-  rc = ksba_cert_init_from_mem (kc, cert, ncert);
-  if (rc)
+  if (!rc && pk && pklen && opt_info && !direct_readkey)
     {
-      log_error ("failed to parse the certificate: %s\n", gpg_strerror (rc));
-      goto leave;
+      char keygripstr[KEYGRIP_LEN*2+1];
+      char *algostr;
+
+      rc = app_help_get_keygrip_string_pk (pk, pklen,
+                                           keygripstr, NULL, NULL,
+                                           &algostr);
+      if (rc)
+        {
+          log_error ("app_help_get_keygrip_string failed: %s\n",
+                     gpg_strerror (rc));
+          goto leave;
+        }
+
+      /* FIXME: Using LINE is not correct because it might be an
+       * OID and has not been canonicalized (i.e. uppercased).  */
+      send_status_info (ctrl, "KEYPAIRINFO",
+                        keygripstr, strlen (keygripstr),
+                        line, strlen (line),
+                        "-", (size_t)1,
+                        "-", (size_t)1,
+                        algostr, strlen (algostr),
+                        NULL, (size_t)0);
+      xfree (algostr);
     }
 
-  p = ksba_cert_get_public_key (kc);
-  if (!p)
-    {
-      rc = gpg_error (GPG_ERR_NO_PUBKEY);
-      goto leave;
-    }
 
-  n = gcry_sexp_canon_len (p, 0, NULL, NULL);
-  rc = assuan_send_data (ctx, p, n);
-  xfree (p);
-
+  if (!rc && pk && pklen && !opt_nokey)
+    rc = assuan_send_data (ctx, pk, pklen);
 
  leave:
-  ksba_cert_release (kc);
   xfree (cert);
+  xfree (pk);
+  xfree (line);
   return rc;
 }
 
@@ -689,7 +698,9 @@ pin_cb (void *opaque, const char *info, char **retstr)
 
   /* Fixme: Write an inquire function which returns the result in
      secure memory and check all further handling of the PIN. */
+  assuan_begin_confidential (ctx);
   rc = assuan_inquire (ctx, command, &value, &valuelen, MAXLEN_PIN);
+  assuan_end_confidential (ctx);
   xfree (command);
   if (rc)
     return rc;
@@ -1101,7 +1112,7 @@ cmd_genkey (assuan_context_t ctx, char *line)
 {
   ctrl_t ctrl = assuan_get_pointer (ctx);
   int rc;
-  char *keyno;
+  char *save_line;
   int force;
   const char *s;
   time_t timestamp;
@@ -1122,25 +1133,35 @@ cmd_genkey (assuan_context_t ctx, char *line)
 
   line = skip_options (line);
   if (!*line)
-    return set_error (GPG_ERR_ASS_PARAMETER, "no key number given");
-  keyno = line;
+    {
+      rc = set_error (GPG_ERR_ASS_PARAMETER, "no key number given");
+      goto leave;
+    }
+  save_line = line;
   while (*line && !spacep (line))
     line++;
   *line = 0;
 
   if ((rc = open_card (ctrl)))
-    return rc;
+    goto leave;
 
   if (!ctrl->app_ctx)
-    return gpg_error (GPG_ERR_UNSUPPORTED_OPERATION);
+    {
+      rc = gpg_error (GPG_ERR_UNSUPPORTED_OPERATION);
+      goto leave;
+    }
 
-  keyno = xtrystrdup (keyno);
-  if (!keyno)
-    return out_of_core ();
-  rc = app_genkey (ctrl->app_ctx, ctrl, keyno, force? 1:0,
-                   timestamp, pin_cb, ctx);
-  xfree (keyno);
+  {
+    char *tmp = xtrystrdup (save_line);
+    if (!tmp)
+      return gpg_error_from_syserror ();
+    rc = app_genkey (ctrl->app_ctx, ctrl, tmp, NULL,
+                     force? APP_GENKEY_FLAG_FORCE : 0,
+                     timestamp, pin_cb, ctx);
+    xfree (tmp);
+  }
 
+ leave:
   return rc;
 }
 
@@ -1191,12 +1212,13 @@ cmd_random (assuan_context_t ctx, char *line)
 
 
 static const char hlp_passwd[] =
-  "PASSWD [--reset] [--nullpin] <chvno>\n"
+  "PASSWD [--reset] [--nullpin] [--clear] <chvno>\n"
   "\n"
   "Change the PIN or, if --reset is given, reset the retry counter of\n"
   "the card holder verification vector CHVNO.  The option --nullpin is\n"
-  "used for TCOS cards to set the initial PIN.  The format of CHVNO\n"
-  "depends on the card application.";
+  "used for TCOS cards to set the initial PIN.  The option --clear clears\n"
+  "the security status associated with the PIN so that the PIN needs to\n"
+  "be presented again. The format of CHVNO depends on the card application.";
 static gpg_error_t
 cmd_passwd (assuan_context_t ctx, char *line)
 {
@@ -1209,6 +1231,8 @@ cmd_passwd (assuan_context_t ctx, char *line)
     flags |= APP_CHANGE_FLAG_RESET;
   if (has_option (line, "--nullpin"))
     flags |= APP_CHANGE_FLAG_NULLPIN;
+  if (has_option (line, "--clear"))
+    flags |= APP_CHANGE_FLAG_CLEAR;
 
   line = skip_options (line);
 
@@ -1218,6 +1242,11 @@ cmd_passwd (assuan_context_t ctx, char *line)
   while (*line && !spacep (line))
     line++;
   *line = 0;
+
+  /* Do not allow other flags aside of --clear. */
+  if ((flags & APP_CHANGE_FLAG_CLEAR) && (flags & ~APP_CHANGE_FLAG_CLEAR))
+    return set_error (GPG_ERR_UNSUPPORTED_OPERATION,
+                      "--clear used with other options");
 
   if ((rc = open_card (ctrl)))
     return rc;
@@ -1252,7 +1281,7 @@ static const char hlp_checkpin[] =
   "   entry system, only the regular CHV will get blocked and not the\n"
   "   dangerous CHV3.  IDSTR is the usual card's serial number in hex\n"
   "   notation; an optional fingerprint part will get ignored.  There\n"
-  "   is however a special mode if the IDSTR is sffixed with the\n"
+  "   is however a special mode if the IDSTR is suffixed with the\n"
   "   literal string \"[CHV3]\": In this case the Admin PIN is checked\n"
   "   if and only if the retry counter is still at 3.\n"
   "\n"
@@ -1330,9 +1359,10 @@ cmd_lock (assuan_context_t ctx, char *line)
       npth_sleep (1); /* Better implement an event mechanism. However,
                          for card operations this should be
                          sufficient. */
-      /* FIXME: Need to check that the connection is still alive.
-         This can be done by issuing status messages. */
-      goto retry;
+      /* Send a progress so that we can detect a connection loss.  */
+      rc = send_status_printf (ctrl, "PROGRESS", "scd_locked . 0 0");
+      if (!rc)
+        goto retry;
     }
 #endif /*USE_NPTH*/
 
@@ -1370,6 +1400,45 @@ cmd_unlock (assuan_context_t ctx, char *line)
 }
 
 
+/* Ease reading of Assuan data ;ines by sending a physical line after
+ * each LF.  */
+static gpg_error_t
+pretty_assuan_send_data (assuan_context_t ctx,
+                         const void *buffer_arg, size_t size)
+{
+  const char *buffer = buffer_arg;
+  const char *p;
+  size_t n, nbytes;
+  gpg_error_t err;
+
+  nbytes = size;
+  do
+    {
+      p = memchr (buffer, '\n', nbytes);
+      n = p ? (p - buffer) + 1 : nbytes;
+      err = assuan_send_data (ctx, buffer, n);
+      if (err)
+        {
+          /* We also set ERRNO in case this function is used by a
+           * custom estream I/O handler.  */
+          gpg_err_set_errno (EIO);
+          goto leave;
+        }
+      buffer += n;
+      nbytes -= n;
+      if (nbytes && (err=assuan_send_data (ctx, NULL, 0))) /* Flush line. */
+        {
+          gpg_err_set_errno (EIO);
+          goto leave;
+        }
+    }
+  while (nbytes);
+
+ leave:
+  return err;
+}
+
+
 static const char hlp_getinfo[] =
   "GETINFO <what>\n"
   "\n"
@@ -1387,8 +1456,7 @@ static const char hlp_getinfo[] =
   "                  'u'  Usable card present.\n"
   "                  'r'  Card removed.  A reset is necessary.\n"
   "                These flags are exclusive.\n"
-  "  reader_list - Return a list of detected card readers.  Does\n"
-  "                currently only work with the internal CCID driver.\n"
+  "  reader_list - Return a list of detected card readers.\n"
   "  deny_admin  - Returns OK if admin commands are not allowed or\n"
   "                GPG_ERR_GENERAL if admin commands are allowed.\n"
   "  app_list    - Return a list of supported applications.  One\n"
@@ -1443,14 +1511,9 @@ cmd_getinfo (assuan_context_t ctx, char *line)
     }
   else if (!strcmp (line, "reader_list"))
     {
-#ifdef HAVE_LIBUSB
-      char *s = ccid_get_reader_list ();
-#else
-      char *s = NULL;
-#endif
-
+      char *s = apdu_get_reader_list ();
       if (s)
-        rc = assuan_send_data (ctx, s, strlen (s));
+        rc = pretty_assuan_send_data (ctx, s, strlen (s));
       else
         rc = gpg_error (GPG_ERR_NO_DATA);
       xfree (s);
@@ -1640,7 +1703,7 @@ cmd_apdu (assuan_context_t ctx, char *line)
 
       rc = apdu_send_direct (app->slot, exlen,
                              apdu, apdulen, handle_more,
-                             &result, &resultlen);
+                             NULL, &result, &resultlen);
       if (rc)
         log_error ("apdu_send_direct failed: %s\n", gpg_strerror (rc));
       else
@@ -1804,7 +1867,7 @@ scd_command_handler (ctrl_t ctrl, int fd)
     }
 
   /* Cleanup.  We don't send an explicit reset to the card.  */
-  do_reset (ctrl, 0);
+  do_reset (ctrl, 0, 0);
 
   /* Release the server object.  */
   if (session_list == ctrl->server_local)
@@ -1832,6 +1895,34 @@ scd_command_handler (ctrl_t ctrl, int fd)
 
   /* If there are no more sessions return true.  */
   return !session_list;
+}
+
+
+
+/* Send a keyinfo string.  If DATA is true the string is emitted as a
+ * data line, else as a status line.  */
+void
+send_keyinfo (ctrl_t ctrl, int data, const char *keygrip_str,
+              const char *serialno, const char *idstr)
+{
+  char *string;
+  assuan_context_t ctx = ctrl->server_local->assuan_ctx;
+
+  string = xtryasprintf ("%s T %s %s%s", keygrip_str,
+                         serialno? serialno : "-",
+                         idstr? idstr : "-",
+                         data? "\n" : "");
+
+  if (!string)
+    return;
+
+  if (!data)
+    assuan_write_status (ctx, "KEYINFO", string);
+  else
+    assuan_send_data (ctx, string, strlen (string));
+
+  xfree (string);
+  return;
 }
 
 
@@ -1886,15 +1977,65 @@ send_status_info (ctrl_t ctrl, const char *keyword, ...)
 
 
 /* Send a ready formatted status line via assuan.  */
-void
+gpg_error_t
 send_status_direct (ctrl_t ctrl, const char *keyword, const char *args)
 {
   assuan_context_t ctx = ctrl->server_local->assuan_ctx;
 
   if (strchr (args, '\n'))
-    log_error ("error: LF detected in status line - not sending\n");
-  else
-    assuan_write_status (ctx, keyword, args);
+    {
+      log_error ("error: LF detected in status line - not sending\n");
+      return gpg_error (GPG_ERR_INTERNAL);
+    }
+  return assuan_write_status (ctx, keyword, args);
+}
+
+
+/* This status functions expects a printf style format string.  No
+ * filtering of the data is done instead the orintf formatted data is
+ * send using assuan_send_status. */
+gpg_error_t
+send_status_printf (ctrl_t ctrl, const char *keyword, const char *format, ...)
+{
+  gpg_error_t err;
+  va_list arg_ptr;
+  assuan_context_t ctx;
+
+  if (!ctrl || !ctrl->server_local || !(ctx = ctrl->server_local->assuan_ctx))
+    return 0;
+
+  va_start (arg_ptr, format);
+  err = vprint_assuan_status (ctx, keyword, format, arg_ptr);
+  va_end (arg_ptr);
+  return err;
+}
+
+
+void
+popup_prompt (void *opaque, int on)
+{
+  ctrl_t ctrl = opaque;
+
+  if (ctrl)
+    {
+      assuan_context_t ctx = ctrl->server_local->assuan_ctx;
+
+      if (ctx)
+        {
+          const char *cmd;
+          gpg_error_t err;
+          unsigned char *value;
+          size_t valuelen;
+
+          if (on)
+            cmd = "POPUPPINPADPROMPT --ack";
+          else
+            cmd = "DISMISSPINPADPROMPT";
+          err = assuan_inquire (ctx, cmd, &value, &valuelen, 100);
+          if (!err)
+            xfree (value);
+        }
+    }
 }
 
 

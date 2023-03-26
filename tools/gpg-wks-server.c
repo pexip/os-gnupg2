@@ -16,6 +16,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 /* The Web Key Service I-D defines an update protocol to store a
@@ -32,6 +33,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 
+#define INCLUDED_BY_MAIN_MODULE 1
 #include "../common/util.h"
 #include "../common/init.h"
 #include "../common/sysutils.h"
@@ -171,9 +173,11 @@ my_strusage( int level )
 
   switch (level)
     {
+    case  9: p = "LGPL-2.1-or-later"; break;
     case 11: p = "gpg-wks-server"; break;
     case 12: p = "@GNUPG@"; break;
     case 13: p = VERSION; break;
+    case 14: p = GNUPG_DEF_COPYRIGHT_LINE; break;
     case 17: p = PRINTABLE_OS_NAME; break;
     case 19: p = ("Please report bugs to <@EMAIL@>.\n"); break;
 
@@ -208,7 +212,7 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
   enum cmd_and_opt_values cmd = 0;
   int no_more_options = 0;
 
-  while (!no_more_options && optfile_parse (NULL, NULL, NULL, pargs, popts))
+  while (!no_more_options && gnupg_argparse (NULL, pargs, popts))
     {
       switch (pargs->r_opt)
         {
@@ -257,7 +261,7 @@ parse_arguments (ARGPARSE_ARGS *pargs, ARGPARSE_OPTS *popts)
           cmd = pargs->r_opt;
           break;
 
-        default: pargs->err = 2; break;
+        default: pargs->err = ARGPARSE_PRINT_ERROR; break;
 	}
     }
 
@@ -286,6 +290,7 @@ main (int argc, char **argv)
   pargs.argv  = &argv;
   pargs.flags = ARGPARSE_FLAG_KEEP;
   cmd = parse_arguments (&pargs, opts);
+  gnupg_argparse (NULL, &pargs, NULL);  /* Release internal state.  */
 
   if (log_get_errorcount (0))
     exit (2);
@@ -331,7 +336,7 @@ main (int argc, char **argv)
   {
     struct stat sb;
 
-    if (stat (opt.directory, &sb))
+    if (gnupg_stat (opt.directory, &sb))
       {
         err = gpg_error_from_syserror ();
         log_error ("error accessing directory '%s': %s\n",
@@ -586,6 +591,7 @@ encrypt_stream (estream_t *r_output, estream_t input, const char *keyfile)
   ccparray_put (&ccp, "--always-trust");
   ccparray_put (&ccp, "--no-keyring");
   ccparray_put (&ccp, "--armor");
+  ccparray_put (&ccp, "-z0");  /* No compression for improved robustness.  */
   ccparray_put (&ccp, "--recipient-file");
   ccparray_put (&ccp, keyfile);
   ccparray_put (&ccp, "--encrypt");
@@ -802,17 +808,65 @@ get_policy_flags (policy_flags_t policy, const char *mbox)
 }
 
 
+/* Create the name for the pending file from NONCE and ADDRSPEC and
+ * store it at R_NAME.  */
+static gpg_error_t
+make_pending_fname (const char *nonce, const char *addrspec, char **r_name)
+{
+  gpg_error_t err = 0;
+  const char *domain;
+  char *addrspechash = NULL;
+  char sha1buf[20];
+
+  *r_name = NULL;
+
+  domain = addrspec? strchr (addrspec, '@') : NULL;
+  if (!domain || !domain[1] || domain == addrspec)
+    {
+      err = gpg_error (GPG_ERR_INV_ARG);
+      goto leave;
+    }
+  domain++;
+  if (strchr (domain, '/') || strchr (domain, '\\'))
+    {
+      log_info ("invalid domain detected ('%s')\n", domain);
+      err = gpg_error (GPG_ERR_NOT_FOUND);
+      goto leave;
+    }
+  gcry_md_hash_buffer (GCRY_MD_SHA1, sha1buf, addrspec, domain - addrspec - 1);
+  addrspechash = zb32_encode (sha1buf, 8*20);
+  if (!addrspechash)
+    {
+      err = gpg_error_from_syserror ();
+      goto leave;
+    }
+
+  *r_name = strconcat (nonce, ".", addrspechash, NULL);
+  if (!*r_name)
+    {
+      err = gpg_error_from_syserror ();
+      goto leave;
+    }
+
+ leave:
+  xfree (addrspechash);
+  return err;
+}
+
+
 /* We store the key under the name of the nonce we will then send to
  * the user.  On success the nonce is stored at R_NONCE and the file
- * name at R_FNAME.  */
+ * name at R_FNAME.  ADDRSPEC is used as part of the pending file name
+ * so that the nonce is associated with an address */
 static gpg_error_t
-store_key_as_pending (const char *dir, estream_t key,
+store_key_as_pending (const char *dir, estream_t key, const char *addrspec,
                       char **r_nonce, char **r_fname)
 {
   gpg_error_t err;
   char *dname = NULL;
   char *fname = NULL;
   char *nonce = NULL;
+  char *pendingname = NULL;
   estream_t outfp = NULL;
   char buffer[1024];
   size_t nbytes, nwritten;
@@ -841,7 +895,11 @@ store_key_as_pending (const char *dir, estream_t key,
       goto leave;
     }
 
-  fname = strconcat (dname, "/", nonce, NULL);
+  err = make_pending_fname (nonce, addrspec, &pendingname);
+  if (err)
+    goto leave;
+
+  fname = strconcat (dname, "/", pendingname, NULL);
   if (!fname)
     {
       err = gpg_error_from_syserror ();
@@ -910,6 +968,7 @@ store_key_as_pending (const char *dir, estream_t key,
       xfree (fname);
     }
   xfree (dname);
+  xfree (pendingname);
   return err;
 }
 
@@ -1175,7 +1234,7 @@ process_new_key (server_ctx_t ctx, estream_t key)
           goto leave;
         }
 
-      if (access (dname, W_OK))
+      if (gnupg_access (dname, W_OK))
         {
           log_info ("skipping address '%s': Domain not configured\n", sl->mbox);
           continue;
@@ -1200,7 +1259,7 @@ process_new_key (server_ctx_t ctx, estream_t key)
 
           xfree (nonce);
           xfree (fname);
-          err = store_key_as_pending (dname, key, &nonce, &fname);
+          err = store_key_as_pending (dname, key, sl->mbox, &nonce, &fname);
           if (err)
             goto leave;
 
@@ -1356,6 +1415,7 @@ check_and_publish (server_ctx_t ctx, const char *address, const char *nonce)
   char *fnewname = NULL;
   estream_t key = NULL;
   char *hash = NULL;
+  char *pendingname = NULL;
   const char *domain;
   const char *s;
   uidinfo_list_t sl;
@@ -1372,7 +1432,21 @@ check_and_publish (server_ctx_t ctx, const char *address, const char *nonce)
   domain = strchr (address, '@');
   log_assert (domain && domain[1]);
   domain++;
-  fname = make_filename_try (opt.directory, domain, "pending", nonce, NULL);
+  if (strchr (domain, '/') || strchr (domain, '\\')
+      || strchr (nonce, '/') || strchr (nonce, '\\'))
+    {
+      log_info ("invalid domain or nonce received ('%s', '%s')\n",
+                domain, nonce);
+      err = gpg_error (GPG_ERR_NOT_FOUND);
+      goto leave;
+    }
+
+  err = make_pending_fname (nonce, address, &pendingname);
+  if (err)
+    goto leave;
+
+  fname = make_filename_try (opt.directory, domain, "pending", pendingname,
+                             NULL);
   if (!fname)
     {
       err = gpg_error_from_syserror ();
@@ -1436,7 +1510,7 @@ check_and_publish (server_ctx_t ctx, const char *address, const char *nonce)
     }
 
   /* Make sure it is world readable.  */
-  if (gnupg_chmod (fnewname, "-rwxr--r--"))
+  if (gnupg_chmod (fnewname, "-rw-r--r--"))
     log_error ("can't set permissions of '%s': %s\n",
                fnewname, gpg_strerror (gpg_err_code_from_syserror()));
 
@@ -1452,7 +1526,7 @@ check_and_publish (server_ctx_t ctx, const char *address, const char *nonce)
       err = gpg_error_from_syserror ();
       goto leave;
     }
-  if (!access (fnewname, W_OK))
+  if (!gnupg_access (fnewname, W_OK))
     {
       /* Yes, we have a dane directory.  */
       s = strchr (address, '@');
@@ -1484,6 +1558,7 @@ check_and_publish (server_ctx_t ctx, const char *address, const char *nonce)
   xfree (fnewname);
   xfree (fname);
   xfree (nonce2);
+  xfree (pendingname);
   return err;
 }
 
@@ -1606,22 +1681,22 @@ static gpg_error_t
 get_domain_list (strlist_t *r_list)
 {
   gpg_error_t err;
-  DIR *dir = NULL;
+  gnupg_dir_t dir = NULL;
   char *fname = NULL;
-  struct dirent *dentry;
+  gnupg_dirent_t dentry;
   struct stat sb;
   strlist_t list = NULL;
 
   *r_list = NULL;
 
-  dir = opendir (opt.directory);
+  dir = gnupg_opendir (opt.directory);
   if (!dir)
     {
       err = gpg_error_from_syserror ();
       goto leave;
     }
 
-  while ((dentry = readdir (dir)))
+  while ((dentry = gnupg_readdir (dir)))
     {
       if (*dentry->d_name == '.')
         continue;
@@ -1638,7 +1713,7 @@ get_domain_list (strlist_t *r_list)
           goto leave;
         }
 
-      if (stat (fname, &sb))
+      if (gnupg_stat (fname, &sb))
         {
           err = gpg_error_from_syserror ();
           log_error ("error accessing '%s': %s\n", fname, gpg_strerror (err));
@@ -1661,8 +1736,7 @@ get_domain_list (strlist_t *r_list)
 
  leave:
   free_strlist (list);
-  if (dir)
-    closedir (dir);
+  gnupg_closedir (dir);
   xfree (fname);
   return err;
 }
@@ -1675,8 +1749,8 @@ expire_one_domain (const char *top_dirname, const char *domain)
   gpg_error_t err;
   char *dirname;
   char *fname = NULL;
-  DIR *dir = NULL;
-  struct dirent *dentry;
+  gnupg_dir_t dir = NULL;
+  gnupg_dirent_t dentry;
   struct stat sb;
   time_t now = gnupg_get_time ();
 
@@ -1689,7 +1763,7 @@ expire_one_domain (const char *top_dirname, const char *domain)
       goto leave;
     }
 
-  dir = opendir (dirname);
+  dir = gnupg_opendir (dirname);
   if (!dir)
     {
       err = gpg_error_from_syserror ();
@@ -1698,7 +1772,7 @@ expire_one_domain (const char *top_dirname, const char *domain)
       goto leave;
     }
 
-  while ((dentry = readdir (dir)))
+  while ((dentry = gnupg_readdir (dir)))
     {
       if (*dentry->d_name == '.')
         continue;
@@ -1711,12 +1785,13 @@ expire_one_domain (const char *top_dirname, const char *domain)
                      __func__, gpg_strerror (err));
           goto leave;
         }
-      if (strlen (dentry->d_name) != 32)
+      /* The old files are 32 bytes, those created since 2.3.8 are 65 bytes. */
+      if (strlen (dentry->d_name) != 32 && strlen (dentry->d_name) != 65)
         {
           log_info ("garbage file '%s' ignored\n", fname);
           continue;
         }
-      if (stat (fname, &sb))
+      if (gnupg_stat (fname, &sb))
         {
           err = gpg_error_from_syserror ();
           log_error ("error accessing '%s': %s\n", fname, gpg_strerror (err));
@@ -1747,8 +1822,7 @@ expire_one_domain (const char *top_dirname, const char *domain)
   err = 0;
 
  leave:
-  if (dir)
-    closedir (dir);
+  gnupg_closedir (dir);
   xfree (dirname);
   xfree (fname);
   return err;
@@ -1788,7 +1862,7 @@ command_list_domains (void)
     { "pending", "-rwx" },
     { "hu",      "-rwxr-xr-x" }
   };
-
+  gpg_err_code_t ec;
   gpg_error_t err;
   strlist_t domaindirs;
   strlist_t sl;
@@ -1825,9 +1899,9 @@ command_list_domains (void)
               err = gpg_error_from_syserror ();
               goto leave;
             }
-          if (access (fname, W_OK))
+          if ((ec = gnupg_access (fname, W_OK)))
             {
-              err = gpg_error_from_syserror ();
+              err = gpg_error (ec);
               if (gpg_err_code (err) == GPG_ERR_ENOENT)
                 {
                   if (gnupg_mkdir (fname, requireddirs[i].perm))
@@ -1855,9 +1929,9 @@ command_list_domains (void)
           err = gpg_error_from_syserror ();
           goto leave;
         }
-      if (access (fname, F_OK))
+      if ((ec = gnupg_access (fname, F_OK)))
         {
-          err = gpg_error_from_syserror ();
+          err = gpg_error (ec);
           if (gpg_err_code (err) == GPG_ERR_ENOENT)
             log_error ("domain %s: submission address not configured\n",
                        domain);
@@ -1934,17 +2008,18 @@ command_cron (void)
 static gpg_error_t
 command_check_key (const char *userid)
 {
+  gpg_err_code_t ec;
   gpg_error_t err;
   char *addrspec = NULL;
   char *fname = NULL;
 
-  err = wks_fname_from_userid (userid, &fname, &addrspec);
+  err = wks_fname_from_userid (userid, 0, &fname, &addrspec);
   if (err)
     goto leave;
 
-  if (access (fname, R_OK))
+  if ((ec = gnupg_access (fname, R_OK)))
     {
-      err = gpg_error_from_syserror ();
+      err = gpg_error (ec);
       if (opt_with_file)
         es_printf ("%s n %s\n", addrspec, fname);
       if (gpg_err_code (err) == GPG_ERR_ENOENT)

@@ -73,6 +73,17 @@ static recsel_expr_t export_keep_uid;
 static recsel_expr_t export_drop_subkey;
 
 
+/* An object used for a linked list to implement the
+ * push_export_filter/pop_export_filters functions.  */
+struct export_filter_attic_s
+{
+  struct export_filter_attic_s *next;
+  recsel_expr_t export_keep_uid;
+  recsel_expr_t export_drop_subkey;
+};
+static struct export_filter_attic_s *export_filter_attic;
+
+
 
 /* Local prototypes.  */
 static int do_export (ctrl_t ctrl, strlist_t users, int secret,
@@ -190,6 +201,41 @@ parse_and_set_export_filter (const char *string)
 }
 
 
+/* Push the current export filters onto a stack so that new export
+ * filters can be defined which will be active until the next
+ * pop_export_filters or another push_export_filters.  */
+void
+push_export_filters (void)
+{
+  struct export_filter_attic_s *item;
+
+  item = xcalloc (1, sizeof *item);
+  item->export_keep_uid = export_keep_uid;
+  export_keep_uid = NULL;
+  item->export_drop_subkey = export_drop_subkey;
+  export_drop_subkey = NULL;
+  item->next = export_filter_attic;
+  export_filter_attic = item;
+}
+
+
+/* Revert the last push_export_filters.  */
+void
+pop_export_filters (void)
+{
+  struct export_filter_attic_s *item;
+
+  item = export_filter_attic;
+  if (!item)
+    BUG (); /* No corresponding push.  */
+  export_filter_attic = item->next;
+  cleanup_export_globals ();
+  export_keep_uid = item->export_keep_uid;
+  export_drop_subkey = item->export_drop_subkey;
+}
+
+
+
 /* Create a new export stats object initialized to zero.  On error
    returns NULL and sets ERRNO.  */
 export_stats_t
@@ -284,10 +330,12 @@ export_secsubkeys (ctrl_t ctrl, strlist_t users, unsigned int options,
 
 /*
  * Export a single key into a memory buffer.  STATS is either an
- * export stats object for update or NULL.
+ * export stats object for update or NULL.  If PREFIX is not NULL
+ * PREFIXLEN bytes from PREFIX are prepended to the R_DATA.
  */
 gpg_error_t
 export_pubkey_buffer (ctrl_t ctrl, const char *keyspec, unsigned int options,
+                      const void *prefix, size_t prefixlen,
                       export_stats_t stats,
                       kbnode_t *r_keyblock, void **r_data, size_t *r_datalen)
 {
@@ -305,6 +353,8 @@ export_pubkey_buffer (ctrl_t ctrl, const char *keyspec, unsigned int options,
     return gpg_error_from_syserror ();
 
   iobuf = iobuf_temp ();
+  if (prefix && prefixlen)
+    iobuf_write (iobuf, prefix, prefixlen);
   err = do_export_stream (ctrl, iobuf, helplist, 0, r_keyblock, options,
                           stats, &any);
   if (!err && !any)
@@ -428,8 +478,8 @@ new_subkey_list_item (KBNODE node)
    (keyID or fingerprint) and does match the one at NODE.  It is
    assumed that the packet at NODE is either a public or secret
    subkey. */
-static int
-exact_subkey_match_p (KEYDB_SEARCH_DESC *desc, KBNODE node)
+int
+exact_subkey_match_p (KEYDB_SEARCH_DESC *desc, kbnode_t node)
 {
   u32 kid[2];
   byte fpr[MAX_FINGERPRINT_LEN];
@@ -517,7 +567,7 @@ match_curve_skey_pk (gcry_sexp_t s_key, PKT_public_key *pk)
       log_error ("no curve name\n");
       return gpg_error (GPG_ERR_UNKNOWN_CURVE);
     }
-  oidstr = openpgp_curve_to_oid (curve_str, NULL);
+  oidstr = openpgp_curve_to_oid (curve_str, NULL, NULL);
   if (!oidstr)
     {
       log_error ("no OID known for curve '%s'\n", curve_str);
@@ -596,7 +646,10 @@ cleartext_secret_key_to_openpgp (gcry_sexp_t s_key, PKT_public_key *pk)
   top_list = gcry_sexp_find_token (s_key, "private-key", 0);
   if (!top_list)
     goto bad_seckey;
-  if (gcry_sexp_length(top_list) != 2)
+
+  /* ignore all S-expression after the first sublist -- we assume that
+     they are comments or otherwise irrelevant to OpenPGP */
+  if (gcry_sexp_length(top_list) < 2)
     goto bad_seckey;
   key = gcry_sexp_nth (top_list, 1);
   if (!key)
@@ -975,11 +1028,11 @@ transfer_format_to_openpgp (gcry_sexp_t s_pgp, PKT_public_key *pk)
   /* log_debug ("XXX pubkey_algo=%d\n", pubkey_algo); */
   /* log_debug ("XXX is_protected=%d\n", is_protected); */
   /* log_debug ("XXX protect_algo=%d\n", protect_algo); */
-  /* log_printhex ("XXX iv", iv, ivlen); */
+  /* log_printhex (iv, ivlen, "XXX iv"); */
   /* log_debug ("XXX ivlen=%d\n", ivlen); */
   /* log_debug ("XXX s2k_mode=%d\n", s2k_mode); */
   /* log_debug ("XXX s2k_algo=%d\n", s2k_algo); */
-  /* log_printhex ("XXX s2k_salt", s2k_salt, sizeof s2k_salt); */
+  /* log_printhex (s2k_salt, sizeof s2k_salt, "XXX s2k_salt"); */
   /* log_debug ("XXX s2k_count=%lu\n", (unsigned long)s2k_count); */
   /* for (idx=0; skey[idx]; idx++) */
   /*   { */
@@ -990,7 +1043,7 @@ transfer_format_to_openpgp (gcry_sexp_t s_pgp, PKT_public_key *pk)
   /*         void *p; */
   /*         unsigned int nbits; */
   /*         p = gcry_mpi_get_opaque (skey[idx], &nbits); */
-  /*         log_printhex (NULL, p, (nbits+7)/8); */
+  /*         log_printhex ( p, (nbits+7)/8, NULL); */
   /*       } */
   /*     else */
   /*       gcry_mpi_dump (skey[idx]); */
@@ -1020,7 +1073,7 @@ transfer_format_to_openpgp (gcry_sexp_t s_pgp, PKT_public_key *pk)
           goto leave;
         }
 
-      oidstr = openpgp_curve_to_oid (curve, NULL);
+      oidstr = openpgp_curve_to_oid (curve, NULL, NULL);
       if (!oidstr)
         {
           log_error ("no OID known for curve '%s'\n", curve);
@@ -1057,7 +1110,7 @@ transfer_format_to_openpgp (gcry_sexp_t s_pgp, PKT_public_key *pk)
       /*         void *p; */
       /*         unsigned int nbits; */
       /*         p = gcry_mpi_get_opaque (skey[idx], &nbits); */
-      /*         log_printhex (NULL, p, (nbits+7)/8); */
+      /*         log_printhex (p, (nbits+7)/8, NULL); */
       /*       } */
       /*     else */
       /*       gcry_mpi_dump (skey[idx]); */
@@ -2158,10 +2211,10 @@ export_ssh_key (ctrl_t ctrl, const char *userid)
     {
       getkey_ctx_t getkeyctx;
 
-      err = get_pubkey_byname (ctrl, &getkeyctx, NULL, userid, &keyblock,
+      err = get_pubkey_byname (ctrl, GET_PUBKEY_NO_AKL,
+                               &getkeyctx, NULL, userid, &keyblock,
                                NULL,
-                               0  /* Only usable keys or given exact. */,
-                               1  /* No AKL lookup.  */);
+                               0  /* Only usable keys or given exact. */);
       if (!err)
         {
           err = getkey_next (ctrl, getkeyctx, NULL, NULL);
@@ -2405,7 +2458,7 @@ export_ssh_key (ctrl_t ctrl, const char *userid)
     err = gpg_error_from_syserror ();
   else
     {
-      if (es_fclose (fp))
+      if (fp != es_stdout && es_fclose (fp))
         err = gpg_error_from_syserror ();
       fp = NULL;
     }
@@ -2414,7 +2467,8 @@ export_ssh_key (ctrl_t ctrl, const char *userid)
     log_error (_("error writing '%s': %s\n"), fname, gpg_strerror (err));
 
  leave:
-  es_fclose (fp);
+  if (fp != es_stdout)
+    es_fclose (fp);
   xfree (get_membuf (&mb, NULL));
   release_kbnode (keyblock);
   return err;

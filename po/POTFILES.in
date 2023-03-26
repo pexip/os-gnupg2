@@ -1,6 +1,7 @@
 # List of files with translatable strings
 
 agent/call-pinentry.c
+agent/command.c
 agent/command-ssh.c
 agent/divert-scd.c
 agent/genkey.c
@@ -24,16 +25,19 @@ common/audit.c
 common/helpfile.c
 common/gettime.c
 common/ksba-io-support.c
+common/ttyio.c
 
 common/argparse.c
 common/logging.c
 common/utf8conv.c
 common/dotlock.c
 common/init.c
+common/homedir.c
 
 g10/armor.c
 g10/build-packet.c
 g10/call-agent.c
+g10/call-dirmngr.c
 g10/card-util.c
 g10/dearmor.c
 g10/decrypt.c
@@ -47,6 +51,7 @@ g10/gpg.c
 g10/gpgv.c
 g10/helptext.c
 g10/import.c
+g10/key-check.c
 g10/keydb.c
 g10/keyedit.c
 g10/keygen.c
@@ -78,6 +83,7 @@ g10/verify.c
 
 kbx/kbxutil.c
 
+scd/app-p15.c
 scd/app-nks.c
 scd/app-openpgp.c
 scd/app-dinsig.c
@@ -111,7 +117,6 @@ dirmngr/dirmngr-client.c
 dirmngr/dirmngr.c
 dirmngr/dirmngr_ldap.c
 dirmngr/http.c
-dirmngr/ldap-wrapper-ce.c
 dirmngr/ldap-wrapper.c
 dirmngr/ldap.c
 dirmngr/ldapserver.c
@@ -124,6 +129,4 @@ tools/gpg-connect-agent.c
 tools/gpgconf-comp.c
 tools/gpgconf.c
 tools/no-libgcrypt.c
-tools/symcryptrun.c
 tools/gpg-check-pattern.c
-

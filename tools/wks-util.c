@@ -21,6 +21,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "../common/util.h"
 #include "../common/status.h"
@@ -97,19 +98,29 @@ wks_write_status (int no, const char *format, ...)
 
 
 /* Append UID to LIST and return the new item.  On success LIST is
- * updated.  On error ERRNO is set and NULL returned. */
+ * updated.  C-style escaping is removed from UID.  On error ERRNO is
+ * set and NULL returned. */
 static uidinfo_list_t
 append_to_uidinfo_list (uidinfo_list_t *list, const char *uid, time_t created)
 {
   uidinfo_list_t r, sl;
+  char *plainuid;
 
-  sl = xtrymalloc (sizeof *sl + strlen (uid));
-  if (!sl)
+  plainuid = decode_c_string (uid);
+  if (!plainuid)
     return NULL;
 
-  strcpy (sl->uid, uid);
+  sl = xtrymalloc (sizeof *sl + strlen (plainuid));
+  if (!sl)
+    {
+      xfree (plainuid);
+      return NULL;
+    }
+
+  strcpy (sl->uid, plainuid);
   sl->created = created;
-  sl->mbox = mailbox_from_userid (uid);
+  sl->flags = 0;
+  sl->mbox = mailbox_from_userid (plainuid);
   sl->next = NULL;
   if (!*list)
     *list = sl;
@@ -119,6 +130,8 @@ append_to_uidinfo_list (uidinfo_list_t *list, const char *uid, time_t created)
         ;
       r->next = sl;
     }
+
+  xfree (plainuid);
   return sl;
 }
 
@@ -203,9 +216,9 @@ wks_get_key (estream_t *r_key, const char *fingerprint, const char *addrspec,
   ccparray_init (&ccp, 0);
 
   ccparray_put (&ccp, "--no-options");
-  if (!opt.verbose)
+  if (opt.verbose < 2)
     ccparray_put (&ccp, "--quiet");
-  else if (opt.verbose > 1)
+  else
     ccparray_put (&ccp, "--verbose");
   ccparray_put (&ccp, "--batch");
   ccparray_put (&ccp, "--status-fd=2");
@@ -300,9 +313,9 @@ wks_list_key (estream_t key, char **r_fpr, uidinfo_list_t *r_mboxes)
   ccparray_init (&ccp, 0);
 
   ccparray_put (&ccp, "--no-options");
-  if (!opt.verbose)
+  if (opt.verbose < 2)
     ccparray_put (&ccp, "--quiet");
-  else if (opt.verbose > 1)
+  else
     ccparray_put (&ccp, "--verbose");
   ccparray_put (&ccp, "--batch");
   ccparray_put (&ccp, "--status-fd=2");
@@ -347,7 +360,7 @@ wks_list_key (estream_t key, char **r_fpr, uidinfo_list_t *r_mboxes)
       /* log_debug ("line '%s'\n", line); */
 
       xfree (fields);
-      fields = strtokenize (line, ":");
+      fields = strtokenize_nt (line, ":");
       if (!fields)
         {
           err = gpg_error_from_syserror ();
@@ -394,7 +407,6 @@ wks_list_key (estream_t key, char **r_fpr, uidinfo_list_t *r_mboxes)
         }
       else if (!strcmp (fields[0], "uid") && nfields > 9)
         {
-          /* Fixme: Unescape fields[9] */
           if (!append_to_uidinfo_list (&mboxes, fields[9],
                                        parse_timestamp (fields[5], NULL)))
             {
@@ -466,7 +478,7 @@ wks_filter_uid (estream_t *r_newkey, estream_t key, const char *uid,
     es_fputs ("Content-Type: application/pgp-keys\n"
               "\n", newkey);
 
-  filterexp = es_bsprintf ("keep-uid=uid= %s", uid);
+  filterexp = es_bsprintf ("keep-uid=-t uid= %s", uid);
   if (!filterexp)
     {
       err = gpg_error_from_syserror ();
@@ -477,9 +489,9 @@ wks_filter_uid (estream_t *r_newkey, estream_t key, const char *uid,
   ccparray_init (&ccp, 0);
 
   ccparray_put (&ccp, "--no-options");
-  if (!opt.verbose)
+  if (opt.verbose < 2)
     ccparray_put (&ccp, "--quiet");
-  else if (opt.verbose > 1)
+  else
     ccparray_put (&ccp, "--verbose");
   ccparray_put (&ccp, "--batch");
   ccparray_put (&ccp, "--status-fd=2");
@@ -749,9 +761,12 @@ write_to_file (estream_t src, const char *fname)
 
 
 /* Return the filename and optionally the addrspec for USERID at
- * R_FNAME and R_ADDRSPEC.  R_ADDRSPEC might also be set on error.  */
+ * R_FNAME and R_ADDRSPEC.  R_ADDRSPEC might also be set on error.  If
+ * HASH_ONLY is set only the has is returned at R_FNAME and no file is
+ * created.  */
 gpg_error_t
-wks_fname_from_userid (const char *userid, char **r_fname, char **r_addrspec)
+wks_fname_from_userid (const char *userid, int hash_only,
+                       char **r_fname, char **r_addrspec)
 {
   gpg_error_t err;
   char *addrspec = NULL;
@@ -767,7 +782,7 @@ wks_fname_from_userid (const char *userid, char **r_fname, char **r_addrspec)
   addrspec = mailbox_from_userid (userid);
   if (!addrspec)
     {
-      if (opt.verbose)
+      if (opt.verbose || hash_only)
         log_info ("\"%s\" is not a proper mail address\n", userid);
       err = gpg_error (GPG_ERR_INV_USER_ID);
       goto leave;
@@ -776,6 +791,12 @@ wks_fname_from_userid (const char *userid, char **r_fname, char **r_addrspec)
   domain = strchr (addrspec, '@');
   log_assert (domain);
   domain++;
+  if (strchr (domain, '/') || strchr (domain, '\\'))
+    {
+      log_info ("invalid domain detected ('%s')\n", domain);
+      err = gpg_error (GPG_ERR_NOT_FOUND);
+      goto leave;
+    }
 
   /* Hash user ID and create filename.  */
   s = strchr (addrspec, '@');
@@ -788,11 +809,20 @@ wks_fname_from_userid (const char *userid, char **r_fname, char **r_addrspec)
       goto leave;
     }
 
-  *r_fname = make_filename_try (opt.directory, domain, "hu", hash, NULL);
-  if (!*r_fname)
-    err = gpg_error_from_syserror ();
+  if (hash_only)
+    {
+      *r_fname = hash;
+      hash = NULL;
+      err = 0;
+    }
   else
-    err = 0;
+    {
+      *r_fname = make_filename_try (opt.directory, domain, "hu", hash, NULL);
+      if (!*r_fname)
+        err = gpg_error_from_syserror ();
+      else
+        err = 0;
+    }
 
  leave:
   if (r_addrspec && addrspec)
@@ -822,6 +852,11 @@ wks_compute_hu_fname (char **r_fname, const char *addrspec)
   if (!domain || !domain[1] || domain == addrspec)
     return gpg_error (GPG_ERR_INV_ARG);
   domain++;
+  if (strchr (domain, '/') || strchr (domain, '\\'))
+    {
+      log_info ("invalid domain detected ('%s')\n", domain);
+      return gpg_error (GPG_ERR_NOT_FOUND);
+    }
 
   gcry_md_hash_buffer (GCRY_MD_SHA1, sha1buf, addrspec, domain - addrspec - 1);
   hash = zb32_encode (sha1buf, 8*20);
@@ -830,15 +865,15 @@ wks_compute_hu_fname (char **r_fname, const char *addrspec)
 
   /* Try to create missing directories below opt.directory.  */
   fname = make_filename_try (opt.directory, domain, NULL);
-  if (fname && stat (fname, &sb)
+  if (fname && gnupg_stat (fname, &sb)
       && gpg_err_code_from_syserror () == GPG_ERR_ENOENT)
-    if (!gnupg_mkdir (fname, "-rwxr--r--") && opt.verbose)
+    if (!gnupg_mkdir (fname, "-rwxr-xr-x") && opt.verbose)
       log_info ("directory '%s' created\n", fname);
   xfree (fname);
   fname = make_filename_try (opt.directory, domain, "hu", NULL);
-  if (fname && stat (fname, &sb)
+  if (fname && gnupg_stat (fname, &sb)
       && gpg_err_code_from_syserror () == GPG_ERR_ENOENT)
-    if (!gnupg_mkdir (fname, "-rwxr--r--") && opt.verbose)
+    if (!gnupg_mkdir (fname, "-rwxr-xr-x") && opt.verbose)
       log_info ("directory '%s' created\n", fname);
   xfree (fname);
 
@@ -854,6 +889,87 @@ wks_compute_hu_fname (char **r_fname, const char *addrspec)
   return err;
 }
 
+
+/* Make sure that a policy file exists for addrspec.  Directories must
+ * already exist.  */
+static gpg_error_t
+ensure_policy_file (const char *addrspec)
+{
+  gpg_err_code_t ec;
+  gpg_error_t err;
+  const char *domain;
+  char *fname;
+  estream_t fp;
+
+  domain = strchr (addrspec, '@');
+  if (!domain || !domain[1] || domain == addrspec)
+    return gpg_error (GPG_ERR_INV_ARG);
+  domain++;
+  if (strchr (domain, '/') || strchr (domain, '\\'))
+    {
+      log_info ("invalid domain detected ('%s')\n", domain);
+      return gpg_error (GPG_ERR_NOT_FOUND);
+    }
+
+  /* Create the filename.  */
+  fname = make_filename_try (opt.directory, domain, "policy", NULL);
+  err = fname? 0 : gpg_error_from_syserror ();
+  if (err)
+    goto leave;
+
+  /* First a quick check whether it already exists.  */
+  if (!(ec = gnupg_access (fname, F_OK)))
+    {
+      err = 0; /* File already exists.  */
+      goto leave;
+    }
+  err = gpg_error (ec);
+  if (gpg_err_code (err) == GPG_ERR_ENOENT)
+    err = 0;
+  else
+    {
+      log_error ("domain %s: problem with '%s': %s\n",
+                 domain, fname, gpg_strerror (err));
+      goto leave;
+    }
+
+  /* Now create the file.  */
+  fp = es_fopen (fname, "wxb");
+  if (!fp)
+    {
+      err = gpg_error_from_syserror ();
+      if (gpg_err_code (err) == GPG_ERR_EEXIST)
+        err = 0; /* Was created between the gnupg_access() and es_fopen().  */
+      else
+        log_error ("domain %s: error creating '%s': %s\n",
+                   domain, fname, gpg_strerror (err));
+      goto leave;
+    }
+
+  es_fprintf (fp, "# Policy flags for domain %s\n", domain);
+  if (es_ferror (fp) || es_fclose (fp))
+    {
+      err = gpg_error_from_syserror ();
+      log_error ("error writing '%s': %s\n", fname, gpg_strerror (err));
+      goto leave;
+    }
+
+  if (opt.verbose)
+    log_info ("policy file '%s' created\n", fname);
+
+  /* Make sure the policy file world readable.  */
+  if (gnupg_chmod (fname, "-rw-r--r--"))
+    {
+      err = gpg_error_from_syserror ();
+      log_error ("can't set permissions of '%s': %s\n",
+                 fname, gpg_strerror (err));
+      goto leave;
+    }
+
+ leave:
+  xfree (fname);
+  return err;
+}
 
 
 /* Helper form wks_cmd_install_key.  */
@@ -916,6 +1032,43 @@ install_key_from_spec_file (const char *fname)
 }
 
 
+/* The core of the code to install a key as a file.  */
+gpg_error_t
+wks_install_key_core (estream_t key, const char *addrspec)
+{
+  gpg_error_t err;
+  char *huname = NULL;
+
+  /* Hash user ID and create filename.  */
+  err = wks_compute_hu_fname (&huname, addrspec);
+  if (err)
+    goto leave;
+
+  /* Now that wks_compute_hu_fname has created missing directories we
+   * can create a policy file if it does not exist.  */
+  err = ensure_policy_file (addrspec);
+  if (err)
+    goto leave;
+
+  /* Publish.  */
+  err = write_to_file (key, huname);
+  if (err)
+    {
+      log_error ("copying key to '%s' failed: %s\n", huname,gpg_strerror (err));
+      goto leave;
+    }
+
+  /* Make sure it is world readable.  */
+  if (gnupg_chmod (huname, "-rw-r--r--"))
+    log_error ("can't set permissions of '%s': %s\n",
+               huname, gpg_strerror (gpg_err_code_from_syserror()));
+
+ leave:
+  xfree (huname);
+  return err;
+}
+
+
 /* Install a single key into the WKD by reading FNAME and extracting
  * USERID.  If USERID is NULL FNAME is expected to be a list of fpr
  * mbox lines and for each line the respective key will be
@@ -931,7 +1084,6 @@ wks_cmd_install_key (const char *fname, const char *userid)
   uidinfo_list_t uidlist = NULL;
   uidinfo_list_t uid, thisuid;
   time_t thistime;
-  char *huname = NULL;
   int any;
 
   if (!userid)
@@ -1023,29 +1175,12 @@ wks_cmd_install_key (const char *fname, const char *userid)
     fp = fp2;
   }
 
-  /* Hash user ID and create filename.  */
-  err = wks_compute_hu_fname (&huname, addrspec);
-  if (err)
-    goto leave;
-
-  /* Publish.  */
-  err = write_to_file (fp, huname);
-  if (err)
-    {
-      log_error ("copying key to '%s' failed: %s\n", huname,gpg_strerror (err));
-      goto leave;
-    }
-
-  /* Make sure it is world readable.  */
-  if (gnupg_chmod (huname, "-rwxr--r--"))
-    log_error ("can't set permissions of '%s': %s\n",
-               huname, gpg_strerror (gpg_err_code_from_syserror()));
-
+  err = wks_install_key_core (fp, addrspec);
   if (!opt.quiet)
     log_info ("key %s published for '%s'\n", fpr, addrspec);
 
+
  leave:
-  xfree (huname);
   free_uidinfo_list (uidlist);
   xfree (fpr);
   xfree (addrspec);
@@ -1062,7 +1197,7 @@ wks_cmd_remove_key (const char *userid)
   char *addrspec = NULL;
   char *fname = NULL;
 
-  err = wks_fname_from_userid (userid, &fname, &addrspec);
+  err = wks_fname_from_userid (userid, 0, &fname, &addrspec);
   if (err)
     goto leave;
 
@@ -1086,6 +1221,50 @@ wks_cmd_remove_key (const char *userid)
   err = 0;
 
  leave:
+  xfree (fname);
+  xfree (addrspec);
+  return err;
+}
+
+
+/* Print the WKD hash for the user id to stdout.  */
+gpg_error_t
+wks_cmd_print_wkd_hash (const char *userid)
+{
+  gpg_error_t err;
+  char *addrspec, *fname;
+
+  err = wks_fname_from_userid (userid, 1, &fname, &addrspec);
+  if (err)
+    return err;
+
+  es_printf ("%s %s\n", fname, addrspec);
+
+  xfree (fname);
+  xfree (addrspec);
+  return err;
+}
+
+
+/* Print the WKD URL for the user id to stdout.  */
+gpg_error_t
+wks_cmd_print_wkd_url (const char *userid)
+{
+  gpg_error_t err;
+  char *addrspec, *fname;
+  char *domain;
+
+  err = wks_fname_from_userid (userid, 1, &fname, &addrspec);
+  if (err)
+    return err;
+
+  domain = strchr (addrspec, '@');
+  if (domain)
+    *domain++ = 0;
+
+  es_printf ("https://openpgpkey.%s/.well-known/openpgpkey/%s/hu/%s?l=%s\n",
+             domain, domain, fname, addrspec);
+
   xfree (fname);
   xfree (addrspec);
   return err;

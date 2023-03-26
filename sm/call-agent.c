@@ -445,7 +445,7 @@ gpgsm_agent_pkdecrypt (ctrl_t ctrl, const char *keygrip, const char *desc,
 {
   int rc;
   char line[ASSUAN_LINELENGTH];
-   membuf_t data;
+  membuf_t data;
   struct cipher_parm_s cipher_parm;
   size_t n, len;
   char *p, *buf, *endp;
@@ -496,7 +496,8 @@ gpgsm_agent_pkdecrypt (ctrl_t ctrl, const char *keygrip, const char *desc,
       return rc;
     }
 
-  put_membuf (&data, "", 1); /* Make sure it is 0 terminated. */
+  /* Make sure it is 0 terminated so we can invoke strtoul safely.  */
+  put_membuf (&data, "", 1);
   buf = get_membuf (&data, &len);
   if (!buf)
     return gpg_error (GPG_ERR_ENOMEM);
@@ -506,14 +507,20 @@ gpgsm_agent_pkdecrypt (ctrl_t ctrl, const char *keygrip, const char *desc,
     {
       if (len < 13 || memcmp (buf, "(5:value", 8) ) /* "(5:valueN:D)\0" */
         return gpg_error (GPG_ERR_INV_SEXP);
-      len -= 11;   /* Count only the data of the second part. */
-      p = buf + 8; /* Skip leading parenthesis and the value tag. */
+      /* Trim any spurious trailing Nuls: */
+      while (buf[len-1] == 0)
+        len--;
+      if (buf[len-1] != ')')
+        return gpg_error (GPG_ERR_INV_SEXP);
+      len--; /* Drop the final close-paren: */
+      p = buf + 8; /* Skip leading parenthesis and the value tag.  */
+      len -= 8; /* Count only the data of the second part.  */
     }
   else
     {
       /* For compatibility with older gpg-agents handle the old style
-         incomplete S-exps. */
-      len--;      /* Do not count the Nul. */
+         incomplete S-exps.  */
+      len--;      /* Do not count the Nul.  */
       p = buf;
     }
 
@@ -521,8 +528,8 @@ gpgsm_agent_pkdecrypt (ctrl_t ctrl, const char *keygrip, const char *desc,
   if (!n || *endp != ':')
     return gpg_error (GPG_ERR_INV_SEXP);
   endp++;
-  if (endp-p+n > len)
-    return gpg_error (GPG_ERR_INV_SEXP); /* Oops: Inconsistent S-Exp. */
+  if (endp-p+n != len)
+    return gpg_error (GPG_ERR_INV_SEXP); /* Oops: Inconsistent S-Exp.  */
 
   memmove (buf, endp, n);
 
@@ -558,7 +565,7 @@ inq_genkey_parms (void *opaque, const char *line)
 
 
 
-/* Call the agent to generate a newkey */
+/* Call the agent to generate a new key */
 int
 gpgsm_agent_genkey (ctrl_t ctrl,
                     ksba_const_sexp_t keyparms, ksba_sexp_t *r_pubkey)
@@ -568,6 +575,8 @@ gpgsm_agent_genkey (ctrl_t ctrl,
   membuf_t data;
   size_t len;
   unsigned char *buf;
+  gnupg_isotime_t timebuf;
+  char line[ASSUAN_LINELENGTH];
 
   *r_pubkey = NULL;
   rc = start_agent (ctrl);
@@ -585,7 +594,9 @@ gpgsm_agent_genkey (ctrl_t ctrl,
   gk_parm.sexplen = gcry_sexp_canon_len (keyparms, 0, NULL, NULL);
   if (!gk_parm.sexplen)
     return gpg_error (GPG_ERR_INV_VALUE);
-  rc = assuan_transact (agent_ctx, "GENKEY",
+  gnupg_get_isotime (timebuf);
+  snprintf (line, sizeof line, "GENKEY --timestamp=%s", timebuf);
+  rc = assuan_transact (agent_ctx, line,
                         put_membuf_cb, &data,
                         inq_genkey_parms, &gk_parm, NULL, NULL);
   if (rc)
@@ -753,9 +764,9 @@ scd_keypairinfo_status_cb (void *opaque, const char *line)
     {
       sl = append_to_strlist (listaddr, line);
       p = sl->d;
-      /* Make sure that we only have two tokes so that future
-         extensions of the format won't change the format expected by
-         the caller.  */
+      /* Make sure that we only have two tokens so that future
+       * extensions of the format won't change the format expected by
+       * the caller.  */
       while (*p && !spacep (p))
         p++;
       if (*p)
@@ -764,7 +775,22 @@ scd_keypairinfo_status_cb (void *opaque, const char *line)
             p++;
           while (*p && !spacep (p))
             p++;
-          *p = 0;
+          if (*p)
+            {
+              *p++ = 0;
+              while (spacep (p))
+                p++;
+              while (*p && !spacep (p))
+                {
+                  switch (*p++)
+                    {
+                    case 'c': sl->flags |= GCRY_PK_USAGE_CERT; break;
+                    case 's': sl->flags |= GCRY_PK_USAGE_SIGN; break;
+                    case 'e': sl->flags |= GCRY_PK_USAGE_ENCR; break;
+                    case 'a': sl->flags |= GCRY_PK_USAGE_AUTH; break;
+                    }
+                }
+            }
         }
     }
 
@@ -774,7 +800,7 @@ scd_keypairinfo_status_cb (void *opaque, const char *line)
 
 /* Call the agent to read the keypairinfo lines of the current card.
    The list is returned as a string made up of the keygrip, a space
-   and the keyid.  */
+   and the keyid.  The flags of the string carry the usage bits.  */
 int
 gpgsm_agent_scd_keypairinfo (ctrl_t ctrl, strlist_t *r_list)
 {
@@ -789,7 +815,7 @@ gpgsm_agent_scd_keypairinfo (ctrl_t ctrl, strlist_t *r_list)
   inq_parm.ctrl = ctrl;
   inq_parm.ctx = agent_ctx;
 
-  rc = assuan_transact (agent_ctx, "SCD LEARN --force",
+  rc = assuan_transact (agent_ctx, "SCD LEARN --keypairinfo",
                         NULL, NULL,
                         default_inq_cb, &inq_parm,
                         scd_keypairinfo_status_cb, &list);
@@ -963,6 +989,8 @@ learn_cb (void *opaque, const void *buffer, size_t length)
   char *buf;
   ksba_cert_t cert;
   int rc;
+  char *string, *p, *pend;
+  strlist_t sl;
 
   if (parm->error)
     return 0;
@@ -999,6 +1027,35 @@ learn_cb (void *opaque, const void *buffer, size_t length)
       return 0;
     }
 
+  /* Ignore certificates matching certain extended usage flags.  */
+  rc = ksba_cert_get_ext_key_usages (cert, &string);
+  if (!rc)
+    {
+      p = string;
+      while (p && (pend=strchr (p, ':')))
+        {
+          *pend++ = 0;
+          for (sl=opt.ignore_cert_with_oid;
+               sl && strcmp (sl->d, p); sl = sl->next)
+            ;
+          if (sl)
+            {
+              if (opt.verbose)
+                log_info ("certificate ignored due to OID %s\n", sl->d);
+              goto leave;
+            }
+          p = pend;
+          if ((p = strchr (p, '\n')))
+            p++;
+        }
+    }
+  else if (gpg_err_code (rc) != GPG_ERR_NO_DATA)
+    log_error (_("error getting key usage information: %s\n"),
+               gpg_strerror (rc));
+  xfree (string);
+  string = NULL;
+
+
   /* We do not store a certifciate with missing issuers as ephemeral
      because we can assume that the --learn-card command has been used
      on purpose.  */
@@ -1019,6 +1076,9 @@ learn_cb (void *opaque, const void *buffer, size_t length)
         }
     }
 
+ leave:
+  xfree (string);
+  string = NULL;
   ksba_cert_release (cert);
   init_membuf (parm->data, 4096);
   return 0;
@@ -1226,7 +1286,7 @@ gpgsm_agent_ask_passphrase (ctrl_t ctrl, const char *desc_msg, int repeat,
     return gpg_error_from_syserror ();
 
   snprintf (line, DIM(line), "GET_PASSPHRASE --data%s -- X X X %s",
-            repeat? " --repeat=1 --check --qualitybar":"",
+            repeat? " --repeat=1 --check":"",
             arg4);
   xfree (arg4);
 
@@ -1322,6 +1382,8 @@ gpgsm_agent_import_key (ctrl_t ctrl, const void *key, size_t keylen)
 {
   gpg_error_t err;
   struct import_key_parm_s parm;
+  gnupg_isotime_t timebuf;
+  char line[ASSUAN_LINELENGTH];
 
   err = start_agent (ctrl);
   if (err)
@@ -1332,7 +1394,9 @@ gpgsm_agent_import_key (ctrl_t ctrl, const void *key, size_t keylen)
   parm.key    = key;
   parm.keylen = keylen;
 
-  err = assuan_transact (agent_ctx, "IMPORT_KEY",
+  gnupg_get_isotime (timebuf);
+  snprintf (line, sizeof line, "IMPORT_KEY --timestamp=%s", timebuf);
+  err = assuan_transact (agent_ctx, line,
                          NULL, NULL, inq_import_key_parms, &parm, NULL, NULL);
   return err;
 }

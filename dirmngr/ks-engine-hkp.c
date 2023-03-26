@@ -67,6 +67,10 @@
 /* Number of retries done for a dead host etc.  */
 #define SEND_REQUEST_RETRIES 3
 
+/* Number of retries done in case of transient errors.  */
+#define SEND_REQUEST_EXTRA_RETRIES 5
+
+
 enum ks_protocol { KS_PROTOCOL_HKP, KS_PROTOCOL_HKPS, KS_PROTOCOL_MAX };
 
 /* Objects used to maintain information about hosts.  */
@@ -472,7 +476,20 @@ map_host (ctrl_t ctrl, const char *name, const char *srvtag, int force_reselect,
   if (!name || !*name)
     {
       *r_host = xtrystrdup ("localhost");
-      return *r_host? 0 : gpg_error_from_syserror ();
+      if (!*r_host)
+        return gpg_error_from_syserror ();
+      if (r_httphost)
+        {
+          *r_httphost = xtrystrdup (*r_host);
+          if (!*r_httphost)
+            {
+              err = gpg_error_from_syserror ();
+              xfree (*r_host);
+              *r_host = NULL;
+              return err;
+            }
+        }
+      return 0;
     }
 
   /* See whether the host is in our table.  */
@@ -644,6 +661,12 @@ map_host (ctrl_t ctrl, const char *name, const char *srvtag, int force_reselect,
         }
       free_dns_addrinfo (aibuf);
     }
+  else if (r_httphost)
+    {
+      *r_httphost = xtrystrdup (hi->name);
+      if (!*r_httphost)
+        return gpg_error_from_syserror ();
+    }
 
   if (hi->dead)
     {
@@ -703,7 +726,8 @@ mark_host_dead (const char *name)
   parsed_uri_t parsed_uri = NULL;
   int done = 0;
 
-  if (name && *name && !http_parse_uri (&parsed_uri, name, 1))
+  if (name && *name
+      && !http_parse_uri (&parsed_uri, name, HTTP_PARSE_NO_SCHEME_CHECK))
     {
       if (parsed_uri->v6lit)
         {
@@ -1169,12 +1193,14 @@ send_request (ctrl_t ctrl, const char *request, const char *hostportstr,
   err = http_parse_uri (&uri, request, 0);
   if (err)
     goto leave;
+  redirinfo.ctrl       = ctrl;
   redirinfo.orig_url   = request;
   redirinfo.orig_onion = uri->onion;
   redirinfo.allow_downgrade = 1;
   /* FIXME: I am not sure whey we allow a downgrade for hkp requests.
    * Needs at least an explanation here..  */
 
+ once_more:
   err = http_session_new (&session, httphost,
                           ((ctrl->http_no_crl? HTTP_FLAG_NO_CRL : 0)
                            | HTTP_FLAG_TRUST_DEF),
@@ -1184,7 +1210,6 @@ send_request (ctrl_t ctrl, const char *request, const char *hostportstr,
   http_session_set_log_cb (session, cert_log_cb);
   http_session_set_timeout (session, ctrl->timeout);
 
- once_more:
   err = http_open (&http,
                    post_cb? HTTP_REQ_POST : HTTP_REQ_GET,
                    request,
@@ -1264,11 +1289,17 @@ send_request (ctrl_t ctrl, const char *request, const char *hostportstr,
         request = request_buffer;
         http_close (http, 0);
         http = NULL;
+        http_session_release (session);
+        session = NULL;
       }
       goto once_more;
 
     case 501:
       err = gpg_error (GPG_ERR_NOT_IMPLEMENTED);
+      goto leave;
+
+    case 413:  /* Payload too large */
+      err = gpg_error (GPG_ERR_TOO_LARGE);
       goto leave;
 
     default:
@@ -1307,10 +1338,12 @@ send_request (ctrl_t ctrl, const char *request, const char *hostportstr,
    with REQUEST.  The function returns true if the caller shall try
    again.  TRIES_LEFT points to a variable to track the number of
    retries; this function decrements it and won't return true if it is
-   down to zero. */
+   down to zero.  EXTRA_TRIES_LEFT does the same but only for
+   transient http status codes.  */
 static int
 handle_send_request_error (ctrl_t ctrl, gpg_error_t err, const char *request,
-                           unsigned int http_status, unsigned int *tries_left)
+                           unsigned int http_status, unsigned int *tries_left,
+                           unsigned int *extra_tries_left)
 {
   int retry = 0;
 
@@ -1366,9 +1399,12 @@ handle_send_request_error (ctrl_t ctrl, gpg_error_t err, const char *request,
 
           case 503: /* Service Unavailable */
           case 504: /* Gateway Timeout    */
-            log_info ("selecting a different host due to a %u (%s)",
-                      http_status, http_status2string (http_status));
-            retry = 1;
+            if (*extra_tries_left)
+              {
+                log_info ("selecting a different host due to a %u (%s)",
+                          http_status, http_status2string (http_status));
+                retry = 2;
+              }
             break;
           }
       }
@@ -1378,8 +1414,16 @@ handle_send_request_error (ctrl_t ctrl, gpg_error_t err, const char *request,
       break;
     }
 
-  if (*tries_left)
-    --*tries_left;
+  if (retry == 2)
+    {
+      if (*extra_tries_left)
+        --*extra_tries_left;
+    }
+  else
+    {
+      if (*tries_left)
+        --*tries_left;
+    }
 
   return retry;
 }
@@ -1396,6 +1440,7 @@ ks_hkp_search (ctrl_t ctrl, parsed_uri_t uri, const char *pattern,
   gpg_error_t err;
   KEYDB_SEARCH_DESC desc;
   char fprbuf[2+40+1];
+  char *namebuffer = NULL;
   char *hostport = NULL;
   char *request = NULL;
   estream_t fp = NULL;
@@ -1404,6 +1449,7 @@ ks_hkp_search (ctrl_t ctrl, parsed_uri_t uri, const char *pattern,
   char *httphost = NULL;
   unsigned int http_status;
   unsigned int tries = SEND_REQUEST_RETRIES;
+  unsigned int extra_tries = SEND_REQUEST_EXTRA_RETRIES;
 
   *r_fp = NULL;
 
@@ -1418,9 +1464,25 @@ ks_hkp_search (ctrl_t ctrl, parsed_uri_t uri, const char *pattern,
     {
     case KEYDB_SEARCH_MODE_EXACT:
     case KEYDB_SEARCH_MODE_SUBSTR:
-    case KEYDB_SEARCH_MODE_MAIL:
     case KEYDB_SEARCH_MODE_MAILSUB:
       pattern = desc.u.name;
+      break;
+    case KEYDB_SEARCH_MODE_MAIL:
+      namebuffer = xtrystrdup (desc.u.name);
+      if (!namebuffer)
+        {
+          err = gpg_error_from_syserror ();
+          goto leave;
+        }
+      /* Strip trailing angle bracket.  */
+      if (namebuffer[0] && namebuffer[1]
+          && namebuffer[strlen (namebuffer)-1] == '>')
+        namebuffer[strlen(namebuffer)-1] = 0;
+      /* Strip optional leading angle bracket.  */
+      if (*namebuffer == '<' && namebuffer[1])
+        pattern = namebuffer + 1;
+      else
+        pattern = namebuffer;
       break;
     case KEYDB_SEARCH_MODE_SHORT_KID:
       snprintf (fprbuf, sizeof fprbuf, "0x%08lX", (ulong)desc.u.kid[1]);
@@ -1471,7 +1533,7 @@ ks_hkp_search (ctrl_t ctrl, parsed_uri_t uri, const char *pattern,
 
     xfree (request);
     request = strconcat (hostport,
-                         "/pks/lookup?op=index&options=mr&search=",
+                         "/pks/lookup?op=index&options=mr&fingerprint=on&search=",
                          searchkey,
                          NULL);
     xfree (searchkey);
@@ -1485,7 +1547,8 @@ ks_hkp_search (ctrl_t ctrl, parsed_uri_t uri, const char *pattern,
   /* Send the request.  */
   err = send_request (ctrl, request, hostport, httphost, httpflags,
                       NULL, NULL, &fp, &http_status);
-  if (handle_send_request_error (ctrl, err, request, http_status, &tries))
+  if (handle_send_request_error (ctrl, err, request, http_status,
+                                 &tries, &extra_tries))
     {
       reselect = 1;
       goto again;
@@ -1531,6 +1594,7 @@ ks_hkp_search (ctrl_t ctrl, parsed_uri_t uri, const char *pattern,
   xfree (request);
   xfree (hostport);
   xfree (httphost);
+  xfree (namebuffer);
   return err;
 }
 
@@ -1546,6 +1610,7 @@ ks_hkp_get (ctrl_t ctrl, parsed_uri_t uri, const char *keyspec, estream_t *r_fp)
   KEYDB_SEARCH_DESC desc;
   char kidbuf[2+40+1];
   const char *exactname = NULL;
+  char *namebuffer = NULL;
   char *searchkey = NULL;
   char *hostport = NULL;
   char *request = NULL;
@@ -1555,6 +1620,7 @@ ks_hkp_get (ctrl_t ctrl, parsed_uri_t uri, const char *keyspec, estream_t *r_fp)
   unsigned int httpflags;
   unsigned int http_status;
   unsigned int tries = SEND_REQUEST_RETRIES;
+  unsigned int extra_tries = SEND_REQUEST_EXTRA_RETRIES;
 
   *r_fp = NULL;
 
@@ -1584,6 +1650,24 @@ ks_hkp_get (ctrl_t ctrl, parsed_uri_t uri, const char *keyspec, estream_t *r_fp)
 
     case KEYDB_SEARCH_MODE_EXACT:
       exactname = desc.u.name;
+      break;
+
+    case KEYDB_SEARCH_MODE_MAIL:
+      namebuffer = xtrystrdup (desc.u.name);
+      if (!namebuffer)
+        {
+          err = gpg_error_from_syserror ();
+          goto leave;
+        }
+      /* Strip trailing angle bracket.  */
+      if (namebuffer[0] && namebuffer[1]
+          && namebuffer[strlen (namebuffer)-1] == '>')
+        namebuffer[strlen(namebuffer)-1] = 0;
+      /* Strip optional leading angle bracket.  */
+      if (*namebuffer == '<' && namebuffer[1])
+        exactname = namebuffer + 1;
+      else
+        exactname = namebuffer;
       break;
 
     case KEYDB_SEARCH_MODE_FPR16:
@@ -1627,7 +1711,8 @@ ks_hkp_get (ctrl_t ctrl, parsed_uri_t uri, const char *keyspec, estream_t *r_fp)
   /* Send the request.  */
   err = send_request (ctrl, request, hostport, httphost, httpflags,
                       NULL, NULL, &fp, &http_status);
-  if (handle_send_request_error (ctrl, err, request, http_status, &tries))
+  if (handle_send_request_error (ctrl, err, request, http_status,
+                                 &tries, &extra_tries))
     {
       reselect = 1;
       goto again;
@@ -1649,6 +1734,7 @@ ks_hkp_get (ctrl_t ctrl, parsed_uri_t uri, const char *keyspec, estream_t *r_fp)
 
  leave:
   es_fclose (fp);
+  xfree (namebuffer);
   xfree (request);
   xfree (hostport);
   xfree (httphost);
@@ -1703,6 +1789,7 @@ ks_hkp_put (ctrl_t ctrl, parsed_uri_t uri, const void *data, size_t datalen)
   unsigned int httpflags;
   unsigned int http_status;
   unsigned int tries = SEND_REQUEST_RETRIES;
+  unsigned int extra_tries = SEND_REQUEST_EXTRA_RETRIES;
 
   parm.datastring = NULL;
 
@@ -1741,7 +1828,8 @@ ks_hkp_put (ctrl_t ctrl, parsed_uri_t uri, const void *data, size_t datalen)
   /* Send the request.  */
   err = send_request (ctrl, request, hostport, httphost, 0,
                       put_post_cb, &parm, &fp, &http_status);
-  if (handle_send_request_error (ctrl, err, request, http_status, &tries))
+  if (handle_send_request_error (ctrl, err, request, http_status,
+                                 &tries, &extra_tries))
     {
       reselect = 1;
       goto again;

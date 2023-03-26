@@ -48,11 +48,17 @@ enum pk_use_case
     PK_USE_SIGNING, PK_USE_VERIFICATION,
   };
 
+/* Flags to distinguish public key algorithm variants.  */
+#define PK_ALGO_FLAG_RSAPSS 1    /* Use rsaPSS padding. */
+
+
 int gnupg_pk_is_compliant (enum gnupg_compliance_mode compliance, int algo,
+                           unsigned int algo_flags,
                            gcry_mpi_t key[], unsigned int keylength,
                            const char *curvename);
 int gnupg_pk_is_allowed (enum gnupg_compliance_mode compliance,
-                         enum pk_use_case use, int algo, gcry_mpi_t key[],
+                         enum pk_use_case use, int algo,
+                         unsigned int algo_flags, gcry_mpi_t key[],
                          unsigned int keylength, const char *curvename);
 int gnupg_cipher_is_compliant (enum gnupg_compliance_mode compliance,
                                cipher_algo_t cipher,
@@ -67,6 +73,7 @@ int gnupg_digest_is_allowed (enum gnupg_compliance_mode compliance,
                              int producer,
                              digest_algo_t digest);
 int gnupg_rng_is_compliant (enum gnupg_compliance_mode compliance);
+int gnupg_gcrypt_is_compliant (enum gnupg_compliance_mode compliance);
 
 const char *gnupg_status_compliance_flag (enum gnupg_compliance_mode
                                           compliance);
@@ -83,6 +90,8 @@ int gnupg_parse_compliance_option (const char *string,
                                    int quiet);
 const char *gnupg_compliance_option_string (enum gnupg_compliance_mode
                                             compliance);
+
+void gnupg_set_compliance_extra_info (unsigned int min_rsa);
 
 
 #endif /*GNUPG_COMMON_COMPLIANCE_H*/

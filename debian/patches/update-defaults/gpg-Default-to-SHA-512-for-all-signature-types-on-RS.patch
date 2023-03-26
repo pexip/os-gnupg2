@@ -20,7 +20,7 @@ Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
  3 files changed, 3 insertions(+), 6 deletions(-)
 
 diff --git a/configure.ac b/configure.ac
-index b5a72e6..8c68cb8 100644
+index 6e44af2..0a4ae1e 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -317,7 +317,7 @@ GNUPG_GPG_DISABLE_ALGO([rmd160],[RIPE-MD160 hash])
@@ -33,7 +33,7 @@ index b5a72e6..8c68cb8 100644
  
  # Allow disabling of zip support.
 diff --git a/g10/main.h b/g10/main.h
-index 6f93de9..dcd3767 100644
+index d1a54db..50ebad0 100644
 --- a/g10/main.h
 +++ b/g10/main.h
 @@ -41,7 +41,7 @@
@@ -46,10 +46,10 @@ index 6f93de9..dcd3767 100644
  #ifdef HAVE_ZIP
  # define DEFAULT_COMPRESS_ALGO   COMPRESS_ALGO_ZIP
 diff --git a/g10/misc.c b/g10/misc.c
-index 9780969..86baff9 100644
+index 0b19e1a..79c285c 100644
 --- a/g10/misc.c
 +++ b/g10/misc.c
-@@ -743,11 +743,8 @@ map_md_openpgp_to_gcry (digest_algo_t algo)
+@@ -867,11 +867,8 @@ map_md_openpgp_to_gcry (digest_algo_t algo)
      case DIGEST_ALGO_SHA384: return 0;
  #endif
  

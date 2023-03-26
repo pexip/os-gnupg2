@@ -28,7 +28,11 @@ if !HAVE_W32CE_SYSTEM
 noinst_LIBRARIES += libsimple-pwquery.a
 endif
 noinst_PROGRAMS = $(module_tests) $(module_maint_tests)
+if DISABLE_TESTS
+TESTS =
+else
 TESTS = $(module_tests)
+endif
 
 BUILT_SOURCES = audit-events.h status-codes.h
 
@@ -56,9 +60,8 @@ common_sources = \
 	shareddefs.h \
 	openpgpdefs.h \
 	gc-opt-flags.h \
-	keyserver.h \
 	sexp-parse.h \
-	tlv.c tlv.h \
+	tlv.c tlv.h tlv-builder.c \
 	init.c init.h \
 	sexputil.c \
 	sysutils.c sysutils.h \
@@ -94,11 +97,12 @@ common_sources = \
 	name-value.c name-value.h \
 	recsel.c recsel.h \
 	ksba-io-support.c ksba-io-support.h \
+	openpgp-fpr.c \
 	compliance.c compliance.h
 
 
 if HAVE_W32_SYSTEM
-common_sources += w32-reg.c
+common_sources += w32-reg.c w32-cmdline.c
 endif
 
 # To make the code easier to read we have split home some code into
@@ -148,13 +152,13 @@ if MAINTAINER_MODE
 audit-events.h: Makefile.am mkstrtable.awk exaudit.awk audit.h
 	$(AWK) -f $(srcdir)/exaudit.awk $(srcdir)/audit.h \
 	  | $(AWK) -f $(srcdir)/mkstrtable.awk -v textidx=3 -v nogettext=1 \
-		   -v namespace=eventstr_  > $(srcdir)/audit-events.h
+		   -v pkg_namespace=eventstr_  > $(srcdir)/audit-events.h
 
 # Create the status-codes.h include file from status.h
 status-codes.h: Makefile.am mkstrtable.awk exstatus.awk status.h
 	$(AWK) -f $(srcdir)/exstatus.awk $(srcdir)/status.h \
 	  | $(AWK) -f $(srcdir)/mkstrtable.awk -v textidx=3 -v nogettext=1 \
-		   -v namespace=statusstr_  > $(srcdir)/status-codes.h
+		   -v pkg_namespace=statusstr_  > $(srcdir)/status-codes.h
 endif
 
 #
@@ -164,7 +168,7 @@ module_tests = t-stringhelp t-timestuff \
                t-convert t-percent t-gettime t-sysutils t-sexputil \
 	       t-session-env t-openpgp-oid t-ssh-utils \
 	       t-mapstrings t-zb32 t-mbox-util t-iobuf t-strlist \
-	       t-name-value t-ccparray t-recsel
+	       t-name-value t-ccparray t-recsel t-w32-cmdline
 if !HAVE_W32CE_SYSTEM
 module_tests += t-exechelp t-exectool
 endif
@@ -184,7 +188,7 @@ t_common_cflags = $(KSBA_CFLAGS) $(LIBGCRYPT_CFLAGS) \
                   $(LIBASSUAN_CFLAGS) $(GPG_ERROR_CFLAGS) $(INCICONV)
 t_common_ldadd = libcommon.a \
                  $(LIBGCRYPT_LIBS) $(LIBASSUAN_LIBS) $(GPG_ERROR_LIBS) \
-	         $(LIBINTL) $(LIBICONV)
+	         $(LIBINTL) $(LIBICONV) $(NETLIBS)
 
 
 # Common tests
@@ -217,6 +221,9 @@ t_strlist_LDADD = $(t_common_ldadd)
 t_name_value_LDADD = $(t_common_ldadd)
 t_ccparray_LDADD = $(t_common_ldadd)
 t_recsel_LDADD = $(t_common_ldadd)
+
+t_w32_cmdline_SOURCES = t-w32-cmdline.c w32-cmdline.c $(t_extra_src)
+t_w32_cmdline_LDADD = $(t_common_ldadd)
 
 # System specific test
 if HAVE_W32_SYSTEM

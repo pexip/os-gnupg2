@@ -1,6 +1,7 @@
 /* scdaemon.c  -  The GnuPG Smartcard Daemon
- * Copyright (C) 2001-2002, 2004-2005, 2007-2009 Free Software Foundation, Inc.
- * Copyright (C) 2001-2002, 2004-2005, 2007-2014 Werner Koch
+ * Copyright (C) 2001-2002, 2004-2005, 2007-2020 Free Software Foundation, Inc.
+ * Copyright (C) 2001-2002, 2004-2005, 2007-2019 Werner Koch
+ * Copyright (C) 2020 g10 Code GmbH
  *
  * This file is part of GnuPG.
  *
@@ -16,6 +17,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include <config.h>
@@ -37,6 +39,7 @@
 #include <signal.h>
 #include <npth.h>
 
+#define INCLUDED_BY_MAIN_MODULE 1
 #define GNUPG_COMMON_NEED_AFLOCAL
 #include "scdaemon.h"
 #include <ksba.h>
@@ -46,7 +49,6 @@
 
 #include "../common/i18n.h"
 #include "../common/sysutils.h"
-#include "app-common.h"
 #include "iso7816.h"
 #include "apdu.h"
 #include "ccid-driver.h"
@@ -92,6 +94,7 @@ enum cmd_and_opt_values
   oCardTimeout,
   octapiDriver,
   opcscDriver,
+  opcscShared,
   oDisableCCID,
   oDisableOpenSC,
   oDisablePinpad,
@@ -99,7 +102,9 @@ enum cmd_and_opt_values
   oDenyAdmin,
   oDisableApplication,
   oEnablePinpadVarlen,
-  oListenBacklog
+  oListenBacklog,
+
+  oNoop
 };
 
 
@@ -108,17 +113,24 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_c (aGPGConfList, "gpgconf-list", "@"),
   ARGPARSE_c (aGPGConfTest, "gpgconf-test", "@"),
 
-  ARGPARSE_group (301, N_("@Options:\n ")),
+  ARGPARSE_header (NULL, N_("Options used for startup")),
 
   ARGPARSE_s_n (oServer,"server", N_("run in server mode (foreground)")),
   ARGPARSE_s_n (oMultiServer, "multi-server",
                 N_("run in multi server mode (foreground)")),
   ARGPARSE_s_n (oDaemon, "daemon", N_("run in daemon mode (background)")),
-  ARGPARSE_s_n (oVerbose, "verbose", N_("verbose")),
-  ARGPARSE_s_n (oQuiet, "quiet", N_("be somewhat more quiet")),
+  ARGPARSE_s_n (oNoDetach, "no-detach", N_("do not detach from the console")),
   ARGPARSE_s_n (oSh,    "sh", N_("sh-style command output")),
   ARGPARSE_s_n (oCsh,   "csh", N_("csh-style command output")),
-  ARGPARSE_s_s (oOptions, "options", N_("|FILE|read options from FILE")),
+  ARGPARSE_s_s (oHomedir,    "homedir",      "@"),
+  ARGPARSE_conffile (oOptions, "options", N_("|FILE|read options from FILE")),
+  ARGPARSE_noconffile (oNoOptions, "no-options", "@"),
+
+
+  ARGPARSE_header ("Monitor", N_("Options controlling the diagnostic output")),
+
+  ARGPARSE_s_n (oVerbose, "verbose", N_("verbose")),
+  ARGPARSE_s_n (oQuiet, "quiet", N_("be somewhat more quiet")),
   ARGPARSE_s_s (oDebug, "debug", "@"),
   ARGPARSE_s_n (oDebugAll, "debug-all", "@"),
   ARGPARSE_s_s (oDebugLevel, "debug-level" ,
@@ -128,14 +140,19 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oDebugCCIDDriver, "debug-ccid-driver", "@"),
   ARGPARSE_s_n (oDebugLogTid, "debug-log-tid", "@"),
   ARGPARSE_p_u (oDebugAssuanLogCats, "debug-assuan-log-cats", "@"),
-  ARGPARSE_s_n (oNoDetach, "no-detach", N_("do not detach from the console")),
   ARGPARSE_s_s (oLogFile,  "log-file", N_("|FILE|write a log to FILE")),
+
+
+  ARGPARSE_header ("Configuration",
+                   N_("Options controlling the configuration")),
+
   ARGPARSE_s_s (oReaderPort, "reader-port",
                 N_("|N|connect to reader at port N")),
   ARGPARSE_s_s (octapiDriver, "ctapi-driver",
                 N_("|NAME|use NAME as ct-API driver")),
   ARGPARSE_s_s (opcscDriver, "pcsc-driver",
                 N_("|NAME|use NAME as PC/SC driver")),
+  ARGPARSE_s_n (opcscShared, "pcsc-shared", "@"),
   ARGPARSE_s_n (oDisableCCID, "disable-ccid",
 #ifdef HAVE_LIBUSB
                                     N_("do not use the internal CCID driver")
@@ -149,15 +166,20 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oDisablePinpad, "disable-pinpad",
                 N_("do not use a reader's pinpad")),
   ARGPARSE_ignore (300, "disable-keypad"),
+  ARGPARSE_s_n (oEnablePinpadVarlen, "enable-pinpad-varlen",
+                N_("use variable length input for pinpad")),
+  ARGPARSE_s_s (oDisableApplication, "disable-application", "@"),
+  ARGPARSE_s_i (oListenBacklog, "listen-backlog", "@"),
+
+
+  ARGPARSE_header("Security", N_("Options controlling the security")),
 
   ARGPARSE_s_n (oAllowAdmin, "allow-admin", "@"),
   ARGPARSE_s_n (oDenyAdmin, "deny-admin",
                 N_("deny the use of admin card commands")),
-  ARGPARSE_s_s (oDisableApplication, "disable-application", "@"),
-  ARGPARSE_s_n (oEnablePinpadVarlen, "enable-pinpad-varlen",
-                N_("use variable length input for pinpad")),
-  ARGPARSE_s_s (oHomedir,    "homedir",      "@"),
-  ARGPARSE_s_i (oListenBacklog, "listen-backlog", "@"),
+
+  /* Stubs for options which are implemented by 2.3 or later.  */
+  ARGPARSE_s_s (oNoop, "application-priority", "@"),
 
   ARGPARSE_end ()
 };
@@ -173,6 +195,7 @@ static struct debug_flags_s debug_flags [] =
     { DBG_MEMSTAT_VALUE, "memstat" },
     { DBG_HASHING_VALUE, "hashing" },
     { DBG_IPC_VALUE    , "ipc"     },
+    { DBG_CARD_VALUE   , "card"    },
     { DBG_CARD_IO_VALUE, "cardio"  },
     { DBG_READER_VALUE , "reader"  },
     { 0, NULL }
@@ -281,9 +304,11 @@ my_strusage (int level)
 
   switch (level)
     {
+    case  9: p = "GPL-3.0-or-later"; break;
     case 11: p = "@SCDAEMON@ (@GNUPG@)";
       break;
     case 13: p = VERSION; break;
+    case 14: p = GNUPG_DEF_COPYRIGHT_LINE; break;
     case 17: p = PRINTABLE_OS_NAME; break;
     case 19: p = _("Please report bugs to <@EMAIL@>.\n"); break;
 
@@ -415,13 +440,11 @@ main (int argc, char **argv )
   ARGPARSE_ARGS pargs;
   int orig_argc;
   char **orig_argv;
-  FILE *configfp = NULL;
-  char *configname = NULL;
+  char *last_configname = NULL;
+  const char *configname = NULL;
   const char *shell;
-  unsigned int configlineno;
-  int parse_debug = 0;
+  int debug_argparser = 0;
   const char *debug_level = NULL;
-  int default_config =1;
   int greeting = 0;
   int nogreeting = 0;
   int multi_server = 0;
@@ -431,7 +454,7 @@ main (int argc, char **argv )
   char *logfile = NULL;
   int debug_wait = 0;
   int gpgconf_list = 0;
-  const char *config_filename = NULL;
+  char *config_filename = NULL;
   int allow_coredump = 0;
   struct assuan_malloc_hooks malloc_hooks;
   int res;
@@ -478,73 +501,61 @@ main (int argc, char **argv )
   orig_argv = argv;
   pargs.argc = &argc;
   pargs.argv = &argv;
-  pargs.flags= 1|(1<<6);  /* do not remove the args, ignore version */
-  while (arg_parse( &pargs, opts))
+  pargs.flags= (ARGPARSE_FLAG_KEEP | ARGPARSE_FLAG_NOVERSION);
+  while (gnupg_argparse (NULL, &pargs, opts))
     {
-      if (pargs.r_opt == oDebug || pargs.r_opt == oDebugAll)
-        parse_debug++;
-      else if (pargs.r_opt == oOptions)
-        { /* yes there is one, so we do not try the default one, but
-             read the option file when it is encountered at the
-             commandline */
-          default_config = 0;
-        }
-        else if (pargs.r_opt == oNoOptions)
-          default_config = 0; /* --no-options */
-        else if (pargs.r_opt == oHomedir)
+      switch (pargs.r_opt)
+        {
+        case oDebug:
+        case oDebugAll:
+          debug_argparser++;
+          break;
+        case oHomedir:
           gnupg_set_homedir (pargs.r.ret_str);
+          break;
+        }
     }
+  /* Reset the flags.  */
+  pargs.flags &= ~(ARGPARSE_FLAG_KEEP | ARGPARSE_FLAG_NOVERSION);
 
-  /* initialize the secure memory. */
+  /* Initialize the secure memory. */
   gcry_control (GCRYCTL_INIT_SECMEM, 16384, 0);
   maybe_setuid = 0;
 
   /*
-     Now we are working under our real uid
-  */
+   * Now we are working under our real uid
+   */
 
-
-  if (default_config)
-    configname = make_filename (gnupg_homedir (), SCDAEMON_NAME EXTSEP_S "conf",
-                                NULL );
-
+  /* The configuraton directories for use by gpgrt_argparser.  */
+  gnupg_set_confdir (GNUPG_CONFDIR_SYS, gnupg_sysconfdir ());
+  gnupg_set_confdir (GNUPG_CONFDIR_USER, gnupg_homedir ());
 
   argc = orig_argc;
   argv = orig_argv;
   pargs.argc = &argc;
   pargs.argv = &argv;
-  pargs.flags=  1;  /* do not remove the args */
- next_pass:
-  if (configname)
-    {
-      configlineno = 0;
-      configfp = fopen (configname, "r");
-      if (!configfp)
-        {
-          if (default_config)
-            {
-              if( parse_debug )
-                log_info (_("Note: no default option file '%s'\n"),
-                          configname );
-            }
-          else
-            {
-              log_error (_("option file '%s': %s\n"),
-                         configname, strerror(errno) );
-              exit(2);
-            }
-          xfree (configname);
-          configname = NULL;
-        }
-      if (parse_debug && configname )
-        log_info (_("reading options from '%s'\n"), configname );
-      default_config = 0;
-    }
-
-  while (optfile_parse( configfp, configname, &configlineno, &pargs, opts) )
+  pargs.flags |=  (ARGPARSE_FLAG_RESET
+                   | ARGPARSE_FLAG_KEEP
+                   | ARGPARSE_FLAG_SYS
+                   | ARGPARSE_FLAG_USER);
+  while (gnupg_argparser (&pargs, opts, SCDAEMON_NAME EXTSEP_S "conf"))
     {
       switch (pargs.r_opt)
         {
+        case ARGPARSE_CONFFILE:
+          if (debug_argparser)
+            log_info (_("reading options from '%s'\n"),
+                      pargs.r_type? pargs.r.ret_str: "[cmdline]");
+          if (pargs.r_type)
+            {
+              xfree (last_configname);
+              last_configname = xstrdup (pargs.r.ret_str);
+              configname = last_configname;
+            }
+          else
+            configname = NULL;
+          break;
+
         case aGPGConfList: gpgconf_list = 1; break;
         case aGPGConfTest: gpgconf_list = 2; break;
         case oQuiet: opt.quiet = 1; break;
@@ -577,18 +588,8 @@ main (int argc, char **argv )
           set_libassuan_log_cats (pargs.r.ret_ulong);
           break;
 
-        case oOptions:
-          /* config files may not be nested (silently ignore them) */
-          if (!configfp)
-            {
-                xfree(configname);
-                configname = xstrdup(pargs.r.ret_str);
-                goto next_pass;
-            }
-          break;
         case oNoGreeting: nogreeting = 1; break;
         case oNoVerbose: opt.verbose = 0; break;
-        case oNoOptions: break; /* no-options */
         case oHomedir: gnupg_set_homedir (pargs.r.ret_str); break;
         case oNoDetach: nodetach = 1; break;
         case oLogFile: logfile = pargs.r.ret_str; break;
@@ -601,6 +602,7 @@ main (int argc, char **argv )
         case oReaderPort: opt.reader_port = pargs.r.ret_str; break;
         case octapiDriver: opt.ctapi_driver = pargs.r.ret_str; break;
         case opcscDriver: opt.pcsc_driver = pargs.r.ret_str; break;
+        case opcscShared: opt.pcsc_shared = 1; break;
         case oDisableCCID: opt.disable_ccid = 1; break;
         case oDisableOpenSC: break;
 
@@ -622,22 +624,28 @@ main (int argc, char **argv )
           listen_backlog = pargs.r.ret_int;
           break;
 
+        case oNoop: break;
+
         default:
-          pargs.err = configfp? ARGPARSE_PRINT_WARNING:ARGPARSE_PRINT_ERROR;
+          if (configname)
+            pargs.err = ARGPARSE_PRINT_WARNING;
+          else
+            pargs.err = ARGPARSE_PRINT_ERROR;
           break;
         }
     }
-  if (configfp)
+  gnupg_argparse (NULL, &pargs, NULL);  /* Release internal state.  */
+
+  if (!last_configname)
+    config_filename = make_filename (gnupg_homedir (),
+                                     SCDAEMON_NAME EXTSEP_S "conf",
+                                     NULL);
+  else
     {
-      fclose( configfp );
-      configfp = NULL;
-      /* Keep a copy of the config name for use by --gpgconf-list. */
-      config_filename = configname;
-      configname = NULL;
-      goto next_pass;
+      config_filename = last_configname;
+      last_configname = NULL;
     }
-  xfree (configname);
-  configname = NULL;
+
   if (log_get_errorcount(0))
     exit(2);
   if (nogreeting )
@@ -684,21 +692,13 @@ main (int argc, char **argv )
   if (gpgconf_list)
     {
       /* List options and default values in the GPG Conf format.  */
-      char *filename = NULL;
       char *filename_esc;
 
-      if (config_filename)
-        filename = xstrdup (config_filename);
-      else
-        filename = make_filename (gnupg_homedir (),
-                                  SCDAEMON_NAME EXTSEP_S "conf", NULL);
-      filename_esc = percent_escape (filename, NULL);
-
+      filename_esc = percent_escape (config_filename, NULL);
       es_printf ("%s-%s.conf:%lu:\"%s\n",
                  GPGCONF_NAME, SCDAEMON_NAME,
                  GC_OPT_FLAG_DEFAULT, filename_esc);
       xfree (filename_esc);
-      xfree (filename);
 
       es_printf ("verbose:%lu:\n"
                  "quiet:%lu:\n"
@@ -952,8 +952,10 @@ main (int argc, char **argv )
       close (fd);
     }
 
+  xfree (config_filename);
   return 0;
 }
+
 
 void
 scd_exit (int rc)
@@ -1233,7 +1235,7 @@ scd_kick_the_loop (void)
 #else
   int ret = kill (main_thread_pid, SIGCONT);
   if (ret < 0)
-    log_error ("SetEvent for scd_kick_the_loop failed: %s\n",
+    log_error ("sending signal for scd_kick_the_loop failed: %s\n",
                gpg_strerror (gpg_error_from_syserror ()));
 #endif
 }
@@ -1289,6 +1291,8 @@ handle_connections (int listen_fd)
 
     events[0] = the_event = INVALID_HANDLE_VALUE;
     events[1] = INVALID_HANDLE_VALUE;
+    /* Create event for manual reset, initially non-signaled.  Make it
+     * waitable and inheritable.  */
     h = CreateEvent (&sa, TRUE, FALSE, NULL);
     if (!h)
       log_error ("can't create scd event: %s\n", w32_strerror (-1) );

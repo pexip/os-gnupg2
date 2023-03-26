@@ -347,6 +347,15 @@ Outputs additional information while running.
 You can increase the verbosity by giving several
 verbose commands to @command{gpgsm}, such as @samp{-vv}.
 
+@item --keyserver @var{string}
+@opindex keyserver
+This is a deprecated option.  It was used to add an LDAP server to use
+for X.509 certificate and CRL lookup.  The alias @option{--ldapserver}
+existed from version 2.2.28 to 2.2.33 but is now entirely ignored.
+
+LDAP servers must be given in the configuration for @command{dirmngr}.
+
+
 @item --policy-file @var{filename}
 @opindex policy-file
 Change the default name of the policy file to @var{filename}.
@@ -409,9 +418,14 @@ change it.
 @itemx --disable-crl-checks
 @opindex enable-crl-checks
 @opindex disable-crl-checks
-By default the @acronym{CRL} checks are enabled and the DirMngr is used
-to check for revoked certificates.  The disable option is most useful
-with an off-line network connection to suppress this check.
+By default the @acronym{CRL} checks are enabled and the DirMngr is
+used to check for revoked certificates.  The disable option is most
+useful with an off-line network connection to suppress this check and
+also to avoid that new certificates introduce a web bug by including a
+certificate specific CRL DP.  The disable option also disables an
+issuer certificate lookup via the authorityInfoAccess property of the
+certificate; the @option{--enable-issuer-key-retrieve} can be used
+to make use of that property anyway.
 
 @item  --enable-trusted-cert-crl-check
 @itemx --disable-trusted-cert-crl-check
@@ -437,6 +451,14 @@ is useful to make sure that a fresh CRL is available for certificates
 hold in the keybox.  The suggested way of doing this is by using it
 along with the option @option{--with-validation} for a key listing
 command.  This option should not be used in a configuration file.
+
+@item --enable-issuer-based-crl-check
+@opindex enable-issuer-based-crl-check
+Run a CRL check even for certificates which do not have any CRL
+distribution point.  This requires that a suitable LDAP server has
+been configured in Dirmngr and that the CRL can be found using the
+issuer.  This option reverts to what GnuPG did up to version 2.2.20.
+This option is in general not useful.
 
 @item  --enable-ocsp
 @itemx --disable-ocsp
@@ -643,6 +665,37 @@ such broken signatures.  If @command{gpgsm} prints an error like
 ``digest algo 8 has not been enabled'' you may want to try this option,
 with @samp{SHA256} for @var{name}.
 
+@item --compliance @var{string}
+@opindex compliance
+Set the compliance mode.  Valid values are shown when using "help" for
+@var{string}.
+
+@item --min-rsa-length @var{n}
+@opindex min-rsa-length
+This option adjusts the compliance mode "de-vs" for stricter key size
+requirements.  For example, a value of 3000 turns rsa2048 and dsa2048
+keys into non-VS-NfD compliant keys.
+
+@item --require-compliance
+@opindex require-compliance
+To check that data has been encrypted according to the rules of the
+current compliance mode, a gpgsm user needs to evaluate the status
+lines.  This is allows frontends to handle compliance check in a more
+flexible way.  However, for scripted use the required evaluation of
+the status-line requires quite some effort; this option can be used
+instead to make sure that the gpgsm process exits with a failure if
+the compliance rules are not fulfilled.  Note that this option has
+currently an effect only in "de-vs" mode.
+
+@item --ignore-cert-with-oid @var{oid}
+@opindex ignore-cert-with-oid
+Add @var{oid} to the list of OIDs to be checked while reading
+certificates from smartcards. The @var{oid} is expected to be in
+dotted decimal form, like @code{2.5.29.3}.  This option may be used
+more than once.  As of now certificates with an extended key usage
+matching one of those OIDs are ignored during a @option{--learn-card}
+operation and not imported.  This option can help to keep the local
+key database clear of unneeded certificates stored on smartcards.
 
 @item --faked-system-time @var{epoch}
 @opindex faked-system-time
@@ -656,6 +709,14 @@ forth to @var{epoch} which is the number of seconds elapsed since the year
 Include ephemeral flagged keys in the output of key listings.  Note
 that they are included anyway if the key specification for a listing
 is given as fingerprint or keygrip.
+
+@item --compatibility-flags @var{flags}
+@opindex compatibility-flags
+Set compatibility flags to work around problems due to non-compliant
+certificates or data.  The @var{flags} are given as a comma separated
+list of flag names and are OR-ed together.  The special flag "none"
+clears the list and allows to start over with an empty list.  To get a
+list of available flags the sole word "help" can be used.
 
 @item --debug-level @var{level}
 @opindex debug-level
@@ -1082,7 +1143,7 @@ key. The algorithm must be capable of signing.  This is a required
 parameter.  The only supported value for @var{algo} is @samp{rsa}.
 
 @item Key-Length: @var{nbits}
-The requested length of a generated key in bits.  Defaults to 2048.
+The requested length of a generated key in bits.  Defaults to 3072.
 
 @item Key-Grip: @var{hexstring}
 This is optional and used to generate a CSR or certificate for an
@@ -1224,9 +1285,9 @@ last file descriptor passed to the application.
 @xref{fun-assuan_sendfd, ,the assuan_sendfd function,assuan,the Libassuan
 manual}, on how to do descriptor passing.
 
-The @code{--armor} option may be used to advice the server that the
-input data is in @acronym{PEM} format, @code{--base64} advices that a
-raw base-64 encoding is used, @code{--binary} advices of raw binary
+The @code{--armor} option may be used to advise the server that the
+input data is in @acronym{PEM} format, @code{--base64} advises that a
+raw base-64 encoding is used, @code{--binary} advises of raw binary
 input (@acronym{BER}).  If none of these options is used, the server
 tries to figure out the used encoding, but this may not always be
 correct.

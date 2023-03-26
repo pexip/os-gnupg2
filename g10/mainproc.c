@@ -1,6 +1,7 @@
 /* mainproc.c - handle packets
  * Copyright (C) 1998-2009 Free Software Foundation, Inc.
  * Copyright (C) 2013-2014 Werner Koch
+ * Copyright (C) 2020 g10 Code GmbH
  *
  * This file is part of GnuPG.
  *
@@ -55,6 +56,15 @@ struct kidlist_item
   int reason;
 };
 
+/* An object to build a list of symkey packet info.  */
+struct symlist_item
+{
+  struct symlist_item *next;
+  int cipher_algo;
+  int cfb_mode;
+  int other_error;
+};
+
 
 /*
  * Object to hold the processing context.
@@ -96,6 +106,9 @@ struct mainproc_context
   int trustletter;  /* Temporary usage in list_node. */
   ulong symkeys;    /* Number of symmetrically encrypted session keys.  */
   struct kidlist_item *pkenc_list; /* List of encryption packets. */
+  struct symlist_item *symenc_list; /* List of sym. encryption packets. */
+  int seen_pkt_encrypted_aead; /* PKT_ENCRYPTED_AEAD packet seen. */
+  int seen_pkt_encrypted_mdc;  /* PKT_ENCRYPTED_MDC packet seen. */
   struct {
     unsigned int sig_seen:1;      /* Set to true if a signature packet
                                      has been seen. */
@@ -140,10 +153,19 @@ release_list( CTX c )
       c->pkenc_list = tmp;
     }
   c->pkenc_list = NULL;
+  while (c->symenc_list)
+    {
+      struct symlist_item *tmp = c->symenc_list->next;
+      xfree (c->symenc_list);
+      c->symenc_list = tmp;
+    }
+  c->symenc_list = NULL;
   c->list = NULL;
   c->any.data = 0;
   c->any.uncompress_failed = 0;
   c->last_was_session_key = 0;
+  c->seen_pkt_encrypted_aead = 0;
+  c->seen_pkt_encrypted_mdc = 0;
   xfree (c->dek);
   c->dek = NULL;
 }
@@ -251,47 +273,111 @@ add_signature (CTX c, PACKET *pkt)
   return 1;
 }
 
-static int
+
+static gpg_error_t
 symkey_decrypt_seskey (DEK *dek, byte *seskey, size_t slen)
 {
+  gpg_error_t err;
   gcry_cipher_hd_t hd;
+  enum gcry_cipher_modes ciphermode;
+  unsigned int noncelen, keylen;
 
-  if(slen < 17 || slen > 33)
+  if (dek->use_aead)
+    {
+      err = openpgp_aead_algo_info (dek->use_aead, &ciphermode, &noncelen);
+      if (err)
+        return err;
+    }
+  else
+    {
+      ciphermode = GCRY_CIPHER_MODE_CFB;
+      noncelen = 0;
+    }
+
+  /* Check that the session key has a size of 16 to 32 bytes.  */
+  if ((dek->use_aead && (slen < (noncelen + 16 + 16)
+                         || slen > (noncelen + 32 + 16)))
+      || (!dek->use_aead && (slen < 17 || slen > 33)))
     {
       log_error ( _("weird size for an encrypted session key (%d)\n"),
 		  (int)slen);
-      return GPG_ERR_BAD_KEY;
+      return gpg_error (GPG_ERR_BAD_KEY);
     }
 
-  if (openpgp_cipher_open (&hd, dek->algo, GCRY_CIPHER_MODE_CFB, 1))
-      BUG ();
-  if (gcry_cipher_setkey ( hd, dek->key, dek->keylen ))
-    BUG ();
-  gcry_cipher_setiv ( hd, NULL, 0 );
-  gcry_cipher_decrypt ( hd, seskey, slen, NULL, 0 );
-  gcry_cipher_close ( hd );
+  err = openpgp_cipher_open (&hd, dek->algo, ciphermode, 1);
+  if (!err)
+    err = gcry_cipher_setkey (hd, dek->key, dek->keylen);
+  if (!err)
+    err = gcry_cipher_setiv (hd, noncelen? seskey : NULL, noncelen);
+  if (err)
+    goto leave;
 
-  /* Here we can only test whether the algo given in decrypted
-   * session key is a valid OpenPGP algo.  With 11 defined
-   * symmetric algorithms we will miss 4.3% of wrong passphrases
-   * here.  The actual checking is done later during bulk
-   * decryption; we can't bring this check forward easily.  */
-  if (openpgp_cipher_test_algo (seskey[0]))
-    return gpg_error (GPG_ERR_BAD_KEY);
+  if (dek->use_aead)
+    {
+      byte ad[4];
 
-  /* Now we replace the dek components with the real session key to
-     decrypt the contents of the sequencing packet. */
+      ad[0] = (0xc0 | PKT_SYMKEY_ENC);
+      ad[1] = 5;
+      ad[2] = dek->algo;
+      ad[3] = dek->use_aead;
+      err = gcry_cipher_authenticate (hd, ad, 4);
+      if (err)
+        goto leave;
+      gcry_cipher_final (hd);
+      keylen = slen - noncelen - 16;
+      err = gcry_cipher_decrypt (hd, seskey+noncelen, keylen, NULL, 0);
+      if (err)
+        goto leave;
+      err = gcry_cipher_checktag (hd, seskey+noncelen+keylen, 16);
+      if (err)
+        goto leave;
+      /* Now we replace the dek components with the real session key to
+       * decrypt the contents of the sequencing packet. */
+      if (keylen > DIM(dek->key))
+        {
+          err = gpg_error (GPG_ERR_TOO_LARGE);
+          goto leave;
+        }
+      dek->keylen = keylen;
+      memcpy (dek->key, seskey + noncelen, dek->keylen);
+    }
+  else
+    {
+      gcry_cipher_decrypt (hd, seskey, slen, NULL, 0);
 
-  dek->keylen=slen-1;
-  dek->algo=seskey[0];
+      /* Here we can only test whether the algo given in decrypted
+       * session key is a valid OpenPGP algo.  With 11 defined
+       * symmetric algorithms we will miss 4.3% of wrong passphrases
+       * here.  The actual checking is done later during bulk
+       * decryption; we can't bring this check forward easily.  We
+       * need to use the GPG_ERR_CHECKSUM so that we won't run into
+       * the gnupg < 2.2 bug compatible case which would terminate the
+       * process on GPG_ERR_CIPHER_ALGO.  Note that with AEAD (above)
+       * we will have a reliable test here.  */
+      if (openpgp_cipher_test_algo (seskey[0])
+          || openpgp_cipher_get_algo_keylen (seskey[0]) != slen - 1)
+        {
+          err = gpg_error (GPG_ERR_CHECKSUM);
+          goto leave;
+        }
 
-  if(dek->keylen > DIM(dek->key))
-    BUG ();
-
-  memcpy(dek->key, seskey + 1, dek->keylen);
+      /* Now we replace the dek components with the real session key to
+       * decrypt the contents of the sequencing packet. */
+      keylen = slen-1;
+      if (keylen > DIM(dek->key))
+        {
+          err = gpg_error (GPG_ERR_TOO_LARGE);
+          goto leave;
+        }
+      dek->algo = seskey[0];
+      dek->keylen = slen-1;
+      memcpy (dek->key, seskey + 1, dek->keylen);
+    }
 
   /*log_hexdump( "thekey", dek->key, dek->keylen );*/
 
+ leave:
+  gcry_cipher_close (hd);
   return 0;
 }
 
@@ -299,6 +385,7 @@ symkey_decrypt_seskey (DEK *dek, byte *seskey, size_t slen)
 static void
 proc_symkey_enc (CTX c, PACKET *pkt)
 {
+  gpg_error_t err;
   PKT_symkey_enc *enc;
 
   enc = pkt->pkt.symkey_enc;
@@ -308,19 +395,27 @@ proc_symkey_enc (CTX c, PACKET *pkt)
     {
       int algo = enc->cipher_algo;
       const char *s = openpgp_cipher_algo_name (algo);
+      const char *a = (enc->aead_algo ? openpgp_aead_algo_name (enc->aead_algo)
+                       /**/           : "CFB");
 
       if (!openpgp_cipher_test_algo (algo))
         {
           if (!opt.quiet)
             {
+              /* Note: TMPSTR is only used to avoid i18n changes.  */
+              char *tmpstr = xstrconcat (s, ".", a, NULL);
               if (enc->seskeylen)
-                log_info (_("%s encrypted session key\n"), s );
+                log_info (_("%s encrypted session key\n"), tmpstr);
               else
-                log_info (_("%s encrypted data\n"), s );
+                log_info (_("%s encrypted data\n"), tmpstr);
+              xfree (tmpstr);
             }
         }
       else
-        log_error (_("encrypted with unknown algorithm %d\n"), algo);
+        {
+          log_error (_("encrypted with unknown algorithm %d\n"), algo);
+          s = NULL; /* Force a goto leave.  */
+        }
 
       if (openpgp_md_test_algo (enc->s2k.hash_algo))
         {
@@ -344,10 +439,12 @@ proc_symkey_enc (CTX c, PACKET *pkt)
         }
       else
         {
-          c->dek = passphrase_to_dek (algo, &enc->s2k, 0, 0, NULL, NULL);
+          c->dek = passphrase_to_dek (algo, &enc->s2k, 0, 0, NULL,
+                                      GETPASSWORD_FLAG_SYMDECRYPT, NULL);
           if (c->dek)
             {
               c->dek->symmetric = 1;
+              c->dek->use_aead = enc->aead_algo;
 
               /* FIXME: This doesn't work perfectly if a symmetric key
                  comes before a public key in the message - if the
@@ -358,9 +455,21 @@ proc_symkey_enc (CTX c, PACKET *pkt)
                  come later. */
               if (enc->seskeylen)
                 {
-                  if (symkey_decrypt_seskey (c->dek,
-                                             enc->seskey, enc->seskeylen))
+                  err = symkey_decrypt_seskey (c->dek,
+                                               enc->seskey, enc->seskeylen);
+                  if (err)
                     {
+                      log_info ("decryption of the symmetrically encrypted"
+                                 " session key failed: %s\n",
+                                 gpg_strerror (err));
+                      if (gpg_err_code (err) != GPG_ERR_BAD_KEY
+                          && gpg_err_code (err) != GPG_ERR_CHECKSUM)
+                        log_fatal ("process terminated to be bug compatible\n");
+                      else
+                        write_status_text (STATUS_ERROR,
+                                           "symkey_decrypt.maybe_error"
+                                           " 11_BAD_PASSPHRASE");
+
                       if (c->dek->s2k_cacheid[0])
                         {
                           if (opt.debug)
@@ -379,6 +488,20 @@ proc_symkey_enc (CTX c, PACKET *pkt)
     }
 
  leave:
+  /* Record infos from the packet.  */
+  {
+    struct symlist_item  *symitem;
+    symitem = xcalloc (1, sizeof *symitem);
+    if (enc)
+      {
+        symitem->cipher_algo = enc->cipher_algo;
+        symitem->cfb_mode = !enc->aead_algo;
+      }
+    else
+      symitem->other_error = 1;
+    symitem->next = c->symenc_list;
+    c->symenc_list = symitem;
+  }
   c->symkeys++;
   free_packet (pkt, NULL);
 }
@@ -537,6 +660,9 @@ print_pkenc_list (ctrl_t ctrl, struct kidlist_item *list, int failed)
         {
           log_info (_("public key decryption failed: %s\n"),
                     gpg_strerror (list->reason));
+          if (gpg_err_source (list->reason) == GPG_ERR_SOURCE_SCD
+              && gpg_err_code (list->reason) == GPG_ERR_INV_ID)
+            print_further_info ("a reason might be a card with replaced keys");
           write_status_error ("pkdecrypt_failed", list->reason);
         }
     }
@@ -548,6 +674,12 @@ proc_encrypted (CTX c, PACKET *pkt)
 {
   int result = 0;
   int early_plaintext = literals_seen;
+  unsigned int compliance_de_vs = 0;
+
+  if (pkt->pkttype == PKT_ENCRYPTED_AEAD)
+    c->seen_pkt_encrypted_aead = 1;
+  if (pkt->pkttype == PKT_ENCRYPTED_MDC)
+    c->seen_pkt_encrypted_mdc = 1;
 
   if (early_plaintext)
     {
@@ -619,7 +751,8 @@ proc_encrypted (CTX c, PACKET *pkt)
               log_info (_("assuming %s encrypted data\n"), "IDEA");
             }
 
-          c->dek = passphrase_to_dek (algo, s2k, 0, 0, NULL, &canceled);
+          c->dek = passphrase_to_dek (algo, s2k, 0, 0, NULL,
+                                      GETPASSWORD_FLAG_SYMDECRYPT, &canceled);
           if (c->dek)
             c->dek->algo_info_printed = 1;
           else if (canceled)
@@ -633,30 +766,41 @@ proc_encrypted (CTX c, PACKET *pkt)
 
   /* Compute compliance with CO_DE_VS.  */
   if (!result && is_status_enabled ()
-      /* Symmetric encryption and asymmetric encryption voids compliance.  */
-      && (c->symkeys != !!c->pkenc_list )
       /* Overriding session key voids compliance.  */
       && !opt.override_session_key
       /* Check symmetric cipher.  */
+      && gnupg_gcrypt_is_compliant (CO_DE_VS)
       && gnupg_cipher_is_compliant (CO_DE_VS, c->dek->algo,
                                     GCRY_CIPHER_MODE_CFB))
     {
       struct kidlist_item *i;
+      struct symlist_item *si;
       int compliant = 1;
       PKT_public_key *pk = xmalloc (sizeof *pk);
 
       if ( !(c->pkenc_list || c->symkeys) )
         log_debug ("%s: where else did the session key come from?\n", __func__);
 
-      /* Now check that every key used to encrypt the session key is
-       * compliant.  */
+      /* Check that all seen symmetric key packets use compliant
+       * algos.  This is so that no non-compliant encrypted session
+       * key can be sneaked in.  */
+      for (si = c->symenc_list; si && compliant; si = si->next)
+        {
+          if (!si->cfb_mode
+              || !gnupg_cipher_is_compliant (CO_DE_VS, si->cipher_algo,
+                                             GCRY_CIPHER_MODE_CFB))
+            compliant = 0;
+        }
+
+      /* Check that every known public key used to encrypt the session key
+       * is compliant.  */
       for (i = c->pkenc_list; i && compliant; i = i->next)
         {
           memset (pk, 0, sizeof *pk);
           pk->pubkey_algo = i->pubkey_algo;
-          if (get_pubkey (c->ctrl, pk, i->kid) != 0
-              || ! gnupg_pk_is_compliant (CO_DE_VS, pk->pubkey_algo, pk->pkey,
-                                          nbits_from_pk (pk), NULL))
+          if (!get_pubkey (c->ctrl, pk, i->kid)
+              && !gnupg_pk_is_compliant (CO_DE_VS, pk->pubkey_algo, 0,
+                                         pk->pkey, nbits_from_pk (pk), NULL))
             compliant = 0;
           release_public_key_parts (pk);
         }
@@ -664,15 +808,18 @@ proc_encrypted (CTX c, PACKET *pkt)
       xfree (pk);
 
       if (compliant)
-        write_status_strings (STATUS_DECRYPTION_COMPLIANCE_MODE,
-                              gnupg_status_compliance_flag (CO_DE_VS),
-                              NULL);
-
+        compliance_de_vs |= 1;
     }
 
 
   if (!result)
-    result = decrypt_data (c->ctrl, c, pkt->pkt.encrypted, c->dek );
+    {
+      int compl_error;
+      result = decrypt_data (c->ctrl, c, pkt->pkt.encrypted, c->dek,
+                             &compl_error);
+      if (!result && !compl_error)
+        compliance_de_vs |= 2;
+    }
 
   /* Trigger the deferred error.  */
   if (!result && early_plaintext)
@@ -682,7 +829,8 @@ proc_encrypted (CTX c, PACKET *pkt)
     ;
   else if (!result
            && !opt.ignore_mdc_error
-           && !pkt->pkt.encrypted->mdc_method)
+           && !pkt->pkt.encrypted->mdc_method
+           && !pkt->pkt.encrypted->aead_algo)
     {
       /* The message has been decrypted but does not carry an MDC.
        * The option --ignore-mdc-error has also not been used.  To
@@ -711,17 +859,31 @@ proc_encrypted (CTX c, PACKET *pkt)
       write_status (STATUS_DECRYPTION_FAILED);
     }
   else if (!result || (gpg_err_code (result) == GPG_ERR_BAD_SIGNATURE
+                       && !pkt->pkt.encrypted->aead_algo
                        && opt.ignore_mdc_error))
     {
+      /* All is fine or for an MDC message the MDC failed but the
+       * --ignore-mdc-error option is active.  For compatibility
+       * reasons we issue GOODMDC also for AEAD messages.  */
       write_status (STATUS_DECRYPTION_OKAY);
       if (opt.verbose > 1)
         log_info(_("decryption okay\n"));
-      if (pkt->pkt.encrypted->mdc_method && !result)
-        write_status (STATUS_GOODMDC);
+
+      if (pkt->pkt.encrypted->aead_algo)
+        {
+          write_status (STATUS_GOODMDC);
+          compliance_de_vs |= 4;
+        }
+      else if (pkt->pkt.encrypted->mdc_method && !result)
+        {
+          write_status (STATUS_GOODMDC);
+          compliance_de_vs |= 4;
+        }
       else
         log_info (_("WARNING: message was not integrity protected\n"));
     }
-  else if (gpg_err_code (result) == GPG_ERR_BAD_SIGNATURE)
+  else if (gpg_err_code (result) == GPG_ERR_BAD_SIGNATURE
+           || gpg_err_code (result) == GPG_ERR_TRUNCATED)
     {
       glo_ctrl.lasterr = result;
       log_error (_("WARNING: encrypted message has been manipulated!\n"));
@@ -730,20 +892,38 @@ proc_encrypted (CTX c, PACKET *pkt)
     }
   else
     {
-      if ((gpg_err_code (result) == GPG_ERR_BAD_KEY
-	   || gpg_err_code (result) == GPG_ERR_CIPHER_ALGO)
-          && *c->dek->s2k_cacheid != '\0')
+      if (gpg_err_code (result) == GPG_ERR_BAD_KEY
+          || gpg_err_code (result) == GPG_ERR_CHECKSUM
+          || gpg_err_code (result) == GPG_ERR_CIPHER_ALGO)
         {
-          if (opt.debug)
-            log_debug ("cleared passphrase cached with ID: %s\n",
-                       c->dek->s2k_cacheid);
-          passphrase_clear_cache (c->dek->s2k_cacheid);
+          if (c->symkeys)
+            write_status_text (STATUS_ERROR,
+                               "symkey_decrypt.maybe_error"
+                               " 11_BAD_PASSPHRASE");
+
+          if (*c->dek->s2k_cacheid != '\0')
+            {
+              if (opt.debug)
+                log_debug ("cleared passphrase cached with ID: %s\n",
+                           c->dek->s2k_cacheid);
+              passphrase_clear_cache (c->dek->s2k_cacheid);
+            }
         }
       glo_ctrl.lasterr = result;
       write_status (STATUS_DECRYPTION_FAILED);
       log_error (_("decryption failed: %s\n"), gpg_strerror (result));
       /* Hmmm: does this work when we have encrypted using multiple
        * ways to specify the session key (symmmetric and PK). */
+    }
+
+
+  /* If we concluded that the decryption was compliant, issue a
+   * compliance status before the end of the decryption status.  */
+  if (compliance_de_vs == (4|2|1))
+    {
+      write_status_strings (STATUS_DECRYPTION_COMPLIANCE_MODE,
+                            gnupg_status_compliance_flag (CO_DE_VS),
+                            NULL);
     }
 
   xfree (c->dek);
@@ -757,6 +937,32 @@ proc_encrypted (CTX c, PACKET *pkt)
    * a misplace extra literal data packets follows after this
    * encrypted packet.  */
   literals_seen++;
+
+  /* The --require-compliance option allows to simplify decryption in
+   * de-vs compliance mode by just looking at the exit status.  */
+  if (opt.flags.require_compliance
+      && opt.compliance == CO_DE_VS
+      && compliance_de_vs != (4|2|1))
+    {
+      compliance_failure ();
+    }
+}
+
+
+static int
+have_seen_pkt_encrypted_aead_or_mdc( CTX c )
+{
+  CTX cc;
+
+  for (cc = c; cc; cc = cc->anchor)
+    {
+      if (cc->seen_pkt_encrypted_aead)
+	return 1;
+      if (cc->seen_pkt_encrypted_mdc)
+	return 1;
+    }
+
+  return 0;
 }
 
 
@@ -835,7 +1041,7 @@ proc_plaintext( CTX c, PACKET *pkt )
         }
     }
 
-  if (!any && !opt.skip_verify)
+  if (!any && !opt.skip_verify && !have_seen_pkt_encrypted_aead_or_mdc(c))
     {
       /* This is for the old GPG LITERAL+SIG case.  It's not legal
          according to 2440, so hopefully it won't come up that often.
@@ -956,10 +1162,13 @@ proc_compressed (CTX c, PACKET *pkt)
 /*
  * Check the signature.  If R_PK is not NULL a copy of the public key
  * used to verify the signature will be stored there, or NULL if not
- * found.  Returns: 0 = valid signature or an error code
+ * found.  If FORCED_PK is not NULL, this public key is used to verify
+ * _data signatures_ and no key lookup is done.  Returns: 0 = valid
+ * signature or an error code
  */
 static int
-do_check_sig (CTX c, kbnode_t node, int *is_selfsig,
+do_check_sig (CTX c, kbnode_t node,
+              PKT_public_key *forced_pk, int *is_selfsig,
 	      int *is_expkey, int *is_revkey, PKT_public_key **r_pk)
 {
   PKT_signature *sig;
@@ -1045,14 +1254,18 @@ do_check_sig (CTX c, kbnode_t node, int *is_selfsig,
 
   /* We only get here if we are checking the signature of a binary
      (0x00) or text document (0x01).  */
-  rc = check_signature2 (c->ctrl, sig, md, NULL, is_expkey, is_revkey, r_pk);
+  rc = check_signature2 (c->ctrl, sig, md,
+                         forced_pk,
+                         NULL, is_expkey, is_revkey, r_pk);
   if (! rc)
     md_good = md;
   else if (gpg_err_code (rc) == GPG_ERR_BAD_SIGNATURE && md2)
     {
       PKT_public_key *pk2;
 
-      rc = check_signature2 (c->ctrl, sig, md2, NULL, is_expkey, is_revkey,
+      rc = check_signature2 (c->ctrl, sig, md2,
+                             forced_pk,
+                             NULL, is_expkey, is_revkey,
                              r_pk? &pk2 : NULL);
       if (!rc)
         {
@@ -1215,7 +1428,7 @@ list_node (CTX c, kbnode_t node)
       if (opt.check_sigs)
         {
           fflush (stdout);
-          rc2 = do_check_sig (c, node, &is_selfsig, NULL, NULL, NULL);
+          rc2 = do_check_sig (c, node, NULL, &is_selfsig, NULL, NULL, NULL);
           switch (gpg_err_code (rc2))
             {
             case 0:		          sigrc = '!'; break;
@@ -1459,7 +1672,8 @@ do_proc_packets (ctrl_t ctrl, CTX c, iobuf_t a)
             case PKT_PUBKEY_ENC:    proc_pubkey_enc (ctrl, c, pkt); break;
             case PKT_SYMKEY_ENC:    proc_symkey_enc (c, pkt); break;
             case PKT_ENCRYPTED:
-            case PKT_ENCRYPTED_MDC: proc_encrypted (c, pkt); break;
+            case PKT_ENCRYPTED_MDC:
+            case PKT_ENCRYPTED_AEAD:proc_encrypted (c, pkt); break;
             case PKT_COMPRESSED:    rc = proc_compressed (c, pkt); break;
             default: newpkt = 0; break;
 	    }
@@ -1475,6 +1689,7 @@ do_proc_packets (ctrl_t ctrl, CTX c, iobuf_t a)
             case PKT_PUBKEY_ENC:
             case PKT_ENCRYPTED:
             case PKT_ENCRYPTED_MDC:
+            case PKT_ENCRYPTED_AEAD:
               write_status_text( STATUS_UNEXPECTED, "0" );
               rc = GPG_ERR_UNEXPECTED;
               goto leave;
@@ -1502,7 +1717,8 @@ do_proc_packets (ctrl_t ctrl, CTX c, iobuf_t a)
             case PKT_SYMKEY_ENC:  proc_symkey_enc (c, pkt); break;
             case PKT_PUBKEY_ENC:  proc_pubkey_enc (ctrl, c, pkt); break;
             case PKT_ENCRYPTED:
-            case PKT_ENCRYPTED_MDC: proc_encrypted (c, pkt); break;
+            case PKT_ENCRYPTED_MDC:
+            case PKT_ENCRYPTED_AEAD: proc_encrypted (c, pkt); break;
             case PKT_PLAINTEXT:   proc_plaintext (c, pkt); break;
             case PKT_COMPRESSED:  rc = proc_compressed (c, pkt); break;
             case PKT_ONEPASS_SIG: newpkt = add_onepass_sig (c, pkt); break;
@@ -1529,7 +1745,8 @@ do_proc_packets (ctrl_t ctrl, CTX c, iobuf_t a)
             case PKT_PUBKEY_ENC:  proc_pubkey_enc (ctrl, c, pkt); break;
             case PKT_SYMKEY_ENC:  proc_symkey_enc (c, pkt); break;
             case PKT_ENCRYPTED:
-            case PKT_ENCRYPTED_MDC: proc_encrypted (c, pkt); break;
+            case PKT_ENCRYPTED_MDC:
+            case PKT_ENCRYPTED_AEAD: proc_encrypted (c, pkt); break;
             case PKT_PLAINTEXT:   proc_plaintext (c, pkt); break;
             case PKT_COMPRESSED:  rc = proc_compressed (c, pkt); break;
             case PKT_ONEPASS_SIG: newpkt = add_onepass_sig (c, pkt); break;
@@ -1746,7 +1963,7 @@ check_sig_and_print (CTX c, kbnode_t node)
   int is_revkey = 0;
   char *issuer_fpr = NULL;
   PKT_public_key *pk = NULL;  /* The public key for the signature or NULL. */
-  int tried_ks_by_fpr;
+  kbnode_t included_keyblock = NULL;
 
   if (opt.skip_verify)
     {
@@ -1895,14 +2112,48 @@ check_sig_and_print (CTX c, kbnode_t node)
   if (sig->signers_uid)
     log_info (_("               issuer \"%s\"\n"), sig->signers_uid);
 
-  rc = do_check_sig (c, node, NULL, &is_expkey, &is_revkey, &pk);
+  rc = do_check_sig (c, node, NULL, NULL, &is_expkey, &is_revkey, &pk);
 
-  /* If the key isn't found, check for a preferred keyserver.  */
-  if (gpg_err_code (rc) == GPG_ERR_NO_PUBKEY && sig->flags.pref_ks)
+  /* If the key is not found but the signature includes a key block we
+   * use that key block for verification and on success import it.  */
+  if (gpg_err_code (rc) == GPG_ERR_NO_PUBKEY
+      && sig->flags.key_block
+      && opt.flags.auto_key_import)
+    {
+      PKT_public_key *included_pk;
+      const byte *kblock;
+      size_t kblock_len;
+
+      included_pk = xcalloc (1, sizeof *included_pk);
+      kblock = parse_sig_subpkt (sig->hashed, SIGSUBPKT_KEY_BLOCK, &kblock_len);
+      if (kblock && kblock_len > 1
+          && !get_pubkey_from_buffer (c->ctrl, included_pk,
+                                      kblock+1, kblock_len-1,
+                                      sig->keyid, &included_keyblock))
+        {
+          rc = do_check_sig (c, node, included_pk,
+                             NULL, &is_expkey, &is_revkey, &pk);
+          if (!rc)
+            {
+              /* The keyblock has been verified, we now import it.  */
+              rc = import_included_key_block (c->ctrl, included_keyblock);
+            }
+
+        }
+      free_public_key (included_pk);
+    }
+
+  /* If the key isn't found, check for a preferred keyserver.  Note
+   * that this is only done if honor-keyserver-url has been set.  We
+   * test for this in the loop so that we can show info about the
+   * preferred keyservers.  */
+  if (gpg_err_code (rc) == GPG_ERR_NO_PUBKEY
+      && sig->flags.pref_ks)
     {
       const byte *p;
       int seq = 0;
       size_t n;
+      int any_pref_ks = 0;
 
       while ((p=enum_sig_subpkt (sig->hashed,SIGSUBPKT_PREF_KS,&n,&seq,NULL)))
         {
@@ -1913,9 +2164,10 @@ check_sig_and_print (CTX c, kbnode_t node)
           log_info(_("Key available at: ") );
           print_utf8_buffer (log_get_stream(), p, n);
           log_printf ("\n");
+          any_pref_ks = 1;
 
-          if (opt.keyserver_options.options&KEYSERVER_AUTO_KEY_RETRIEVE
-              && opt.keyserver_options.options&KEYSERVER_HONOR_KEYSERVER_URL)
+          if ((opt.keyserver_options.options&KEYSERVER_AUTO_KEY_RETRIEVE)
+              && (opt.keyserver_options.options&KEYSERVER_HONOR_KEYSERVER_URL))
             {
               struct keyserver_spec *spec;
 
@@ -1924,14 +2176,22 @@ check_sig_and_print (CTX c, kbnode_t node)
                 {
                   int res;
 
+                  if (DBG_LOOKUP)
+                    log_debug ("trying auto-key-retrieve method %s\n",
+                               "Pref-KS");
+
                   free_public_key (pk);
                   pk = NULL;
                   glo_ctrl.in_auto_key_retrieve++;
-                  res = keyserver_import_keyid (c->ctrl, sig->keyid,spec, 1);
+                  res = keyserver_import_keyid (c->ctrl, sig->keyid,spec,
+                                                KEYSERVER_IMPORT_FLAG_QUICK);
                   glo_ctrl.in_auto_key_retrieve--;
                   if (!res)
                     rc = do_check_sig (c, node, NULL,
-                                       &is_expkey, &is_revkey, &pk);
+                                       NULL, &is_expkey, &is_revkey, &pk);
+                  else if (DBG_LOOKUP)
+                    log_debug ("lookup via %s failed: %s\n", "Pref-KS",
+                               gpg_strerror (res));
                   free_keyserver_spec (spec);
 
                   if (!rc)
@@ -1939,10 +2199,44 @@ check_sig_and_print (CTX c, kbnode_t node)
                 }
             }
         }
+
+      if (any_pref_ks
+          && (opt.keyserver_options.options&KEYSERVER_AUTO_KEY_RETRIEVE)
+          && !(opt.keyserver_options.options&KEYSERVER_HONOR_KEYSERVER_URL))
+        log_info (_("Note: Use '%s' to make use of this info\n"),
+                  "--keyserver-option honor-keyserver-url");
+    }
+
+  /* If the above methods didn't work, our next try is to retrieve the
+   * key from the WKD.  This requires that WKD is in the AKL and the
+   * Signer's UID is in the signature.  */
+  if (gpg_err_code (rc) == GPG_ERR_NO_PUBKEY
+      && (opt.keyserver_options.options & KEYSERVER_AUTO_KEY_RETRIEVE)
+      && !opt.flags.disable_signer_uid
+      && akl_has_wkd_method ()
+      && sig->signers_uid)
+    {
+      int res;
+
+      if (DBG_LOOKUP)
+        log_debug ("trying auto-key-retrieve method %s\n", "WKD");
+      free_public_key (pk);
+      pk = NULL;
+      glo_ctrl.in_auto_key_retrieve++;
+      res = keyserver_import_wkd (c->ctrl, sig->signers_uid,
+                                  KEYSERVER_IMPORT_FLAG_QUICK, NULL, NULL);
+      glo_ctrl.in_auto_key_retrieve--;
+      /* Fixme: If the fingerprint is embedded in the signature,
+       * compare it to the fingerprint of the returned key.  */
+      if (!res)
+        rc = do_check_sig (c, node, NULL, NULL, &is_expkey, &is_revkey, &pk);
+      else if (DBG_LOOKUP)
+        log_debug ("lookup via %s failed: %s\n", "WKD", gpg_strerror (res));
     }
 
   /* If the avove methods didn't work, our next try is to use the URI
-   * from a DNS PKA record.  */
+   * from a DNS PKA record.  This is a legacy method which will
+   * eventually be removed.  */
   if (gpg_err_code (rc) == GPG_ERR_NO_PUBKEY
       && (opt.keyserver_options.options & KEYSERVER_AUTO_KEY_RETRIEVE)
       && (opt.keyserver_options.options & KEYSERVER_HONOR_PKA_RECORD))
@@ -1959,6 +2253,9 @@ check_sig_and_print (CTX c, kbnode_t node)
           spec = parse_keyserver_uri (uri, 1);
           if (spec)
             {
+              if (DBG_LOOKUP)
+                log_debug ("trying auto-key-retrieve method %s\n", "PKA");
+
               free_public_key (pk);
               pk = NULL;
               glo_ctrl.in_auto_key_retrieve++;
@@ -1966,17 +2263,18 @@ check_sig_and_print (CTX c, kbnode_t node)
               glo_ctrl.in_auto_key_retrieve--;
               free_keyserver_spec (spec);
               if (!res)
-                rc = do_check_sig (c, node, NULL, &is_expkey, &is_revkey, &pk);
+                rc = do_check_sig (c, node, NULL,
+                                   NULL, &is_expkey, &is_revkey, &pk);
+              else if (DBG_LOOKUP)
+                log_debug ("lookup via %s failed: %s\n", "PKA",
+                           gpg_strerror (res));
             }
         }
     }
 
   /* If the above methods didn't work, our next try is to locate
    * the key via its fingerprint from a keyserver.  This requires
-   * that the signers fingerprint is encoded in the signature.  We
-   * favor this over the WKD method (to be tried next), because an
-   * arbitrary keyserver is less subject to web bug like monitoring.  */
-  tried_ks_by_fpr = 0;
+   * that the signers fingerprint is encoded in the signature.  */
   if (gpg_err_code (rc) == GPG_ERR_NO_PUBKEY
       && (opt.keyserver_options.options&KEYSERVER_AUTO_KEY_RETRIEVE)
       && keyserver_any_configured (c->ctrl))
@@ -1989,54 +2287,21 @@ check_sig_and_print (CTX c, kbnode_t node)
       if (p)
         {
           /* v4 packet with a SHA-1 fingerprint.  */
+          if (DBG_LOOKUP)
+            log_debug ("trying auto-key-retrieve method %s\n", "KS");
+
           free_public_key (pk);
           pk = NULL;
           glo_ctrl.in_auto_key_retrieve++;
-          res = keyserver_import_fprint (c->ctrl, p, n, opt.keyserver, 1);
-          tried_ks_by_fpr = 1;
+          res = keyserver_import_fprint (c->ctrl, p, n, opt.keyserver,
+                                         KEYSERVER_IMPORT_FLAG_QUICK);
           glo_ctrl.in_auto_key_retrieve--;
           if (!res)
-            rc = do_check_sig (c, node, NULL, &is_expkey, &is_revkey, &pk);
+            rc = do_check_sig (c, node, NULL,
+                               NULL, &is_expkey, &is_revkey, &pk);
+          else if (DBG_LOOKUP)
+            log_debug ("lookup via %s failed: %s\n", "KS", gpg_strerror (res));
         }
-    }
-
-  /* If the above methods didn't work, our next try is to retrieve the
-   * key from the WKD. */
-  if (gpg_err_code (rc) == GPG_ERR_NO_PUBKEY
-      && (opt.keyserver_options.options & KEYSERVER_AUTO_KEY_RETRIEVE)
-      && !opt.flags.disable_signer_uid
-      && akl_has_wkd_method ()
-      && sig->signers_uid)
-    {
-      int res;
-
-      free_public_key (pk);
-      pk = NULL;
-      glo_ctrl.in_auto_key_retrieve++;
-      res = keyserver_import_wkd (c->ctrl, sig->signers_uid, 1, NULL, NULL);
-      glo_ctrl.in_auto_key_retrieve--;
-      /* Fixme: If the fingerprint is embedded in the signature,
-       * compare it to the fingerprint of the returned key.  */
-      if (!res)
-        rc = do_check_sig (c, node, NULL, &is_expkey, &is_revkey, &pk);
-    }
-
-  /* If the above methods did't work, our next try is to use a
-   * keyserver.  */
-  if (gpg_err_code (rc) == GPG_ERR_NO_PUBKEY
-      && (opt.keyserver_options.options&KEYSERVER_AUTO_KEY_RETRIEVE)
-      && !tried_ks_by_fpr
-      && keyserver_any_configured (c->ctrl))
-    {
-      int res;
-
-      free_public_key (pk);
-      pk = NULL;
-      glo_ctrl.in_auto_key_retrieve++;
-      res = keyserver_import_keyid (c->ctrl, sig->keyid, opt.keyserver, 1);
-      glo_ctrl.in_auto_key_retrieve--;
-      if (!res)
-        rc = do_check_sig (c, node, NULL, &is_expkey, &is_revkey, &pk);
     }
 
   if (!rc || gpg_err_code (rc) == GPG_ERR_BAD_SIGNATURE)
@@ -2062,7 +2327,13 @@ check_sig_and_print (CTX c, kbnode_t node)
        * keyblock has already been fetched.  Thus we could use the
        * fingerprint or PK itself to lookup the entire keyblock.  That
        * would best be done with a cache.  */
-      keyblock = get_pubkeyblock_for_sig (c->ctrl, sig);
+      if (included_keyblock)
+        {
+          keyblock = included_keyblock;
+          included_keyblock = NULL;
+        }
+      else
+        keyblock = get_pubkeyblock_for_sig (c->ctrl, sig);
 
       snprintf (keyid_str, sizeof keyid_str, "%08lX%08lX [uncertain] ",
                 (ulong)sig->keyid[0], (ulong)sig->keyid[1]);
@@ -2258,7 +2529,7 @@ check_sig_and_print (CTX c, kbnode_t node)
 
       /* Print compliance warning for Good signatures.  */
       if (!rc && pk && !opt.quiet
-          && !gnupg_pk_is_compliant (opt.compliance, pk->pubkey_algo,
+          && !gnupg_pk_is_compliant (opt.compliance, pk->pubkey_algo, 0,
                                      pk->pkey, nbits_from_pk (pk), NULL))
         {
           log_info (_("WARNING: This key is not suitable for signing"
@@ -2342,12 +2613,21 @@ check_sig_and_print (CTX c, kbnode_t node)
 
       /* Compute compliance with CO_DE_VS.  */
       if (pk && is_status_enabled ()
-          && gnupg_pk_is_compliant (CO_DE_VS, pk->pubkey_algo, pk->pkey,
+          && gnupg_gcrypt_is_compliant (CO_DE_VS)
+          && gnupg_pk_is_compliant (CO_DE_VS, pk->pubkey_algo, 0, pk->pkey,
                                     nbits_from_pk (pk), NULL)
           && gnupg_digest_is_compliant (CO_DE_VS, sig->digest_algo))
         write_status_strings (STATUS_VERIFICATION_COMPLIANCE_MODE,
                               gnupg_status_compliance_flag (CO_DE_VS),
                               NULL);
+      else if (opt.flags.require_compliance
+               && opt.compliance == CO_DE_VS)
+        {
+          compliance_failure ();
+          if (!rc)
+            rc = gpg_error (GPG_ERR_FORBIDDEN);
+        }
+
 
       free_public_key (pk);
       pk = NULL;
@@ -2375,6 +2655,7 @@ check_sig_and_print (CTX c, kbnode_t node)
     }
 
   free_public_key (pk);
+  release_kbnode (included_keyblock);
   xfree (issuer_fpr);
   return rc;
 }

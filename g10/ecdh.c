@@ -39,7 +39,7 @@ static const struct
   /* Note: Must be sorted by ascending values for QBITS.  */
   {
     { 256, DIGEST_ALGO_SHA256, CIPHER_ALGO_AES    },
-    { 384, DIGEST_ALGO_SHA384, CIPHER_ALGO_AES256 },
+    { 384, DIGEST_ALGO_SHA384, CIPHER_ALGO_AES192 },
 
     /* Note: 528 is 521 rounded to the 8 bit boundary */
     { 528, DIGEST_ALGO_SHA512, CIPHER_ALGO_AES256 }
@@ -76,21 +76,79 @@ pk_ecdh_default_params (unsigned int qbits)
     }
   log_assert (i < DIM (kek_params_table));
   if (DBG_CRYPTO)
-    log_printhex ("ECDH KEK params are", kek_params, sizeof(kek_params) );
+    log_printhex (kek_params, sizeof(kek_params), "ECDH KEK params are");
 
   return gcry_mpi_set_opaque (NULL, kek_params, 4 * 8);
 }
 
 
+/* Extract x-component from the point (SHARED,NSHARED) and strore it
+ * in a new buffer at R_SECRET_X.  POINT_NBYTES is the size to
+ * represent an EC point which is determined by the public key.
+ * SECRET_X_SIZE is the size of x component to represent an integer
+ * which is determined by the curve. */
+static gpg_error_t
+extract_secret_x (byte **r_secret_x,
+                  const char *shared, size_t nshared,
+                  size_t point_nbytes, size_t secret_x_size)
+{
+  byte *secret_x;
+
+  *r_secret_x = NULL;
+
+  /* Extract X from the result.  It must be in the format of:
+     04 || X || Y
+     40 || X
+     41 || X
+
+     Since it may come with the prefix, the size of point is larger
+     than or equals to the size of an integer X.  We also better check
+     that the provided shared point is not larger than the size needed
+     to represent the point.  */
+  if (point_nbytes < secret_x_size)
+    return gpg_error (GPG_ERR_BAD_DATA);
+  if (point_nbytes < nshared)
+    return gpg_error (GPG_ERR_BAD_DATA);
+
+  /* Extract x component of the shared point: this is the actual
+     shared secret. */
+  secret_x = xtrymalloc_secure (point_nbytes);
+  if (!secret_x)
+    return gpg_error_from_syserror ();
+
+  memcpy (secret_x, shared, nshared);
+
+  /* Wrangle the provided point unless only the x-component w/o any
+   * prefix was provided.  */
+  if (nshared != secret_x_size)
+    {
+      /* Remove the prefix.  */
+      if ((point_nbytes & 1))
+        memmove (secret_x, secret_x+1, secret_x_size);
+
+      /* Clear the rest of data.  */
+      if (point_nbytes - secret_x_size)
+        memset (secret_x+secret_x_size, 0, point_nbytes-secret_x_size);
+    }
+
+  if (DBG_CRYPTO)
+    log_printhex (secret_x, secret_x_size, "ECDH shared secret X is:");
+
+  *r_secret_x = secret_x;
+  return 0;
+}
+
+
 /* Encrypts/decrypts DATA using a key derived from the ECC shared
-   point SHARED_MPI using the FIPS SP 800-56A compliant method
+   point (SHARED,NSHARED) using the FIPS SP 800-56A compliant method
    key_derivation+key_wrapping.  If IS_ENCRYPT is true the function
    encrypts; if false, it decrypts.  PKEY is the public key and PK_FP
    the fingerprint of this public key.  On success the result is
    stored at R_RESULT; on failure NULL is stored at R_RESULT and an
    error code returned.  */
 gpg_error_t
-pk_ecdh_encrypt_with_shared_point (int is_encrypt, gcry_mpi_t shared_mpi,
+pk_ecdh_encrypt_with_shared_point (int is_encrypt,
+                                   const char *shared, size_t nshared,
                                    const byte pk_fp[MAX_FINGERPRINT_LEN],
                                    gcry_mpi_t data, gcry_mpi_t *pkey,
                                    gcry_mpi_t *r_result)
@@ -103,90 +161,24 @@ pk_ecdh_encrypt_with_shared_point (int is_encrypt, gcry_mpi_t shared_mpi,
   size_t kek_params_size;
   int kdf_hash_algo;
   int kdf_encr_algo;
+  size_t kek_size;
   unsigned char message[256];
   size_t message_size;
 
   *r_result = NULL;
 
-  nbits = pubkey_nbits (PUBKEY_ALGO_ECDH, pkey);
-  if (!nbits)
-    return gpg_error (GPG_ERR_TOO_SHORT);
-
-  {
-    size_t nbytes;
-
-    /* Extract x component of the shared point: this is the actual
-       shared secret. */
-    nbytes = (mpi_get_nbits (pkey[1] /* public point */)+7)/8;
-    secret_x = xtrymalloc_secure (nbytes);
-    if (!secret_x)
-      return gpg_error_from_syserror ();
-
-    err = gcry_mpi_print (GCRYMPI_FMT_USG, secret_x, nbytes,
-                          &nbytes, shared_mpi);
-    if (err)
-      {
-        xfree (secret_x);
-        log_error ("ECDH ephemeral export of shared point failed: %s\n",
-                   gpg_strerror (err));
-        return err;
-      }
-
-    /* Expected size of the x component */
-    secret_x_size = (nbits+7)/8;
-
-    /* Extract X from the result.  It must be in the format of:
-           04 || X || Y
-           40 || X
-           41 || X
-
-       Since it always comes with the prefix, it's larger than X.  In
-       old experimental version of libgcrypt, there is a case where it
-       returns X with no prefix of 40, so, nbytes == secret_x_size
-       is allowed.  */
-    if (nbytes < secret_x_size)
-      {
-        xfree (secret_x);
-        return gpg_error (GPG_ERR_BAD_DATA);
-      }
-
-    /* Remove the prefix.  */
-    if ((nbytes & 1))
-      memmove (secret_x, secret_x+1, secret_x_size);
-
-    /* Clear the rest of data.  */
-    if (nbytes - secret_x_size)
-      memset (secret_x+secret_x_size, 0, nbytes-secret_x_size);
-
-    if (DBG_CRYPTO)
-      log_printhex ("ECDH shared secret X is:", secret_x, secret_x_size );
-  }
-
-  /*** We have now the shared secret bytes in secret_x. ***/
-
-  /* At this point we are done with PK encryption and the rest of the
-   * function uses symmetric key encryption techniques to protect the
-   * input DATA.  The following two sections will simply replace
-   * current secret_x with a value derived from it.  This will become
-   * a KEK.
-   */
   if (!gcry_mpi_get_flag (pkey[2], GCRYMPI_FLAG_OPAQUE))
-    {
-      xfree (secret_x);
-      return gpg_error (GPG_ERR_BUG);
-    }
+    return gpg_error (GPG_ERR_BUG);
+
   kek_params = gcry_mpi_get_opaque (pkey[2], &nbits);
   kek_params_size = (nbits+7)/8;
 
   if (DBG_CRYPTO)
-    log_printhex ("ecdh KDF params:", kek_params, kek_params_size);
+    log_printhex (kek_params, kek_params_size, "ecdh KDF params:");
 
   /* Expect 4 bytes  03 01 hash_alg symm_alg.  */
   if (kek_params_size != 4 || kek_params[0] != 3 || kek_params[1] != 1)
-    {
-      xfree (secret_x);
-      return gpg_error (GPG_ERR_BAD_PUBKEY);
-    }
+    return gpg_error (GPG_ERR_BAD_PUBKEY);
 
   kdf_hash_algo = kek_params[2];
   kdf_encr_algo = kek_params[3];
@@ -199,17 +191,43 @@ pk_ecdh_encrypt_with_shared_point (int is_encrypt, gcry_mpi_t shared_mpi,
   if (kdf_hash_algo != GCRY_MD_SHA256
       && kdf_hash_algo != GCRY_MD_SHA384
       && kdf_hash_algo != GCRY_MD_SHA512)
-    {
-      xfree (secret_x);
-      return gpg_error (GPG_ERR_BAD_PUBKEY);
-    }
+    return gpg_error (GPG_ERR_BAD_PUBKEY);
+
   if (kdf_encr_algo != CIPHER_ALGO_AES
       && kdf_encr_algo != CIPHER_ALGO_AES192
       && kdf_encr_algo != CIPHER_ALGO_AES256)
-    {
-      xfree (secret_x);
-      return gpg_error (GPG_ERR_BAD_PUBKEY);
-    }
+    return gpg_error (GPG_ERR_BAD_PUBKEY);
+
+  kek_size = gcry_cipher_get_algo_keylen (kdf_encr_algo);
+  if (kek_size > gcry_md_get_algo_dlen (kdf_hash_algo))
+    return gpg_error (GPG_ERR_BAD_PUBKEY);
+
+
+  nbits = pubkey_nbits (PUBKEY_ALGO_ECDH, pkey);
+  if (!nbits)
+    return gpg_error (GPG_ERR_TOO_SHORT);
+
+  /* Expected size of the x component */
+  secret_x_size = (nbits+7)/8;
+
+  if (kek_size > secret_x_size)
+    return gpg_error (GPG_ERR_BAD_PUBKEY);
+
+  err = extract_secret_x (&secret_x, shared, nshared,
+                          (mpi_get_nbits (pkey[1] /* public point */)+7)/8,
+                          secret_x_size);
+  if (err)
+    return err;
+
+  /*** We have now the shared secret bytes in secret_x. ***/
+
+  /* At this point we are done with PK encryption and the rest of the
+   * function uses symmetric key encryption techniques to protect the
+   * input DATA.  The following two sections will simply replace
+   * current secret_x with a value derived from it.  This will become
+   * a KEK.
+   */
+
 
   /* Build kdf_params.  */
   {
@@ -236,7 +254,7 @@ pk_ecdh_encrypt_with_shared_point (int is_encrypt, gcry_mpi_t shared_mpi,
       }
 
     if(DBG_CRYPTO)
-      log_printhex ("ecdh KDF message params are:", message, message_size);
+      log_printhex (message, message_size, "ecdh KDF message params are:");
   }
 
   /* Derive a KEK (key wrapping key) using MESSAGE and SECRET_X. */
@@ -272,7 +290,7 @@ pk_ecdh_encrypt_with_shared_point (int is_encrypt, gcry_mpi_t shared_mpi,
     /* We could have allocated more, so clean the tail before returning.  */
     memset (secret_x+secret_x_size, 0, old_size - secret_x_size);
     if (DBG_CRYPTO)
-      log_printhex ("ecdh KEK is:", secret_x, secret_x_size );
+      log_printhex (secret_x, secret_x_size, "ecdh KEK is:");
   }
 
   /* And, finally, aeswrap with key secret_x.  */
@@ -338,7 +356,7 @@ pk_ecdh_encrypt_with_shared_point (int is_encrypt, gcry_mpi_t shared_mpi,
           }
 
         if (DBG_CRYPTO)
-          log_printhex ("ecdh encrypting  :", in, data_buf_size );
+          log_printhex (in, data_buf_size, "ecdh encrypting  :");
 
         err = gcry_cipher_encrypt (hd, data_buf+1, data_buf_size+8,
                                    in, data_buf_size);
@@ -354,7 +372,7 @@ pk_ecdh_encrypt_with_shared_point (int is_encrypt, gcry_mpi_t shared_mpi,
         data_buf[0] = data_buf_size+8;
 
         if (DBG_CRYPTO)
-          log_printhex ("ecdh encrypted to:", data_buf+1, data_buf[0] );
+          log_printhex (data_buf+1, data_buf[0], "ecdh encrypted to:");
 
         result = gcry_mpi_set_opaque (NULL, data_buf, 8 * (1+data_buf[0]));
         if (!result)
@@ -391,7 +409,7 @@ pk_ecdh_encrypt_with_shared_point (int is_encrypt, gcry_mpi_t shared_mpi,
         data_buf_size = data_buf[0];
 
         if (DBG_CRYPTO)
-          log_printhex ("ecdh decrypting :", data_buf+1, data_buf_size);
+          log_printhex (data_buf+1, data_buf_size, "ecdh decrypting :");
 
         err = gcry_cipher_decrypt (hd, in, data_buf_size, data_buf+1,
                                    data_buf_size);
@@ -407,7 +425,7 @@ pk_ecdh_encrypt_with_shared_point (int is_encrypt, gcry_mpi_t shared_mpi,
         data_buf_size -= 8;
 
         if (DBG_CRYPTO)
-          log_printhex ("ecdh decrypted to :", in, data_buf_size);
+          log_printhex (in, data_buf_size, "ecdh decrypted to :");
 
         /* Padding is removed later.  */
         /* if (in[data_buf_size-1] > 8 ) */
@@ -484,12 +502,15 @@ pk_ecdh_generate_ephemeral_key (gcry_mpi_t *pkey, gcry_mpi_t *r_k)
 
 /* Perform ECDH decryption.   */
 int
-pk_ecdh_decrypt (gcry_mpi_t * result, const byte sk_fp[MAX_FINGERPRINT_LEN],
-                 gcry_mpi_t data, gcry_mpi_t shared, gcry_mpi_t * skey)
+pk_ecdh_decrypt (gcry_mpi_t *result, const byte sk_fp[MAX_FINGERPRINT_LEN],
+                 gcry_mpi_t data,
+                 const char *shared, size_t nshared,
+                 gcry_mpi_t *skey)
 {
   if (!data)
     return gpg_error (GPG_ERR_BAD_MPI);
-  return pk_ecdh_encrypt_with_shared_point (0 /*=decryption*/, shared,
+  return pk_ecdh_encrypt_with_shared_point (0 /*=decryption*/,
+                                            shared, nshared,
                                             sk_fp, data/*encr data as an MPI*/,
                                             skey, result);
 }

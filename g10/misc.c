@@ -70,6 +70,10 @@
 #include "../common/i18n.h"
 #include "../common/zb32.h"
 
+/* FIXME: Libgcrypt 1.9 will support EAX.  Until we name this a
+ * requirement we hardwire the enum used for EAX.  */
+#define MY_GCRY_CIPHER_MODE_EAX 14
+
 
 #ifdef ENABLE_SELINUX_HACKS
 /* A object and a global variable to keep track of files marked as
@@ -98,7 +102,7 @@ register_secured_file (const char *fname)
   struct secured_file_item *sf;
 
   /* Note that we stop immediately if something goes wrong here. */
-  if (stat (fname, &buf))
+  if (gnupg_stat (fname, &buf))
     log_fatal (_("fstat of '%s' failed in %s: %s\n"), fname,
                "register_secured_file", strerror (errno));
 /*   log_debug ("registering '%s' i=%lu.%lu\n", fname, */
@@ -127,7 +131,7 @@ unregister_secured_file (const char *fname)
   struct stat buf;
   struct secured_file_item *sf, *sfprev;
 
-  if (stat (fname, &buf))
+  if (gnupg_stat (fname, &buf))
     {
       log_error (_("fstat of '%s' failed in %s: %s\n"), fname,
                  "unregister_secured_file", strerror (errno));
@@ -201,7 +205,7 @@ is_secured_filename (const char *fname)
 
   /* Note that we print out a error here and claim that a file is
      secure if something went wrong. */
-  if (stat (fname, &buf))
+  if (gnupg_stat (fname, &buf))
     {
       if (errno == ENOENT || errno == EPERM || errno == EACCES)
         return 0;
@@ -307,12 +311,11 @@ print_cipher_algo_note (cipher_algo_t algo)
 void
 print_digest_algo_note (digest_algo_t algo)
 {
-  const enum gcry_md_algos galgo = map_md_openpgp_to_gcry (algo);
-  const struct weakhash *weak;
-
   if(algo >= 100 && algo <= 110)
     {
       static int warn=0;
+      const enum gcry_md_algos galgo = map_md_openpgp_to_gcry (algo);
+
       if(!warn)
 	{
 	  warn=1;
@@ -321,14 +324,13 @@ print_digest_algo_note (digest_algo_t algo)
                     gcry_md_algo_name (galgo));
 	}
     }
-  else
-      for (weak = opt.weak_digests; weak != NULL; weak = weak->next)
-        if (weak->algo == galgo)
-          {
-            es_fflush (es_stdout);
-            log_info (_("WARNING: digest algorithm %s is deprecated\n"),
-                      gcry_md_algo_name (galgo));
-          }
+  else if (is_weak_digest (algo))
+    {
+      const enum gcry_md_algos galgo = map_md_openpgp_to_gcry (algo);
+      es_fflush (es_stdout);
+      log_info (_("WARNING: digest algorithm %s is deprecated\n"),
+                gcry_md_algo_name (galgo));
+    }
 }
 
 
@@ -337,6 +339,10 @@ print_digest_rejected_note (enum gcry_md_algos algo)
 {
   struct weakhash* weak;
   int show = 1;
+
+  if (opt.quiet)
+    return;
+
   for (weak = opt.weak_digests; weak; weak = weak->next)
     if (weak->algo == algo)
       {
@@ -354,6 +360,24 @@ print_digest_rejected_note (enum gcry_md_algos algo)
         (_("Note: signatures using the %s algorithm are rejected\n"),
          gcry_md_algo_name(algo));
     }
+}
+
+
+void
+print_sha1_keysig_rejected_note (void)
+{
+  static int shown;
+
+  if (shown || opt.quiet)
+    return;
+
+  shown = 1;
+  es_fflush (es_stdout);
+  log_info (_("Note: third-party key signatures using"
+              " the %s algorithm are rejected\n"),
+            gcry_md_algo_name (GCRY_MD_SHA1));
+  print_further_info ("use option \"%s\" to override",
+                      "--allow-weak-key-signatures");
 }
 
 
@@ -508,6 +532,7 @@ map_pk_gcry_to_openpgp (enum gcry_pk_algos algo)
 {
   switch (algo)
     {
+    case GCRY_PK_EDDSA:  return PUBKEY_ALGO_EDDSA;
     case GCRY_PK_ECDSA:  return PUBKEY_ALGO_ECDSA;
     case GCRY_PK_ECDH:   return PUBKEY_ALGO_ECDH;
     default: return algo < 110 ? (pubkey_algo_t)algo : 0;
@@ -583,6 +608,98 @@ openpgp_cipher_algo_name (cipher_algo_t algo)
 }
 
 
+/* Same as openpgp_cipher_algo_name but returns a string in the form
+ * "ALGO.MODE" if AEAD is not 0.  Note that in this version we do not
+ * print "ALGO.CFB" as we do in 2.3 to avoid confusing users.  */
+const char *
+openpgp_cipher_algo_mode_name (cipher_algo_t algo, aead_algo_t aead)
+{
+
+  if (aead == AEAD_ALGO_NONE)
+    return openpgp_cipher_algo_name (algo);
+
+  return map_static_strings ("openpgp_cipher_algo_mode_name", algo, aead,
+                             openpgp_cipher_algo_name (algo),
+                             ".",
+                             openpgp_aead_algo_name (aead),
+                             NULL);
+}
+
+
+/* Return 0 if ALGO is supported.  Return an error if not. */
+gpg_error_t
+openpgp_aead_test_algo (aead_algo_t algo)
+{
+  /* FIXME: We currently have no easy way to test whether libgcrypt
+   * implements a mode.  The only way we can do this is to open a
+   * cipher context with that mode and close it immediately.  That is
+   * a bit costly.  So we look at the libgcrypt version and assume
+   * nothing has been patched out.  */
+  switch (algo)
+    {
+    case AEAD_ALGO_NONE:
+      break;
+
+    case AEAD_ALGO_EAX:
+#if GCRYPT_VERSION_NUMBER < 0x010900
+      break;
+#else
+      return 0;
+#endif
+
+    case AEAD_ALGO_OCB:
+      return 0;
+    }
+
+  return gpg_error (GPG_ERR_INV_CIPHER_MODE);
+}
+
+
+/* Map the OpenPGP AEAD algorithm with ID ALGO to a string
+ * representation of the algorithm name.  For unknown algorithm IDs
+ * this function returns "?".  */
+const char *
+openpgp_aead_algo_name (aead_algo_t algo)
+{
+  switch (algo)
+    {
+    case AEAD_ALGO_NONE:  break;
+    case AEAD_ALGO_EAX:   return "EAX";
+    case AEAD_ALGO_OCB:   return "OCB";
+    }
+
+  return "?";
+}
+
+
+/* Return information for the AEAD algorithm ALGO.  The corresponding
+ * Libgcrypt ciphermode is stored at R_MODE and the required number of
+ * octets for the nonce at R_NONCELEN.  On error and error code is
+ * returned.  Note that the taglen is always 128 bits.  */
+gpg_error_t
+openpgp_aead_algo_info (aead_algo_t algo, enum gcry_cipher_modes *r_mode,
+                        unsigned int *r_noncelen)
+{
+  switch (algo)
+    {
+    case AEAD_ALGO_OCB:
+      *r_mode = GCRY_CIPHER_MODE_OCB;
+      *r_noncelen = 15;
+      break;
+
+    case AEAD_ALGO_EAX:
+      *r_mode = MY_GCRY_CIPHER_MODE_EAX;
+      *r_noncelen = 16;
+      break;
+
+    default:
+      log_error ("unsupported AEAD algo %d\n", algo);
+      return gpg_error (GPG_ERR_INV_CIPHER_MODE);
+    }
+  return 0;
+}
+
+
 /* Return 0 if ALGO is a supported OpenPGP public key algorithm.  */
 int
 openpgp_pk_test_algo (pubkey_algo_t algo)
@@ -643,6 +760,13 @@ openpgp_pk_test_algo2 (pubkey_algo_t algo, unsigned int use)
     }
   if (!ga)
     return gpg_error (GPG_ERR_PUBKEY_ALGO);
+
+  /* Elgamal in OpenPGP used to support signing and Libgcrypt still
+   * does.  However, we removed the signing capability from gpg ages
+   * ago.  This function should reflect this so that errors are thrown
+   * early and not only when we try to sign using Elgamal.  */
+  if (ga == GCRY_PK_ELG && (use & (PUBKEY_USAGE_CERT | PUBKEY_USAGE_SIG)))
+    return gpg_error (GPG_ERR_WRONG_PUBKEY_ALGO);
 
   /* Now check whether Libgcrypt has support for the algorithm.  */
   return gcry_pk_algo_info (ga, GCRYCTL_TEST_ALGO, NULL, &use_buf);
@@ -814,6 +938,11 @@ pct_expando(const char *string,struct expando_args *args)
   int idx=0,maxlen=0,done=0;
   u32 pk_keyid[2]={0,0},sk_keyid[2]={0,0};
   char *ret=NULL;
+
+  /* The parser below would return NULL for an empty string, thus we
+   * catch it here.  Also catch NULL here. */
+  if (!string || !*string)
+    return xstrdup ("");
 
   if(args->pk)
     keyid_from_pk(args->pk,pk_keyid);
@@ -1276,8 +1405,12 @@ compliance_failure(void)
       break;
 
     case CO_DE_VS:
-      ver="DE-VS applications";
-      break;
+      /* For de-vs we do not allow any kind of fallback.  */
+      write_status_failure ("compliance-check", gpg_error (GPG_ERR_FORBIDDEN));
+      log_error (_("operation forced to fail due to"
+                   " unfulfilled compliance rules\n"));
+      g10_errors_seen = 1;
+      return;
     }
 
   log_info(_("this message may not be usable by %s\n"),ver);
@@ -1755,4 +1888,18 @@ additional_weak_digest (const char* digestname)
   weak->rejection_shown = 0;
   weak->next = opt.weak_digests;
   opt.weak_digests = weak;
+}
+
+
+/* Return true if ALGO is in the list of weak digests.  */
+int
+is_weak_digest (digest_algo_t algo)
+{
+  const enum gcry_md_algos galgo = map_md_openpgp_to_gcry (algo);
+  const struct weakhash *weak;
+
+  for (weak = opt.weak_digests; weak; weak = weak->next)
+    if (weak->algo == galgo)
+      return 1;
+  return 0;
 }

@@ -59,9 +59,6 @@
 /* define to disable photo viewing */
 #undef DISABLE_PHOTO_VIEWER
 
-/* Define to disable regular expression support */
-#undef DISABLE_REGEX
-
 /* Define to include smartcard support */
 #undef ENABLE_CARD_SUPPORT
 
@@ -444,6 +441,9 @@
 /* Define to 1 if you have the `sigaction' function. */
 #undef HAVE_SIGACTION
 
+/* Define to 1 if you have the `sigdescr_np' function. */
+#undef HAVE_SIGDESCR_NP
+
 /* Define to 1 if you have the <signal.h> header file. */
 #undef HAVE_SIGNAL_H
 
@@ -648,6 +648,9 @@
 /* Defined if mkdir() does not take permission flags */
 #undef MKDIR_TAKES_ONE_ARG
 
+/* Tool with sendmail -t interface */
+#undef NAME_OF_SENDMAIL
+
 /* Required version of Libksba */
 #undef NEED_KSBA_VERSION
 
@@ -749,9 +752,6 @@
 
 /* Defined if LDAP is support */
 #undef USE_LDAP
-
-/* Build dirmngr with LDAP wrapper process */
-#undef USE_LDAPWRAPPER
 
 /* Build with integrated libdns support */
 #undef USE_LIBDNS
@@ -903,6 +903,9 @@
 #define GNUPG_PRIVATE_KEYS_DIR  "private-keys-v1.d"
 #define GNUPG_OPENPGP_REVOC_DIR "openpgp-revocs.d"
 
+#define GNUPG_DEF_COPYRIGHT_LINE "Copyright (C) 2022 g10 Code GmbH"
+
+
 /* For some systems (DOS currently), we hardcode the path here.  For
    POSIX systems the values are constructed by the Makefiles, so that
    the values may be overridden by the make invocations; this is to
@@ -955,6 +958,9 @@
 
 /* Provide the es_ macro for estream.  */
 #define GPGRT_ENABLE_ES_MACROS 1
+
+/* We want the argparse macros from gpgrt.  */
+#define GPGRT_ENABLE_ARGPARSE_MACROS 1
 
 /* Tell libgcrypt not to use its own libgpg-error implementation. */
 #define USE_LIBGPG_ERROR 1

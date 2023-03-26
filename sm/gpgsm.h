@@ -39,19 +39,9 @@
 
 #define MAX_DIGEST_LEN 64
 
-struct keyserver_spec
-{
-  struct keyserver_spec *next;
-
-  char *host;
-  int port;
-  char *user;
-  char *pass;
-  char *base;
-};
-
 
 /* A large struct named "opt" to keep global flags. */
+EXTERN_UNLESS_MAIN_MODULE
 struct
 {
   unsigned int debug; /* debug flags (DBG_foo_VALUE) */
@@ -123,6 +113,7 @@ struct
   int no_crl_check;         /* Don't do a CRL check */
   int no_trusted_cert_crl_check; /* Don't run a CRL check for trusted certs. */
   int force_crl_refresh;    /* Force refreshing the CRL. */
+  int enable_issuer_based_crl_check; /* Backward compatibility hack.  */
   int enable_ocsp;          /* Default to use OCSP checks. */
 
   char *policy_file;        /* full pathname of policy file */
@@ -139,14 +130,28 @@ struct
                                the integrity of the software at
                                runtime. */
 
-  struct keyserver_spec *keyserver;
+  unsigned int min_rsa_length;   /* Used for compliance checks.  */
+
+  strlist_t keyserver;
 
   /* A list of certificate extension OIDs which are ignored so that
      one can claim that a critical extension has been handled.  One
      OID per string.  */
   strlist_t ignored_cert_extensions;
 
+  /* A list of OIDs which will be used to ignore certificates with
+   * sunch an OID during --learn-card.  */
+  strlist_t ignore_cert_with_oid;
+
+  /* The current compliance mode.  */
   enum gnupg_compliance_mode compliance;
+
+  /* Fail if an operation can't be done in the requested compliance
+   * mode.  */
+  int require_compliance;
+
+  /* Compatibility flags (COMPAT_FLAG_xxxx).  */
+  unsigned int compat_flags;
 } opt;
 
 /* Debug values and macros.  */
@@ -165,6 +170,18 @@ struct
 #define DBG_CACHE   (opt.debug & DBG_CACHE_VALUE)
 #define DBG_HASHING (opt.debug & DBG_HASHING_VALUE)
 #define DBG_IPC     (opt.debug & DBG_IPC_VALUE)
+
+
+/* Compatibility flags */
+/* Telesec RSA cards produced for NRW in 2022 came with only the
+ * keyAgreement bit set.  This flag allows there use for encryption
+ * anyway.  Example cert:
+ *    Issuer: /CN=DOI CA 10a/OU=DOI/O=PKI-1-Verwaltung/C=DE
+ * key usage: digitalSignature nonRepudiation keyAgreement
+ *  policies: 1.3.6.1.4.1.7924.1.1:N:
+ */
+#define COMPAT_ALLOW_KA_TO_ENCR   1
+
 
 /* Forward declaration for an object defined in server.c */
 struct server_local_s;
@@ -206,6 +223,9 @@ struct server_control_s
                            1 := chain model,
                            2 := STEED model. */
   int offline;        /* If true gpgsm won't do any network access.  */
+
+  /* The current time.  Used as a helper in certchain.c.  */
+  ksba_isotime_t current_time;
 };
 
 
@@ -234,6 +254,8 @@ struct rootca_flags_s
 
 
 /*-- gpgsm.c --*/
+extern int gpgsm_errors_seen;
+
 void gpgsm_exit (int rc);
 void gpgsm_init_default_ctrl (struct server_control_s *ctrl);
 int  gpgsm_parse_validation_model (const char *model);
@@ -259,11 +281,13 @@ unsigned long gpgsm_get_short_fingerprint (ksba_cert_t cert,
 unsigned char *gpgsm_get_keygrip (ksba_cert_t cert, unsigned char *array);
 char *gpgsm_get_keygrip_hexstring (ksba_cert_t cert);
 int  gpgsm_get_key_algo_info (ksba_cert_t cert, unsigned int *nbits);
+char *gpgsm_pubkey_algo_string (ksba_cert_t cert, int *r_algoid);
 char *gpgsm_get_certid (ksba_cert_t cert);
 
 
 /*-- certdump.c --*/
 void gpgsm_print_serial (estream_t fp, ksba_const_sexp_t p);
+void gpgsm_print_serial_decimal (estream_t fp, ksba_const_sexp_t sn);
 void gpgsm_print_time (estream_t fp, ksba_isotime_t t);
 void gpgsm_print_name2 (FILE *fp, const char *string, int translate);
 void gpgsm_print_name (FILE *fp, const char *string);
@@ -289,8 +313,10 @@ char *gpgsm_format_keydesc (ksba_cert_t cert);
 
 /*-- certcheck.c --*/
 int gpgsm_check_cert_sig (ksba_cert_t issuer_cert, ksba_cert_t cert);
-int gpgsm_check_cms_signature (ksba_cert_t cert, ksba_const_sexp_t sigval,
-                               gcry_md_hd_t md, int hash_algo, int *r_pkalgo);
+int gpgsm_check_cms_signature (ksba_cert_t cert, gcry_sexp_t sigval,
+                               gcry_md_hd_t md,
+                               int hash_algo, unsigned int pkalgoflags,
+                               int *r_pkalgo);
 /* fixme: move create functions to another file */
 int gpgsm_create_cms_signature (ctrl_t ctrl,
                                 ksba_cert_t cert, gcry_md_hd_t md, int mdalgo,
@@ -315,7 +341,7 @@ int gpgsm_validate_chain (ctrl_t ctrl, ksba_cert_t cert,
 int gpgsm_basic_cert_check (ctrl_t ctrl, ksba_cert_t cert);
 
 /*-- certlist.c --*/
-int gpgsm_cert_use_sign_p (ksba_cert_t cert);
+int gpgsm_cert_use_sign_p (ksba_cert_t cert, int silent);
 int gpgsm_cert_use_encrypt_p (ksba_cert_t cert);
 int gpgsm_cert_use_verify_p (ksba_cert_t cert);
 int gpgsm_cert_use_decrypt_p (ksba_cert_t cert);
@@ -419,7 +445,8 @@ gpg_error_t gpgsm_agent_export_key (ctrl_t ctrl, const char *keygrip,
 int gpgsm_dirmngr_isvalid (ctrl_t ctrl,
                            ksba_cert_t cert, ksba_cert_t issuer_cert,
                            int use_ocsp);
-int gpgsm_dirmngr_lookup (ctrl_t ctrl, strlist_t names, int cache_only,
+int gpgsm_dirmngr_lookup (ctrl_t ctrl, strlist_t names, const char *uri,
+                          int cache_only,
                           void (*cb)(void*, ksba_cert_t), void *cb_value);
 int gpgsm_dirmngr_run_command (ctrl_t ctrl, const char *command,
                                int argc, char **argv);
@@ -431,6 +458,9 @@ gpg_error_t transform_sigval (const unsigned char *sigval, size_t sigvallen,
                               int mdalgo,
                               unsigned char **r_newsigval,
                               size_t *r_newsigvallen);
+gcry_sexp_t gpgsm_ksba_cms_get_sig_val (ksba_cms_t cms, int idx);
+int gpgsm_get_hash_algo_from_sigval (gcry_sexp_t sigval,
+                                     unsigned int *r_pkalgo_flags);
 
 
 

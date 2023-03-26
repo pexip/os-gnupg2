@@ -129,7 +129,9 @@ log_get_errorcount (int clear)
 void
 log_inc_errorcount (void)
 {
-   errorcount++;
+  /* Protect against counter overflow.  */
+  if (errorcount < 30000)
+    errorcount++;
 }
 
 
@@ -932,9 +934,7 @@ log_error (const char *fmt, ...)
   va_start (arg_ptr, fmt);
   do_logv (GPGRT_LOG_ERROR, 0, NULL, NULL, fmt, arg_ptr);
   va_end (arg_ptr);
-  /* Protect against counter overflow.  */
-  if (errorcount < 30000)
-    errorcount++;
+  log_inc_errorcount ();
 }
 
 
@@ -1011,10 +1011,17 @@ log_flush (void)
    dump, with TEXT just an empty string, print a trailing linefeed,
    otherwise print an entire debug line. */
 void
-log_printhex (const char *text, const void *buffer, size_t length)
+log_printhex (const void *buffer, size_t length, const char *fmt, ...)
 {
-  if (text && *text)
-    log_debug ("%s ", text);
+  if (fmt && *fmt)
+    {
+      va_list arg_ptr ;
+
+      va_start (arg_ptr, fmt);
+      do_logv (GPGRT_LOG_DEBUG, 0, NULL, NULL, fmt, arg_ptr);
+      va_end (arg_ptr);
+      log_printf (" ");
+    }
   if (length)
     {
       const unsigned char *p = buffer;
@@ -1022,7 +1029,7 @@ log_printhex (const char *text, const void *buffer, size_t length)
       for (length--, p++; length--; p++)
         log_printf (" %02X", *p);
     }
-  if (text)
+  if (fmt)
     log_printf ("\n");
 }
 

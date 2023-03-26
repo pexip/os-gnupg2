@@ -212,20 +212,27 @@ read_passphrase_from_fd( int fd )
  * Ask the GPG Agent for the passphrase.
  * If NOCACHE is set the symmetric passpharse caching will not be used.
  *
+ * If REPEAT is positive, a new passphrase is requested and the agent
+ * shall require REPEAT times repetitions of the entered passphrase.
+ * This is used for symmetric encryption.
+ *
  * Note that TRYAGAIN_TEXT must not be translated.  If CANCELED is not
  * NULL, the function does set it to 1 if the user canceled the
  * operation.  If CACHEID is not NULL, it will be used as the cacheID
  * for the gpg-agent; if is NULL and a key fingerprint can be
  * computed, this will be used as the cacheid.
+ *
+ * For FLAGS see passphrase_to_dek;
  */
 static char *
-passphrase_get (int nocache, const char *cacheid, int repeat,
-                const char *tryagain_text, int *canceled)
+passphrase_get (int newsymkey, int nocache, const char *cacheid, int repeat,
+                const char *tryagain_text, unsigned int flags, int *canceled)
 {
   int rc;
   char *pw = NULL;
   char *orig_codeset;
   const char *my_cacheid;
+  const char *desc;
 
   if (canceled)
     *canceled = 0;
@@ -240,9 +247,24 @@ passphrase_get (int nocache, const char *cacheid, int repeat,
   if (tryagain_text)
     tryagain_text = _(tryagain_text);
 
+  if ((flags & GETPASSWORD_FLAG_SYMDECRYPT))
+    desc = _("Please enter the passphrase for decryption.");
+  else
+    desc = _("Enter passphrase\n");
+
+  /* Here we have:
+   * REPEAT is set in create mode and if opt.passphrase_repeat is set.
+   * (Thus it is not a clean indication that we want a new passphrase).
+   * NOCACHE is set in create mode or if --no-symkey-cache is used.
+   * CACHEID is only set if caching shall be used.
+   * NEWSYMKEY has been added latter to make it clear that a new key
+   * is requested.  The whole chain of API is a bit too complex since
+   * we we stripped things out over time; however, there is no time
+   * for a full state analysis and thus this new parameter.
+   */
   rc = agent_get_passphrase (my_cacheid, tryagain_text, NULL,
-                             _("Enter passphrase\n"),
-                             repeat, nocache, &pw);
+                             desc,
+                             newsymkey, repeat, nocache, &pw);
 
   i18n_switchback (orig_codeset);
 
@@ -300,11 +322,16 @@ passphrase_clear_cache (const char *cacheid)
  * CANCELED is not NULL, sets it to true.
  *
  * If CREATE is true a new passphrase sll be created.  If NOCACHE is
- * true the symmetric key caching will not be used.  */
+ * true the symmetric key caching will not be used.
+ *
+ * FLAG bits are:
+ *   GETPASSWORD_FLAG_SYMDECRYPT := for symmetric decryption
+ */
 DEK *
 passphrase_to_dek (int cipher_algo, STRING2KEY *s2k,
                    int create, int nocache,
-                   const char *tryagain_text, int *canceled)
+                   const char *tryagain_text, unsigned int flags,
+                   int *canceled)
 {
   char *pw = NULL;
   DEK *dek;
@@ -318,7 +345,7 @@ passphrase_to_dek (int cipher_algo, STRING2KEY *s2k,
   *canceled = 0;
 
   if (opt.no_symkey_cache)
-    nocache = 1;  /* Force no symmtric key caching.  */
+    nocache = 1;  /* Force no symmetric key caching.  */
 
   if ( !s2k )
     {
@@ -389,13 +416,13 @@ passphrase_to_dek (int cipher_algo, STRING2KEY *s2k,
         }
 
       /* Divert to the gpg-agent. */
-      pw = passphrase_get (create && nocache, s2k_cacheid,
+      pw = passphrase_get (create, create && nocache, s2k_cacheid,
                            create? opt.passphrase_repeat : 0,
-                           tryagain_text, canceled);
+                           tryagain_text, flags, canceled);
       if (*canceled)
         {
           xfree (pw);
-	  write_status( STATUS_MISSING_PASSPHRASE );
+	  write_status( STATUS_CANCELED_BY_USER );
           return NULL;
         }
     }

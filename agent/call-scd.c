@@ -89,7 +89,6 @@ struct inq_needpin_parm_s
   const char *getpin_cb_desc;
   assuan_context_t passthru;  /* If not NULL, pass unknown inquiries
                                  up to the caller.  */
-  int any_inq_seen;
 
   /* The next fields are used by inq_writekey_parm.  */
   const unsigned char *keydata;
@@ -727,7 +726,6 @@ inq_needpin (void *opaque, const char *line)
   size_t pinlen;
   int rc;
 
-  parm->any_inq_seen = 1;
   if ((s = has_leading_keyword (line, "NEEDPIN")))
     {
       line = s;
@@ -739,7 +737,12 @@ inq_needpin (void *opaque, const char *line)
       rc = parm->getpin_cb (parm->getpin_cb_arg, parm->getpin_cb_desc,
                             line, pin, pinlen);
       if (!rc)
-        rc = assuan_send_data (parm->ctx, pin, pinlen);
+        {
+          assuan_begin_confidential (parm->ctx);
+          rc = assuan_send_data (parm->ctx, pin, pinlen);
+          assuan_end_confidential (parm->ctx);
+        }
+      wipememory (pin, pinlen);
       xfree (pin);
     }
   else if ((s = has_leading_keyword (line, "POPUPPINPADPROMPT")))
@@ -811,30 +814,6 @@ hash_algo_option (int algo)
 }
 
 
-static gpg_error_t
-cancel_inquire (ctrl_t ctrl, gpg_error_t rc)
-{
-  gpg_error_t oldrc = rc;
-
-  /* The inquire callback was called and transact returned a
-     cancel error.  We assume that the inquired process sent a
-     CANCEL.  The passthrough code is not able to pass on the
-     CANCEL and thus scdaemon would stuck on this.  As a
-     workaround we send a CANCEL now.  */
-  rc = assuan_write_line (ctrl->scd_local->ctx, "CAN");
-  if (!rc) {
-    char *line;
-    size_t len;
-
-    rc = assuan_read_line (ctrl->scd_local->ctx, &line, &len);
-    if (!rc)
-      rc = oldrc;
-  }
-
-  return rc;
-}
-
-
 /* Create a signature using the current card.  MDALGO is either 0 or
  * gives the digest algorithm.  DESC_TEXT is an additional parameter
  * passed to GETPIN_CB. */
@@ -875,7 +854,6 @@ agent_card_pksign (ctrl_t ctrl,
   inqparm.getpin_cb_arg = getpin_cb_arg;
   inqparm.getpin_cb_desc = desc_text;
   inqparm.passthru = 0;
-  inqparm.any_inq_seen = 0;
   inqparm.keydata = NULL;
   inqparm.keydatalen = 0;
 
@@ -888,9 +866,6 @@ agent_card_pksign (ctrl_t ctrl,
                         put_membuf_cb, &data,
                         inq_needpin, &inqparm,
                         NULL, NULL);
-  if (inqparm.any_inq_seen && (gpg_err_code(rc) == GPG_ERR_CANCELED ||
-	gpg_err_code(rc) == GPG_ERR_ASS_CANCELED))
-    rc = cancel_inquire (ctrl, rc);
 
   if (rc)
     {
@@ -974,7 +949,6 @@ agent_card_pkdecrypt (ctrl_t ctrl,
   inqparm.getpin_cb_arg = getpin_cb_arg;
   inqparm.getpin_cb_desc = desc_text;
   inqparm.passthru = 0;
-  inqparm.any_inq_seen = 0;
   inqparm.keydata = NULL;
   inqparm.keydatalen = 0;
   snprintf (line, DIM(line), "PKDECRYPT %s", keyid);
@@ -982,9 +956,6 @@ agent_card_pkdecrypt (ctrl_t ctrl,
                         put_membuf_cb, &data,
                         inq_needpin, &inqparm,
                         padding_info_cb, r_padding);
-  if (inqparm.any_inq_seen && (gpg_err_code(rc) == GPG_ERR_CANCELED ||
-	gpg_err_code(rc) == GPG_ERR_ASS_CANCELED))
-    rc = cancel_inquire (ctrl, rc);
 
   if (rc)
     {
@@ -1111,15 +1082,11 @@ agent_card_writekey (ctrl_t ctrl,  int force, const char *serialno,
   parms.getpin_cb_arg = getpin_cb_arg;
   parms.getpin_cb_desc= NULL;
   parms.passthru = 0;
-  parms.any_inq_seen = 0;
   parms.keydata = keydata;
   parms.keydatalen = keydatalen;
 
   rc = assuan_transact (ctrl->scd_local->ctx, line, NULL, NULL,
                         inq_writekey_parms, &parms, NULL, NULL);
-  if (parms.any_inq_seen && (gpg_err_code(rc) == GPG_ERR_CANCELED ||
-                             gpg_err_code(rc) == GPG_ERR_ASS_CANCELED))
-    rc = cancel_inquire (ctrl, rc);
   return unlock_scd (ctrl, rc);
 }
 
@@ -1344,7 +1311,6 @@ agent_card_scd (ctrl_t ctrl, const char *cmdline,
   inqparm.getpin_cb_arg = getpin_cb_arg;
   inqparm.getpin_cb_desc = NULL;
   inqparm.passthru = assuan_context;
-  inqparm.any_inq_seen = 0;
   inqparm.keydata = NULL;
   inqparm.keydatalen = 0;
 
@@ -1354,8 +1320,6 @@ agent_card_scd (ctrl_t ctrl, const char *cmdline,
                         pass_data_thru, assuan_context,
                         inq_needpin, &inqparm,
                         pass_status_thru, assuan_context);
-  if (inqparm.any_inq_seen && gpg_err_code(rc) == GPG_ERR_ASS_CANCELED)
-    rc = cancel_inquire (ctrl, rc);
 
   assuan_set_flag (ctrl->scd_local->ctx, ASSUAN_CONVEY_COMMENTS, saveflag);
   if (rc)
@@ -1364,4 +1328,13 @@ agent_card_scd (ctrl_t ctrl, const char *cmdline,
     }
 
   return unlock_scd (ctrl, 0);
+}
+
+void
+agent_card_killscd (void)
+{
+  if (primary_scd_ctx == NULL)
+    return;
+  assuan_transact (primary_scd_ctx, "KILLSCD",
+                   NULL, NULL, NULL, NULL, NULL, NULL);
 }

@@ -47,7 +47,7 @@ gnupg_http_tls_verify_cb (void *opaque,
   ksba_cert_t cert;
   ksba_cert_t hostcert = NULL;
   unsigned int validate_flags;
-  const char *hostname;
+  /* const char *hostname; */
 
   (void)http;
   (void)session;
@@ -77,16 +77,20 @@ gnupg_http_tls_verify_cb (void *opaque,
 
   validate_flags = VALIDATE_FLAG_TLS;
 
-  /* If we are using the standard hkps:// pool use the dedicated
-   * root certificate.  */
-  hostname = ntbtls_get_hostname (tls);
-  if (hostname
-      && !ascii_strcasecmp (hostname, get_default_keyserver (1)))
+  /* If we are using the standard hkps:// pool use the dedicated root
+   * certificate.  Note that this differes from the GnuTLS
+   * implementation which uses this special certificate only if no
+   * other certificates are configured. */
+  /* Disabled for 2.2.19 to due problems with the standard hkps pool.  */
+  /* hostname = ntbtls_get_hostname (tls); */
+  /* if (hostname */
+  /*     && !ascii_strcasecmp (hostname, get_default_keyserver (1))) */
+  /*   { */
+  /*     validate_flags |= VALIDATE_FLAG_TRUST_HKPSPOOL; */
+  /*   } */
+  /* else */
     {
-      validate_flags |= VALIDATE_FLAG_TRUST_HKPSPOOL;
-    }
-  else /* Use the certificates as requested from the HTTP module.  */
-    {
+      /* Use the certificates as requested from the HTTP module.  */
       if ((http_flags & HTTP_FLAG_TRUST_CFG))
         validate_flags |= VALIDATE_FLAG_TRUST_CONFIG;
       if ((http_flags & HTTP_FLAG_TRUST_DEF))

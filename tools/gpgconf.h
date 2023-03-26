@@ -23,6 +23,7 @@
 #include "../common/util.h"
 
 /* We keep all global options in the structure OPT.  */
+EXTERN_UNLESS_MAIN_MODULE
 struct
 {
   int verbose;		/* Verbosity level.  */
@@ -42,6 +43,37 @@ void gpgconf_write_status (int no, const char *format,
 void gpgconf_failure (gpg_error_t err) GPGRT_ATTR_NORETURN;
 
 /*-- gpgconf-comp.c --*/
+
+/* Component system.  Each component is a set of options that can be
+ * configured at the same time.  If you change this, don't forget to
+ * update gc_component[] in gpgconf-comp.c.  */
+typedef enum
+  {
+    /* Any component, used as a wildcard arg.  */
+    GC_COMPONENT_ANY,
+
+    /* The classic GPG for OpenPGP.  */
+    GC_COMPONENT_GPG,
+
+    /* GPG for S/MIME.  */
+    GC_COMPONENT_GPGSM,
+
+    /* The GPG Agent.  */
+    GC_COMPONENT_GPG_AGENT,
+
+    /* The Smardcard Daemon.  */
+    GC_COMPONENT_SCDAEMON,
+
+    /* The LDAP Directory Manager for CRLs.  */
+    GC_COMPONENT_DIRMNGR,
+
+    /* The external Pinentry.  */
+    GC_COMPONENT_PINENTRY,
+
+    /* The number of components.  */
+    GC_COMPONENT_NR
+  } gc_component_id_t;
+
 
 /* Initialize the components.  */
 void gc_components_init (void);

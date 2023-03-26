@@ -124,7 +124,7 @@
    that the handle shall only be used by one thread at a time.  This
    function creates a unique file temporary file (".#lk*") in the same
    directory as FNAME and returns a handle for further operations.
-   The module keeps track of theses unique files so that they will be
+   The module keeps track of these unique files so that they will be
    unlinked using the atexit handler.  If you don't need the lock file
    anymore, you may also explicitly remove it with a call to:
 
@@ -140,7 +140,7 @@
    you pass (0) instead of (-1) the function does not wait in case the
    file is already locked but returns -1 and sets ERRNO to EACCES.
    Any other positive value for the second parameter is considered a
-   timeout valuie in milliseconds.
+   timeout value in milliseconds.
 
    To release the lock you call:
 
@@ -437,6 +437,8 @@ static int never_lock;
 
 
 #ifdef HAVE_DOSISH_SYSTEM
+/* FIXME: For use in GnuPG this can be replaced by
+ *        gnupg_w32_set_errno.  */
 static int
 map_w32_to_errno (DWORD w32_err)
 {
@@ -470,6 +472,21 @@ map_w32_to_errno (DWORD w32_err)
     }
 }
 #endif /*HAVE_DOSISH_SYSTEM*/
+
+
+#ifdef HAVE_W32_SYSTEM
+static int
+any8bitchar (const char *string)
+{
+  if (string)
+    for ( ; *string; string++)
+      if ((*string & 0x80))
+        return 1;
+  return 0;
+}
+#endif /*HAVE_W32_SYSTEM*/
+
+
 
 
 /* Entirely disable all locking.  This function should be called
@@ -509,7 +526,7 @@ maybe_deadlock (dotlock_t h)
    has been created on the same node. */
 #ifdef HAVE_POSIX_SYSTEM
 static int
-read_lockfile (dotlock_t h, int *same_node )
+read_lockfile (dotlock_t h, int *same_node, int *r_fd)
 {
   char buffer_space[10+1+70+1]; /* 70 is just an estimated value; node
                                    names are usually shorter. */
@@ -562,7 +579,11 @@ read_lockfile (dotlock_t h, int *same_node )
       nread += res;
     }
   while (res && nread != expected_len);
-  close(fd);
+
+  if (r_fd)
+    *r_fd = fd;
+  else
+    close(fd);
 
   if (nread < 11)
     {
@@ -758,8 +779,6 @@ dotlock_create_unix (dotlock_t h, const char *file_to_lock)
     }
   strcpy (stpcpy (h->lockname, file_to_lock), EXTSEP_S "lock");
   UNLOCK_all_lockfiles ();
-  if (h->use_o_excl)
-    my_debug_1 ("locking for '%s' done via O_EXCL\n", h->lockname);
 
   return h;
 
@@ -794,7 +813,7 @@ dotlock_create_w32 (dotlock_t h, const char *file_to_lock)
   h->next = all_lockfiles;
   all_lockfiles = h;
 
-  h->lockname = xtrymalloc ( strlen (file_to_lock) + 6 );
+  h->lockname = strconcat (file_to_lock, EXTSEP_S "lock", NULL);
   if (!h->lockname)
     {
       all_lockfiles = h->next;
@@ -802,7 +821,6 @@ dotlock_create_w32 (dotlock_t h, const char *file_to_lock)
       xfree (h);
       return NULL;
     }
-  strcpy (stpcpy(h->lockname, file_to_lock), EXTSEP_S "lock");
 
   /* If would be nice if we would use the FILE_FLAG_DELETE_ON_CLOSE
      along with FILE_SHARE_DELETE but that does not work due to a race
@@ -812,25 +830,24 @@ dotlock_create_w32 (dotlock_t h, const char *file_to_lock)
      reasons why a lock file can't be created and thus the process
      would not stop as expected but spin until Windows crashes.  Our
      solution is to keep the lock file open; that does not harm. */
-  {
-#ifdef HAVE_W32CE_SYSTEM
-    wchar_t *wname = utf8_to_wchar (h->lockname);
+  if (any8bitchar (h->lockname))
+    {
+      wchar_t *wname = utf8_to_wchar (h->lockname);
 
-    if (wname)
-      h->lockhd = CreateFile (wname,
-                              GENERIC_READ|GENERIC_WRITE,
-                              FILE_SHARE_READ|FILE_SHARE_WRITE,
-                              NULL, OPEN_ALWAYS, 0, NULL);
-    else
-      h->lockhd = INVALID_HANDLE_VALUE;
-    xfree (wname);
-#else
-    h->lockhd = CreateFile (h->lockname,
-                            GENERIC_READ|GENERIC_WRITE,
-                            FILE_SHARE_READ|FILE_SHARE_WRITE,
-                            NULL, OPEN_ALWAYS, 0, NULL);
-#endif
-  }
+      if (wname)
+        h->lockhd = CreateFileW (wname,
+                                 GENERIC_READ|GENERIC_WRITE,
+                                 FILE_SHARE_READ|FILE_SHARE_WRITE,
+                                 NULL, OPEN_ALWAYS, 0, NULL);
+      else
+        h->lockhd = INVALID_HANDLE_VALUE;
+      xfree (wname);
+    }
+  else
+    h->lockhd = CreateFileA (h->lockname,
+                             GENERIC_READ|GENERIC_WRITE,
+                             FILE_SHARE_READ|FILE_SHARE_WRITE,
+                             NULL, OPEN_ALWAYS, 0, NULL);
   if (h->lockhd == INVALID_HANDLE_VALUE)
     {
       int saveerrno = map_w32_to_errno (GetLastError ());
@@ -999,6 +1016,14 @@ dotlock_destroy (dotlock_t h)
 }
 
 
+/* Return true if H has been taken.  */
+int
+dotlock_is_locked (dotlock_t h)
+{
+  return h && !!h->locked;
+}
+
+
 
 #ifdef HAVE_POSIX_SYSTEM
 /* Unix specific code of make_dotlock.  Returns 0 on success and -1 on
@@ -1014,13 +1039,12 @@ dotlock_take_unix (dotlock_t h, long timeout)
   const char *maybe_dead="";
   int same_node;
   int saveerrno;
+  int fd;
 
  again:
   if (h->use_o_excl)
     {
       /* No hardlink support - use open(O_EXCL).  */
-      int fd;
-
       do
         {
           my_set_errno (0);
@@ -1090,7 +1114,7 @@ dotlock_take_unix (dotlock_t h, long timeout)
     }
 
   /* Check for stale lock files.  */
-  if ( (pid = read_lockfile (h, &same_node)) == -1 )
+  if ( (pid = read_lockfile (h, &same_node, &fd)) == -1 )
     {
       if ( errno != ENOENT )
         {
@@ -1102,22 +1126,56 @@ dotlock_take_unix (dotlock_t h, long timeout)
       my_info_0 ("lockfile disappeared\n");
       goto again;
     }
-  else if ( pid == getpid() && same_node )
+  else if ( (pid == getpid() && same_node)
+            || (same_node && kill (pid, 0) && errno == ESRCH) )
+    /* Stale lockfile is detected. */
     {
-      my_info_0 ("Oops: lock already held by us\n");
-      h->locked = 1;
-      return 0; /* okay */
-    }
-  else if ( same_node && kill (pid, 0) && errno == ESRCH )
-    {
-      /* Note: It is unlikley that we get a race here unless a pid is
-         reused too fast or a new process with the same pid as the one
-         of the stale file tries to lock right at the same time as we.  */
-      my_info_1 (_("removing stale lockfile (created by %d)\n"), pid);
+      struct stat sb;
+
+      /* Check if it's unlocked during examining the lockfile.  */
+      if (fstat (fd, &sb) || sb.st_nlink == 0)
+        {
+          /* It's gone already by another process.  */
+          close (fd);
+          goto again;
+        }
+
+      /*
+       * Here, although it's quite _rare_, we have a race condition.
+       *
+       * When multiple processes race on a stale lockfile, detecting
+       * AND removing should be done atomically.  That is, to work
+       * correctly, the file to be removed should be the one which is
+       * examined for detection.
+       *
+       * But, when it's not atomic, consider the case for us where it
+       * takes some time between the detection and the removal of the
+       * lockfile.
+       *
+       * In this situation, it is possible that the file which was
+       * detected as stale is already removed by another process and
+       * then new lockfile is created (by that process or other one).
+       *
+       * And it is newly created valid lockfile which is going to be
+       * removed by us.
+       *
+       * Consider this long comment as it expresses possible (long)
+       * time between fstat above and unlink below; Meanwhile, the
+       * lockfile in question may be removed and there may be new
+       * valid one.
+       *
+       * In short, when you see the message of removing stale lockfile
+       * when there are multiple processes for the work, there is
+       * (very) little possibility something went wrong.
+       */
+
       unlink (h->lockname);
+      my_info_1 (_("removing stale lockfile (created by %d)\n"), pid);
+      close (fd);
       goto again;
     }
 
+  close (fd);
   if (lastpid == -1)
     lastpid = pid;
   ownerchanged = (pid != lastpid);
@@ -1229,7 +1287,7 @@ dotlock_take_w32 (dotlock_t h, long timeout)
 
 
 /* Take a lock on H.  A value of 0 for TIMEOUT returns immediately if
-   the lock can't be taked, -1 waits forever (hopefully not), other
+   the lock can't be taken, -1 waits forever (hopefully not), other
    values wait for TIMEOUT milliseconds.  Returns: 0 on success  */
 int
 dotlock_take (dotlock_t h, long timeout)
@@ -1237,11 +1295,14 @@ dotlock_take (dotlock_t h, long timeout)
   int ret;
 
   if ( h->disable )
-    return 0; /* Locks are completely disabled.  Return success. */
+    {
+      h->locked = 1;
+      return 0; /* Locks are completely disabled.  Return success. */
+    }
 
   if ( h->locked )
     {
-      my_debug_1 ("Oops, '%s' is already locked\n", h->lockname);
+      /* my_debug_1 ("'%s' is already locked (%s)\n", h->lockname); */
       return 0;
     }
 
@@ -1264,7 +1325,7 @@ dotlock_release_unix (dotlock_t h)
   int pid, same_node;
   int saveerrno;
 
-  pid = read_lockfile (h, &same_node);
+  pid = read_lockfile (h, &same_node, NULL);
   if ( pid == -1 )
     {
       saveerrno = errno;
@@ -1333,11 +1394,14 @@ dotlock_release (dotlock_t h)
     return 0;
 
   if ( h->disable )
-    return 0;
+    {
+      h->locked = 0;
+      return 0;
+    }
 
   if ( !h->locked )
     {
-      my_debug_1 ("Oops, '%s' is not locked\n", h->lockname);
+      /* my_debug_1 ("Oops, '%s' is not locked (%s)\n", h->lockname); */
       return 0;
     }
 

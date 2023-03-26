@@ -262,13 +262,29 @@ clean_cache_slot (cert_item_t ci)
  * fingerprint of the certificate will be stored there.  FPR_BUFFER
  * needs to point to a buffer of at least 20 bytes.  The fingerprint
  * will be stored on success or when the function returns
- * GPG_ERR_DUP_VALUE.  */
+ * GPG_ERR_DUP_VALUE or GPG_ERR_NOT_ENABLED.  */
 static gpg_error_t
 put_cert (ksba_cert_t cert, int permanent, unsigned int trustclass,
           void *fpr_buffer)
 {
   unsigned char help_fpr_buffer[20], *fpr;
   cert_item_t ci;
+  fingerprint_list_t ignored;
+
+  /* Do not keep expired certificates in the permanent cache.  */
+  if (permanent && !opt.debug_cache_expired_certs)
+    {
+      ksba_isotime_t not_after;
+      ksba_isotime_t current_time;
+
+      if (ksba_cert_get_validity (cert, 1, not_after))
+        return gpg_error (GPG_ERR_BAD_CERT);
+
+      gnupg_get_isotime (current_time);
+
+      if (*not_after && strcmp (current_time, not_after) > 0)
+        return gpg_error (GPG_ERR_CERT_EXPIRED);
+    }
 
   fpr = fpr_buffer? fpr_buffer : &help_fpr_buffer;
 
@@ -317,6 +333,14 @@ put_cert (ksba_cert_t cert, int permanent, unsigned int trustclass,
     }
 
   cert_compute_fpr (cert, fpr);
+  /* Compare against the list of to be ignored certificates.  */
+  for (ignored = opt.ignored_certs; ignored; ignored = ignored->next)
+    if (ignored->binlen == 20 && !memcmp (fpr, ignored->hexfpr, 20))
+      {
+        /* We are configured not to use this certificate.  */
+        return gpg_error (GPG_ERR_NOT_ENABLED);
+      }
+
   for (ci=cert_cache[*fpr]; ci; ci = ci->next)
     if (ci->cert && !memcmp (ci->fpr, fpr, 20))
       return gpg_error (GPG_ERR_DUP_VALUE);
@@ -364,8 +388,8 @@ static gpg_error_t
 load_certs_from_dir (const char *dirname, unsigned int trustclass)
 {
   gpg_error_t err;
-  DIR *dir;
-  struct dirent *ep;
+  gnupg_dir_t dir;
+  gnupg_dirent_t ep;
   char *p;
   size_t n;
   estream_t fp;
@@ -373,13 +397,13 @@ load_certs_from_dir (const char *dirname, unsigned int trustclass)
   ksba_cert_t cert;
   char *fname = NULL;
 
-  dir = opendir (dirname);
+  dir = gnupg_opendir (dirname);
   if (!dir)
     {
       return 0; /* We do not consider this a severe error.  */
     }
 
-  while ( (ep=readdir (dir)) )
+  while ( (ep = gnupg_readdir (dir)) )
     {
       p = ep->d_name;
       if (*p == '.' || !*p)
@@ -440,6 +464,8 @@ load_certs_from_dir (const char *dirname, unsigned int trustclass)
               cert_log_subject (_("  subject ="), cert);
             }
         }
+      else if (gpg_err_code (err) == GPG_ERR_NOT_ENABLED)
+        log_info ("certificate '%s' skipped due to configuration\n", fname);
       else
         log_error (_("error loading certificate '%s': %s\n"),
                      fname, gpg_strerror (err));
@@ -447,7 +473,7 @@ load_certs_from_dir (const char *dirname, unsigned int trustclass)
     }
 
   xfree (fname);
-  closedir (dir);
+  gnupg_closedir (dir);
   return 0;
 }
 
@@ -510,6 +536,8 @@ load_certs_from_file (const char *fname, unsigned int trustclasses,
       err = put_cert (cert, 1, trustclasses, NULL);
       if (gpg_err_code (err) == GPG_ERR_DUP_VALUE)
         log_info (_("certificate '%s' already cached\n"), fname);
+      else if (gpg_err_code (err) == GPG_ERR_NOT_ENABLED)
+        log_info ("certificate '%s' skipped due to configuration\n", fname);
       else if (err)
         log_error (_("error loading certificate '%s': %s\n"),
                    fname, gpg_strerror (err));
@@ -572,11 +600,11 @@ load_certs_from_w32_store (const char *storename)
         }
 
       pCertOpenSystemStore = (CERTOPENSYSTEMSTORE)
-        GetProcAddress (hCrypt32, "CertOpenSystemStoreA");
+        (void*)GetProcAddress (hCrypt32, "CertOpenSystemStoreA");
       pCertEnumCertificatesInStore = (CERTENUMCERTIFICATESINSTORE)
-        GetProcAddress (hCrypt32, "CertEnumCertificatesInStore");
+        (void*)GetProcAddress (hCrypt32, "CertEnumCertificatesInStore");
       pCertCloseStore = (CERTCLOSESTORE)
-        GetProcAddress (hCrypt32, "CertCloseStore");
+        (void*)GetProcAddress (hCrypt32, "CertCloseStore");
       if (   !pCertOpenSystemStore
           || !pCertEnumCertificatesInStore
           || !pCertCloseStore)
@@ -625,6 +653,9 @@ load_certs_from_w32_store (const char *storename)
               if (DBG_X509)
                 log_debug (_("certificate '%s' already cached\n"), storename);
             }
+          else if (gpg_err_code (err) == GPG_ERR_NOT_ENABLED)
+            log_info ("certificate '%s' skipped due to configuration\n",
+                      storename);
           else if (err)
             log_error (_("error loading certificate '%s': %s\n"),
                        storename, gpg_strerror (err));
@@ -685,7 +716,7 @@ load_certs_from_system (void)
   gpg_error_t err = 0;
 
   for (idx=0; idx < DIM (table); idx++)
-    if (!access (table[idx].name, F_OK))
+    if (!gnupg_access (table[idx].name, F_OK))
       {
         /* Take the first available bundle.  */
         err = load_certs_from_file (table[idx].name, CERTTRUST_CLASS_SYSTEM, 0);
@@ -721,11 +752,15 @@ cert_cache_init (strlist_t hkp_cacerts)
     load_certs_from_dir (fname, 0);
   xfree (fname);
 
-  fname = make_filename_try (gnupg_datadir (),
-                             "sks-keyservers.netCA.pem", NULL);
-  if (fname)
-    load_certs_from_file (fname, CERTTRUST_CLASS_HKPSPOOL, 1);
-  xfree (fname);
+  /* Put the special pool certificate into our store.  This is
+   * currently only used with ntbtls.  For GnuTLS http_session_new
+   * unfortunately loads that certificate directly from the file.  */
+  /* Disabled for 2.2.29 because the service had to be shutdown.  */
+  /* fname = make_filename_try (gnupg_datadir (), */
+  /*                            "sks-keyservers.netCA.pem", NULL); */
+  /* if (fname) */
+  /*   load_certs_from_file (fname, CERTTRUST_CLASS_HKPSPOOL, 1); */
+  /* xfree (fname); */
 
   for (sl = hkp_cacerts; sl; sl = sl->next)
     load_certs_from_file (sl->d, CERTTRUST_CLASS_HKP, 0);
@@ -848,6 +883,8 @@ cache_cert (ksba_cert_t cert)
     log_info (_("certificate already cached\n"));
   else if (!err)
     log_info (_("certificate cached\n"));
+  else if (gpg_err_code (err) == GPG_ERR_NOT_ENABLED)
+    log_info ("certificate skipped due to configuration\n");
   else
     log_error (_("error caching certificate: %s\n"), gpg_strerror (err));
   return err;
@@ -868,7 +905,10 @@ cache_cert_silent (ksba_cert_t cert, void *fpr_buffer)
   release_cache_lock ();
   if (gpg_err_code (err) == GPG_ERR_DUP_VALUE)
     err = 0;
-  if (err)
+
+  if (gpg_err_code (err) == GPG_ERR_NOT_ENABLED)
+    log_info ("certificate skipped due to configuration\n");
+  else if (err)
     log_error (_("error caching certificate: %s\n"), gpg_strerror (err));
   return err;
 }
@@ -1445,6 +1485,7 @@ find_cert_bysubject (ctrl_t ctrl, const char *subject_dn, ksba_sexp_t keyid)
   gpg_error_t err;
   int seq;
   ksba_cert_t cert = NULL;
+  ksba_cert_t first;         /* The first certificate found.  */
   cert_fetch_context_t context = NULL;
   ksba_sexp_t subj;
 
@@ -1471,6 +1512,9 @@ find_cert_bysubject (ctrl_t ctrl, const char *subject_dn, ksba_sexp_t keyid)
                 {
                   ksba_cert_ref (ci->cert);
                   release_cache_lock ();
+                  if (DBG_LOOKUP)
+                    log_debug ("%s: certificate found in the cache"
+                               " via ocsp_certs\n", __func__);
                   return ci->cert; /* We use this certificate. */
                 }
       release_cache_lock ();
@@ -1478,22 +1522,75 @@ find_cert_bysubject (ctrl_t ctrl, const char *subject_dn, ksba_sexp_t keyid)
         log_debug ("find_cert_bysubject: certificate not in ocsp_certs\n");
     }
 
-  /* No check whether the certificate is cached.  */
+  /* Now check whether the certificate is cached.  */
+  first = NULL;
+  subj = NULL;
   for (seq=0; (cert = get_cert_bysubject (subject_dn, seq)); seq++)
     {
-      if (!keyid)
-        break; /* No keyid requested, so return the first one found. */
-      if (!ksba_cert_get_subj_key_id (cert, NULL, &subj)
-          && !cmp_simple_canon_sexp (keyid, subj))
+      if (!keyid
+          || (!ksba_cert_get_subj_key_id (cert, NULL, &subj)
+              && !cmp_simple_canon_sexp (keyid, subj)))
         {
           xfree (subj);
-          break; /* Found matching cert. */
+          subj = NULL;
+          if (DBG_LOOKUP)
+            log_debug ("%s: certificate found in the cache"
+                       " %sby subject DN\n", __func__, !keyid?"only ":"");
+
+          /* If this a trusted cert - then prefer it.  */
+          if (!is_trusted_cert (cert, (CERTTRUST_CLASS_SYSTEM
+                                       | CERTTRUST_CLASS_CONFIG)))
+            {
+              ksba_cert_release (first);
+              first = cert;
+              cert = NULL;
+              /* We stop at the first trusted certificate and ignore
+               * any yet found non-trusted certificates.   */
+              break;
+            }
+          else if (!first)
+            {
+              /* Not trusted.  Save only the first one but continue
+               * the loop in case there is also a trusted one.  */
+              ksba_cert_release (first);
+              first = cert;
+              cert = NULL;
+            }
         }
       xfree (subj);
+      subj = NULL;
       ksba_cert_release (cert);
     }
-  if (cert)
-    return cert; /* Done.  */
+  if (first)
+    return first; /* Return the first found certificate.  */
+
+  /* If we do not have a subject DN but have a keyid, try to locate it
+   * by keyid.  */
+  if (!subject_dn && keyid)
+    {
+      int i;
+      cert_item_t ci;
+      ksba_sexp_t ski;
+
+      acquire_cache_read_lock ();
+      for (i=0; i < 256; i++)
+        for (ci=cert_cache[i]; ci; ci = ci->next)
+          if (ci->cert && !ksba_cert_get_subj_key_id (ci->cert, NULL, &ski))
+            {
+              if (!cmp_simple_canon_sexp (keyid, ski))
+                {
+                  ksba_free (ski);
+                  ksba_cert_ref (ci->cert);
+                  release_cache_lock ();
+                  if (DBG_LOOKUP)
+                    log_debug ("%s: certificate found in the cache"
+                               " via ski\n", __func__);
+                  return ci->cert;
+                }
+              ksba_free (ski);
+            }
+      release_cache_lock ();
+    }
 
   if (DBG_LOOKUP)
     log_debug ("find_cert_bysubject: certificate not in cache\n");

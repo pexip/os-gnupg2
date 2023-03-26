@@ -70,18 +70,20 @@ int keybox_is_writable (void *token);
 
 KEYBOX_HANDLE keybox_new_openpgp (void *token, int secret);
 KEYBOX_HANDLE keybox_new_x509 (void *token, int secret);
+void keybox_close_all_files (void *token);
+
 void keybox_release (KEYBOX_HANDLE hd);
 void keybox_push_found_state (KEYBOX_HANDLE hd);
 void keybox_pop_found_state (KEYBOX_HANDLE hd);
 const char *keybox_get_resource_name (KEYBOX_HANDLE hd);
 int keybox_set_ephemeral (KEYBOX_HANDLE hd, int yes);
 
-gpg_error_t keybox_lock (KEYBOX_HANDLE hd, int yes);
+gpg_error_t keybox_lock (KEYBOX_HANDLE hd, int yes, long timeout);
 
 /*-- keybox-file.c --*/
 /* Fixme: This function does not belong here: Provide a better
    interface to create a new keybox file.  */
-int _keybox_write_header_blob (FILE *fp, int openpgp_flag);
+int _keybox_write_header_blob (estream_t fp, int openpgp_flag);
 
 /*-- keybox-search.c --*/
 gpg_error_t keybox_get_keyblock (KEYBOX_HANDLE hd, iobuf_t *r_iobuf,
@@ -108,8 +110,6 @@ gpg_error_t keybox_update_keyblock (KEYBOX_HANDLE hd,
 
 #ifdef KEYBOX_WITH_X509
 int keybox_insert_cert (KEYBOX_HANDLE hd, ksba_cert_t cert,
-                        unsigned char *sha1_digest);
-int keybox_update_cert (KEYBOX_HANDLE hd, ksba_cert_t cert,
                         unsigned char *sha1_digest);
 #endif /*KEYBOX_WITH_X509*/
 int keybox_set_flags (KEYBOX_HANDLE hd, int what, int idx, unsigned int value);

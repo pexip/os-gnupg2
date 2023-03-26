@@ -26,10 +26,10 @@ Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
  2 files changed, 29 insertions(+), 2 deletions(-)
 
 diff --git a/agent/call-scd.c b/agent/call-scd.c
-index 16139fd..bf7732b 100644
+index c5b95f4..762de82 100644
 --- a/agent/call-scd.c
 +++ b/agent/call-scd.c
-@@ -415,6 +415,8 @@ start_scd (ctrl_t ctrl)
+@@ -414,6 +414,8 @@ start_scd (ctrl_t ctrl)
  
    primary_scd_ctx = ctx;
    primary_scd_ctx_reusable = 0;
@@ -39,10 +39,10 @@ index 16139fd..bf7732b 100644
   leave:
    xfree (abs_homedir);
 diff --git a/agent/gpg-agent.c b/agent/gpg-agent.c
-index b2ce51f..5bdbbbe 100644
+index 2882767..0801449 100644
 --- a/agent/gpg-agent.c
 +++ b/agent/gpg-agent.c
-@@ -2376,6 +2376,26 @@ create_directories (void)
+@@ -2374,6 +2374,26 @@ create_directories (void)
  }
  
  
@@ -69,7 +69,7 @@ index b2ce51f..5bdbbbe 100644
  
  /* This is the worker for the ticker.  It is called every few seconds
     and may only do fast operations. */
-@@ -2729,7 +2749,8 @@ do_start_connection_thread (ctrl_t ctrl)
+@@ -2730,7 +2750,8 @@ do_start_connection_thread (ctrl_t ctrl)
  
    agent_deinit_default_ctrl (ctrl);
    xfree (ctrl);
@@ -79,7 +79,7 @@ index b2ce51f..5bdbbbe 100644
    return NULL;
  }
  
-@@ -2809,7 +2830,8 @@ start_connection_thread_ssh (void *arg)
+@@ -2810,7 +2831,8 @@ start_connection_thread_ssh (void *arg)
  
    agent_deinit_default_ctrl (ctrl);
    xfree (ctrl);
@@ -89,7 +89,7 @@ index b2ce51f..5bdbbbe 100644
    return NULL;
  }
  
-@@ -3019,6 +3041,9 @@ handle_connections (gnupg_fd_t listen_fd,
+@@ -3020,6 +3042,9 @@ handle_connections (gnupg_fd_t listen_fd,
           thus a simple assignment is fine to copy the entire set.  */
        read_fdset = fdset;
  

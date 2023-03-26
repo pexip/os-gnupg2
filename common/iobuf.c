@@ -118,6 +118,7 @@ struct close_cache_s
 typedef struct close_cache_s *close_cache_t;
 static close_cache_t close_cache;
 
+int iobuf_debug_mode;
 
 
 #ifdef HAVE_W32_SYSTEM
@@ -191,6 +192,7 @@ fd_cache_strcmp (const char *a, const char *b)
   return strcmp (a, b);
 #endif
 }
+
 
 /*
  * Invalidate (i.e. close) a cached iobuf
@@ -293,21 +295,21 @@ direct_open (const char *fname, const char *mode, int mode700)
       sm = FILE_SHARE_READ;
     }
 
-#ifdef HAVE_W32CE_SYSTEM
-  {
-    wchar_t *wfname = utf8_to_wchar (fname);
-    if (wfname)
-      {
-        hfile = CreateFile (wfname, da, sm, NULL, cd,
-                            FILE_ATTRIBUTE_NORMAL, NULL);
-        xfree (wfname);
-      }
-    else
-      hfile = INVALID_HANDLE_VALUE;
-  }
-#else
-  hfile = CreateFile (fname, da, sm, NULL, cd, FILE_ATTRIBUTE_NORMAL, NULL);
-#endif
+  /* We always use the Unicode version because it supports file names
+   * longer than MAX_PATH.  (requires gpgrt 1.45) */
+  if (1)
+    {
+      wchar_t *wfname = gpgrt_fname_to_wchar (fname);
+      if (wfname)
+        {
+          hfile = CreateFileW (wfname, da, sm, NULL, cd,
+                               FILE_ATTRIBUTE_NORMAL, NULL);
+          xfree (wfname);
+        }
+      else
+        hfile = INVALID_HANDLE_VALUE;
+    }
+
   return hfile;
 
 #else /*!HAVE_W32_SYSTEM*/
@@ -1195,14 +1197,7 @@ iobuf_cancel (iobuf_t a)
     {
       /* Argg, MSDOS does not allow removing open files.  So
        * we have to do it here */
-#ifdef HAVE_W32CE_SYSTEM
-      wchar_t *wtmp = utf8_to_wchar (remove_name);
-      if (wtmp)
-        DeleteFile (wtmp);
-      xfree (wtmp);
-#else
-      remove (remove_name);
-#endif
+      gnupg_remove (remove_name);
       xfree (remove_name);
     }
 #endif
@@ -2206,7 +2201,7 @@ iobuf_temp_to_buffer (iobuf_t a, byte * buffer, size_t buflen)
 
 /* Copies the data from the input iobuf SOURCE to the output iobuf
    DEST until either an error is encountered or EOF is reached.
-   Returns the number of bytes copies.  */
+   Returns the number of bytes copies or (size_t)(-1) on error.  */
 size_t
 iobuf_copy (iobuf_t dest, iobuf_t source)
 {
@@ -2219,11 +2214,11 @@ iobuf_copy (iobuf_t dest, iobuf_t source)
   size_t max_read = 0;
   int err;
 
-  assert (source->use == IOBUF_INPUT || source->use == IOBUF_INPUT_TEMP);
-  assert (dest->use == IOBUF_OUTPUT || source->use == IOBUF_OUTPUT_TEMP);
+  log_assert (source->use == IOBUF_INPUT || source->use == IOBUF_INPUT_TEMP);
+  log_assert (dest->use == IOBUF_OUTPUT || source->use == IOBUF_OUTPUT_TEMP);
 
   if (iobuf_error (dest))
-    return -1;
+    return (size_t)(-1);
 
   temp = xmalloc (temp_size);
   while (1)
@@ -2334,7 +2329,7 @@ iobuf_get_filelength (iobuf_t a, int *overflow)
 	  return size;
       }
     log_error ("GetFileSize for handle %p failed: %s\n",
-	       fp, w32_strerror (0));
+	       fp, w32_strerror (-1));
 #else /*!HAVE_W32_SYSTEM*/
     {
       struct stat st;

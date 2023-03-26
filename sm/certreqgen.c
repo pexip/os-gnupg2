@@ -26,7 +26,7 @@
      $ cat >foo <<EOF
      %echo Generating a standard key
      Key-Type: RSA
-     Key-Length: 2048
+     Key-Length: 3072
      Name-DN: CN=test cert 1,OU=Aegypten Project,O=g10 Code GmbH,L=Ddorf,C=DE
      Name-Email: joe@foo.bar
      # Do a commit here, so that we can later print a "done"
@@ -198,7 +198,7 @@ parse_parameter_usage (struct para_data_s *para, enum para_name key)
         use |= GCRY_PK_USAGE_CERT;
       else
         {
-          log_error ("line %d: invalid usage list\n", r->lnr);
+          log_error ("line %d: invalid usage list\n", r?r->lnr:0);
           return -1; /* error */
         }
     }
@@ -461,14 +461,17 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
   if ( (i < 1 || i != GCRY_PK_RSA) && !cardkeyid )
     {
       r = get_parameter (para, pKEYTYPE, 0);
-      log_error (_("line %d: invalid algorithm\n"), r->lnr);
+      if (r)
+        log_error (_("line %d: invalid algorithm\n"), r?r->lnr:0);
+      else
+        log_error ("No Key-Type specified\n");
       return gpg_error (GPG_ERR_INV_PARAMETER);
     }
 
   /* Check the keylength.  NOTE: If you change this make sure that it
      macthes the gpgconflist item in gpgsm.c  */
   if (!get_parameter (para, pKEYLENGTH, 0))
-    nbits = 2048;
+    nbits = 3072;
   else
     nbits = get_parameter_uint (para, pKEYLENGTH);
   if ((nbits < 1024 || nbits > 4096) && !cardkeyid)
@@ -476,7 +479,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
       /* The BSI specs dated 2002-11-25 don't allow lengths below 1024. */
       r = get_parameter (para, pKEYLENGTH, 0);
       log_error (_("line %d: invalid key length %u (valid are %d to %d)\n"),
-                 r->lnr, nbits, 1024, 4096);
+                 r?r->lnr:0, nbits, 1024, 4096);
       xfree (cardkeyid);
       return gpg_error (GPG_ERR_INV_PARAMETER);
     }
@@ -493,7 +496,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
   if (!(s=get_parameter_value (para, pNAMEDN, 0)))
     {
       r = get_parameter (para, pNAMEDN, 0);
-      log_error (_("line %d: no subject name given\n"), r->lnr);
+      log_error (_("line %d: no subject name given\n"), r?r->lnr:0);
       xfree (cardkeyid);
       return gpg_error (GPG_ERR_INV_PARAMETER);
     }
@@ -503,10 +506,10 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
       r = get_parameter (para, pNAMEDN, 0);
       if (gpg_err_code (err) == GPG_ERR_UNKNOWN_NAME)
         log_error (_("line %d: invalid subject name label '%.*s'\n"),
-                   r->lnr, (int)errlen, s+erroff);
+                   r?r->lnr:0, (int)errlen, s+erroff);
       else
         log_error (_("line %d: invalid subject name '%s' at pos %d\n"),
-                   r->lnr, s, (int)erroff);
+                   r?r->lnr:0, s, (int)erroff);
 
       xfree (cardkeyid);
       return gpg_error (GPG_ERR_INV_PARAMETER);
@@ -522,7 +525,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
           || strstr(s, ".."))
         {
           r = get_parameter (para, pNAMEEMAIL, seq);
-          log_error (_("line %d: not a valid email address\n"), r->lnr);
+          log_error (_("line %d: not a valid email address\n"), r?r->lnr:0);
           xfree (cardkeyid);
           return gpg_error (GPG_ERR_INV_PARAMETER);
         }
@@ -541,7 +544,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
           if (*s)
             {
               r = get_parameter (para, pSERIAL, 0);
-              log_error (_("line %d: invalid serial number\n"), r->lnr);
+              log_error (_("line %d: invalid serial number\n"), r?r->lnr:0);
               xfree (cardkeyid);
               return gpg_error (GPG_ERR_INV_PARAMETER);
             }
@@ -558,10 +561,10 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
           r = get_parameter (para, pISSUERDN, 0);
           if (gpg_err_code (err) == GPG_ERR_UNKNOWN_NAME)
             log_error (_("line %d: invalid issuer name label '%.*s'\n"),
-                       r->lnr, (int)errlen, string+erroff);
+                       r?r->lnr:0, (int)errlen, string+erroff);
           else
             log_error (_("line %d: invalid issuer name '%s' at pos %d\n"),
-                       r->lnr, string, (int)erroff);
+                       r?r->lnr:0, string, (int)erroff);
           xfree (cardkeyid);
           return gpg_error (GPG_ERR_INV_PARAMETER);
         }
@@ -572,7 +575,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
   if (string && !string2isotime (NULL, string))
     {
       r = get_parameter (para, pNOTBEFORE, 0);
-      log_error (_("line %d: invalid date given\n"), r->lnr);
+      log_error (_("line %d: invalid date given\n"), r?r->lnr:0);
       xfree (cardkeyid);
       return gpg_error (GPG_ERR_INV_PARAMETER);
     }
@@ -583,7 +586,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
   if (string && !string2isotime (NULL, string))
     {
       r = get_parameter (para, pNOTAFTER, 0);
-      log_error (_("line %d: invalid date given\n"), r->lnr);
+      log_error (_("line %d: invalid date given\n"), r?r->lnr:0);
       xfree (cardkeyid);
       return gpg_error (GPG_ERR_INV_PARAMETER);
     }
@@ -597,7 +600,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
         {
           r = get_parameter (para, pKEYTYPE, 0);
           log_error (_("line %d: error getting signing key by keygrip '%s'"
-                       ": %s\n"), r->lnr, s, gpg_strerror (rc));
+                       ": %s\n"), r?r->lnr:0, s, gpg_strerror (rc));
           xfree (cardkeyid);
           return rc;
         }
@@ -615,7 +618,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
                         || mdalgo == GCRY_MD_SHA512)))
       {
         r = get_parameter (para, pHASHALGO, 0);
-        log_error (_("line %d: invalid hash algorithm given\n"), r->lnr);
+        log_error (_("line %d: invalid hash algorithm given\n"), r?r->lnr:0);
         xfree (cardkeyid);
         return gpg_error (GPG_ERR_INV_PARAMETER);
       }
@@ -630,7 +633,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
       if (*s || (i&1))
         {
           r = get_parameter (para, pAUTHKEYID, 0);
-          log_error (_("line %d: invalid authority-key-id\n"), r->lnr);
+          log_error (_("line %d: invalid authority-key-id\n"), r?r->lnr:0);
           xfree (cardkeyid);
           return gpg_error (GPG_ERR_INV_PARAMETER);
         }
@@ -645,7 +648,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
       if (*s || (i&1))
         {
           r = get_parameter (para, pSUBJKEYID, 0);
-          log_error (_("line %d: invalid subject-key-id\n"), r->lnr);
+          log_error (_("line %d: invalid subject-key-id\n"), r?r->lnr:0);
           xfree (cardkeyid);
           return gpg_error (GPG_ERR_INV_PARAMETER);
         }
@@ -683,7 +686,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
       if (!okay)
         {
           r = get_parameter (para, pEXTENSION, seq);
-          log_error (_("line %d: invalid extension syntax\n"), r->lnr);
+          log_error (_("line %d: invalid extension syntax\n"), r? r->lnr:0);
           xfree (cardkeyid);
           return gpg_error (GPG_ERR_INV_PARAMETER);
         }
@@ -697,7 +700,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
         {
           r = get_parameter (para, pKEYTYPE, 0);
           log_error (_("line %d: error reading key '%s' from card: %s\n"),
-                     r->lnr, cardkeyid, gpg_strerror (rc));
+                     r?r->lnr:0, cardkeyid, gpg_strerror (rc));
           xfree (sigkey);
           xfree (cardkeyid);
           return rc;
@@ -727,7 +730,7 @@ proc_parameters (ctrl_t ctrl, struct para_data_s *para,
         {
           r = get_parameter (para, pKEYTYPE, 0);
           log_error (_("line %d: key generation failed: %s <%s>\n"),
-                     r->lnr, gpg_strerror (rc), gpg_strsource (rc));
+                     r?r->lnr:0, gpg_strerror (rc), gpg_strsource (rc));
           xfree (sigkey);
           xfree (cardkeyid);
           return rc;
@@ -1312,7 +1315,7 @@ create_request (ctrl_t ctrl,
           log_info ("about to sign the %s for key: &%s\n",
                     certmode? "certificate":"CSR", hexgrip);
 
-          if (carddirect)
+          if (carddirect && !certmode)
             rc = gpgsm_scd_pksign (ctrl, carddirect, NULL,
                                    gcry_md_read (md, mdalgo),
                                    gcry_md_get_algo_dlen (mdalgo),

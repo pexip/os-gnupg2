@@ -203,6 +203,7 @@ encrypt_dek (const DEK dek, ksba_cert_t cert, unsigned char **encval)
   rc = encode_session_key (dek, &s_data);
   if (rc)
     {
+      gcry_sexp_release (s_pkey);
       log_error ("encode_session_key failed: %s\n", gpg_strerror (rc));
       return rc;
     }
@@ -480,7 +481,8 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
 
       /* Check compliance.  */
       pk_algo = gpgsm_get_key_algo_info (cl->cert, &nbits);
-      if (!gnupg_pk_is_compliant (opt.compliance, pk_algo, NULL, nbits, NULL))
+      if (!gnupg_pk_is_compliant (opt.compliance, pk_algo, 0,
+                                  NULL, nbits, NULL))
         {
           char  kidstr[10+1];
 
@@ -495,7 +497,7 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
       /* Fixme: When adding ECC we need to provide the curvename and
        * the key to gnupg_pk_is_compliant.  */
       if (compliant
-          && !gnupg_pk_is_compliant (CO_DE_VS, pk_algo, NULL, nbits, NULL))
+          && !gnupg_pk_is_compliant (CO_DE_VS, pk_algo, 0, NULL, nbits, NULL))
         compliant = 0;
 
       rc = encrypt_dek (dek, cl->cert, &encval);
@@ -530,9 +532,18 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
         }
     }
 
-  if (compliant)
+  if (compliant && gnupg_gcrypt_is_compliant (CO_DE_VS))
     gpgsm_status (ctrl, STATUS_ENCRYPTION_COMPLIANCE_MODE,
                   gnupg_status_compliance_flag (CO_DE_VS));
+  else if (opt.require_compliance
+           && opt.compliance == CO_DE_VS)
+    {
+      log_error (_("operation forced to fail due to"
+                   " unfulfilled compliance rules\n"));
+      gpgsm_errors_seen = 1;
+      rc = gpg_error (GPG_ERR_FORBIDDEN);
+      goto leave;
+    }
 
   /* Main control loop for encryption. */
   recpno = 0;
@@ -563,7 +574,8 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
       goto leave;
     }
   audit_log (ctrl->audit, AUDIT_ENCRYPTION_DONE);
-  log_info ("encrypted data created\n");
+  if (!opt.quiet)
+    log_info ("encrypted data created\n");
 
  leave:
   ksba_cms_release (cms);

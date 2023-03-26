@@ -30,18 +30,15 @@
 #include "../common/session-env.h"
 #include "../common/compliance.h"
 
-#ifndef EXTERN_UNLESS_MAIN_MODULE
-/* Norcraft can't cope with common symbols */
-#if defined (__riscos__) && !defined (INCLUDED_BY_MAIN_MODULE)
-#define EXTERN_UNLESS_MAIN_MODULE extern
-#else
-#define EXTERN_UNLESS_MAIN_MODULE
-#endif
-#endif
 
-/* Declaration of a keyserver spec type.  The definition is found in
-   ../common/keyserver.h.  */
-struct keyserver_spec;
+/* Object to hold information pertaining to a keyserver; it also
+   allows building a list of keyservers.  For historic reasons this is
+   not a strlist_t.  */
+struct keyserver_spec
+{
+  struct keyserver_spec *next;
+  char *uri;
+};
 typedef struct keyserver_spec *keyserver_spec_t;
 
 
@@ -217,6 +214,7 @@ struct
   unsigned int screen_lines;
   byte *show_subpackets;
   int rfc2440_text;
+  unsigned int min_rsa_length;   /* Used for compliance checks.  */
 
   /* If true, let write failures on the status-fd exit the process. */
   int exit_on_status_write_error;
@@ -237,10 +235,27 @@ struct
     unsigned int dsa2:1;
     unsigned int allow_multiple_messages:1;
     unsigned int allow_weak_digest_algos:1;
+    unsigned int allow_weak_key_signatures:1;
+    unsigned int override_compliance_check:1;
     unsigned int large_rsa:1;
     unsigned int disable_signer_uid:1;
+    unsigned int include_key_block:1;
+    unsigned int auto_key_import:1;
     /* Flag to enable experimental features from RFC4880bis.  */
     unsigned int rfc4880bis:1;
+    /* Hack: --output is not given but OUTFILE was temporary set to "-".  */
+    unsigned int dummy_outfile:1;
+    /* Force the use of the OpenPGP card and do not allow the use of
+     * another card.  */
+    unsigned int use_only_openpgp_card:1;
+    /* Force signing keys even if a key signature already exists.  */
+    unsigned int force_sign_key:1;
+    /* The next flag is set internally iff IMPORT_SELF_SIGS_ONLY has
+     * been set by the user and is not the default value.  */
+    unsigned int expl_import_self_sigs_only:1;
+    /* Fail if an operation can't be done in the requested compliance
+     * mode.  */
+    unsigned int require_compliance:1;
   } flags;
 
   /* Linked list of ways to find a key if the key isn't on the local
@@ -255,6 +270,7 @@ struct
       AKL_DANE,
       AKL_WKD,
       AKL_LDAP,
+      AKL_NTDS,
       AKL_KEYSERVER,
       AKL_SPEC
     } type;
@@ -288,6 +304,9 @@ struct {
      codes.  Thus for the --server purposes we store some of the error
      codes here.  FIXME! */
   gpg_error_t lasterr;
+
+  /* Kludge to silence some warnings using --secret-key-list. */
+  int silence_parse_warnings;
 } glo_ctrl;
 
 #define DBG_PACKET_VALUE  1	/* debug packet reading/writing */
@@ -354,6 +373,7 @@ EXTERN_UNLESS_MAIN_MODULE int memory_stat_debug_mode;
 #define IMPORT_RESTORE                   (1<<10)
 #define IMPORT_REPAIR_KEYS               (1<<11)
 #define IMPORT_DRY_RUN                   (1<<12)
+#define IMPORT_SELF_SIGS_ONLY            (1<<14)
 
 #define EXPORT_LOCAL_SIGS                (1<<0)
 #define EXPORT_ATTRIBUTES                (1<<1)
