@@ -1,7 +1,7 @@
 /* gpg.c - The GnuPG utility (main for gpg)
  * Copyright (C) 1998-2020 Free Software Foundation, Inc.
  * Copyright (C) 1997-2019 Werner Koch
- * Copyright (C) 2015-2021 g10 Code GmbH
+ * Copyright (C) 2015-2022 g10 Code GmbH
  *
  * This file is part of GnuPG.
  *
@@ -62,8 +62,11 @@
 #include "tofu.h"
 #include "../common/init.h"
 #include "../common/mbox-util.h"
+#include "../common/zb32.h"
 #include "../common/shareddefs.h"
 #include "../common/compliance.h"
+#include "../kbx/keybox.h"
+
 
 #if defined(HAVE_DOSISH_SYSTEM) || defined(__CYGWIN__)
 #define MY_O_BINARY  O_BINARY
@@ -125,9 +128,11 @@ enum cmd_and_opt_values
     aQuickRevSig,
     aQuickAddUid,
     aQuickAddKey,
+    aQuickAddADSK,
     aQuickRevUid,
     aQuickSetExpire,
     aQuickSetPrimaryUid,
+    aQuickUpdatePref,
     aListConfig,
     aListGcryptConfig,
     aGPGConfList,
@@ -248,6 +253,7 @@ enum cmd_and_opt_values
     oCipherAlgo,
     oDigestAlgo,
     oCertDigestAlgo,
+    oNoCompress,
     oCompressAlgo,
     oCompressLevel,
     oBZ2CompressLevel,
@@ -299,6 +305,7 @@ enum cmd_and_opt_values
     oShowPhotos,
     oNoShowPhotos,
     oPhotoViewer,
+    oForceOCB,
     oS2KMode,
     oS2KDigest,
     oS2KCipher,
@@ -348,7 +355,6 @@ enum cmd_and_opt_values
     oShowSessionKey,
     oOverrideSessionKey,
     oOverrideSessionKeyFD,
-    oOverrideComplianceCheck,
     oNoRandomSeedFile,
     oAutoKeyRetrieve,
     oNoAutoKeyRetrieve,
@@ -417,6 +423,7 @@ enum cmd_and_opt_values
     oTOFUDefaultPolicy,
     oTOFUDBFormat,
     oDefaultNewKeyAlgo,
+    oDefaultNewKeyADSK,
     oWeakDigest,
     oUnwrap,
     oOnlySignTextIDs,
@@ -431,6 +438,9 @@ enum cmd_and_opt_values
     oForceSignKey,
     oForbidGenKey,
     oRequireCompliance,
+    oCompatibilityFlags,
+    oAddDesigRevoker,
+    oProcAllSigs,
 
     oNoop
   };
@@ -472,12 +482,14 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_c (aQuickAddUid,  "quick-adduid", "@"),
   ARGPARSE_c (aQuickAddKey,  "quick-add-key", "@"),
   ARGPARSE_c (aQuickAddKey,  "quick-addkey", "@"),
+  ARGPARSE_c (aQuickAddADSK, "quick-add-adsk", "@"),
   ARGPARSE_c (aQuickRevUid,  "quick-revoke-uid",
               N_("quickly revoke a user-id")),
   ARGPARSE_c (aQuickRevUid,  "quick-revuid", "@"),
   ARGPARSE_c (aQuickSetExpire,  "quick-set-expire",
               N_("quickly set a new expiration date")),
   ARGPARSE_c (aQuickSetPrimaryUid,  "quick-set-primary-uid", "@"),
+  ARGPARSE_c (aQuickUpdatePref,  "quick-update-pref", "@"),
   ARGPARSE_c (aFullKeygen,  "full-generate-key" ,
               N_("full featured key pair generation")),
   ARGPARSE_c (aFullKeygen,  "full-gen-key", "@"),
@@ -618,6 +630,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oPGP7, "pgp7", "@"),
   ARGPARSE_s_n (oPGP8, "pgp8", "@"),
   ARGPARSE_s_s (oDefaultNewKeyAlgo, "default-new-key-algo", "@"),
+  ARGPARSE_s_s (oDefaultNewKeyADSK, "default-new-key-adsk", "@"),
   ARGPARSE_p_u (oMinRSALength, "min-rsa-length", "@"),
 #ifndef NO_TRUST_MODELS
   ARGPARSE_s_n (oAlwaysTrust, "always-trust", "@"),
@@ -672,6 +685,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oLockOnce,     "lock-once", "@"),
   ARGPARSE_s_n (oLockMultiple, "lock-multiple", "@"),
   ARGPARSE_s_n (oLockNever,    "lock-never", "@"),
+  ARGPARSE_s_n (oNoCompress,   "no-compress", "@"),
   ARGPARSE_s_s (oCompressAlgo,"compress-algo", "@"),
   ARGPARSE_s_s (oCompressAlgo, "compression-algo", "@"), /* Alias */
   ARGPARSE_s_n (oBZ2DecompressLowmem, "bzip2-decompress-lowmem", "@"),
@@ -684,6 +698,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oNoAutoCheckTrustDB, "no-auto-check-trustdb", "@"),
   ARGPARSE_s_s (oForceOwnertrust, "force-ownertrust", "@"),
 #endif
+  ARGPARSE_s_s (oAddDesigRevoker, "add-desig-revoker", "@"),
 
 
   ARGPARSE_header ("Input", N_("Options controlling the input")),
@@ -834,6 +849,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_s (oS2KDigest, "s2k-digest-algo", "@"),
   ARGPARSE_s_s (oS2KCipher, "s2k-cipher-algo", "@"),
   ARGPARSE_s_i (oS2KCount, "s2k-count", "@"),
+  ARGPARSE_s_n (oForceOCB, "force-ocb", "@"),
   ARGPARSE_s_n (oRequireCrossCert, "require-backsigs", "@"),
   ARGPARSE_s_n (oRequireCrossCert, "require-cross-certification", "@"),
   ARGPARSE_s_n (oNoRequireCrossCert, "no-require-backsigs", "@"),
@@ -851,7 +867,6 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_s (oCipherAlgo, "cipher-algo", "@"),
   ARGPARSE_s_s (oDigestAlgo, "digest-algo", "@"),
   ARGPARSE_s_s (oCertDigestAlgo, "cert-digest-algo", "@"),
-  ARGPARSE_s_n (oOverrideComplianceCheck, "override-compliance-check", "@"),
   /* Options to override new security defaults.  */
   ARGPARSE_s_n (oAllowWeakKeySignatures, "allow-weak-key-signatures", "@"),
   ARGPARSE_s_n (oAllowWeakDigestAlgos, "allow-weak-digest-algos", "@"),
@@ -867,6 +882,7 @@ static ARGPARSE_OPTS opts[] = {
 
   ARGPARSE_s_n (oBatch, "batch", "@"),
   ARGPARSE_s_n (oNoBatch, "no-batch", "@"),
+  ARGPARSE_s_n (oProcAllSigs, "proc-all-sigs", "@"),
   ARGPARSE_s_n (oAnswerYes, "yes", "@"),
   ARGPARSE_s_n (oAnswerNo, "no", "@"),
   ARGPARSE_s_i (oStatusFD, "status-fd", "@"),
@@ -894,6 +910,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oNoAutostart, "no-autostart", "@"),
   ARGPARSE_s_n (oForbidGenKey,  "forbid-gen-key", "@"),
   ARGPARSE_s_n (oRequireCompliance, "require-compliance", "@"),
+  ARGPARSE_s_s (oCompatibilityFlags, "compatibility-flags", "@"),
   /* Options which can be used in special circumstances. They are not
    * published and we hope they are never required.  */
   ARGPARSE_s_n (oUseOnlyOpenPGPCard, "use-only-openpgp-card", "@"),
@@ -947,6 +964,7 @@ static ARGPARSE_OPTS opts[] = {
   ARGPARSE_s_n (oNoop, "no-force-mdc", "@"),
   ARGPARSE_s_n (oNoop, "disable-mdc", "@"),
   ARGPARSE_s_n (oNoop, "no-disable-mdc", "@"),
+  ARGPARSE_s_n (oNoop, "override-compliance-check", "@"),
 
 
   ARGPARSE_group (302, N_(
@@ -982,6 +1000,13 @@ static struct debug_flags_s debug_flags [] =
     { DBG_CLOCK_VALUE  , "clock"   },
     { DBG_LOOKUP_VALUE , "lookup"  },
     { DBG_EXTPROG_VALUE, "extprog" },
+    { 0, NULL }
+  };
+
+
+/* The list of compatibility flags.  */
+static struct compatibility_flags_s compatibility_flags [] =
+  {
     { 0, NULL }
   };
 
@@ -2005,6 +2030,8 @@ parse_list_options(char *str)
   char *subpackets=""; /* something that isn't NULL */
   struct parse_options lopts[]=
     {
+      {"show-sig-subpackets",LIST_SHOW_SIG_SUBPACKETS,NULL,
+       NULL},
       {"show-photos",LIST_SHOW_PHOTOS,NULL,
        N_("display photo IDs during key listings")},
       {"show-usage",LIST_SHOW_USAGE,NULL,
@@ -2031,18 +2058,27 @@ parse_list_options(char *str)
        N_("show the keyring name in key listings")},
       {"show-sig-expire",LIST_SHOW_SIG_EXPIRE,NULL,
        N_("show expiration dates during signature listings")},
-      {"show-sig-subpackets",LIST_SHOW_SIG_SUBPACKETS,NULL,
-       NULL},
+      {"show-pref", LIST_SHOW_PREF, NULL,
+       N_("show preferences")},
+      {"show-pref-verbose", LIST_SHOW_PREF_VERBOSE, NULL,
+       N_("show preferences")},
       {"show-only-fpr-mbox",LIST_SHOW_ONLY_FPR_MBOX, NULL,
        NULL},
       {NULL,0,NULL,NULL}
     };
+  int i;
 
   /* C99 allows for non-constant initializers, but we'd like to
      compile everywhere, so fill in the show-sig-subpackets argument
      here.  Note that if the parse_options array changes, we'll have
-     to change the subscript here. */
-  lopts[13].value=&subpackets;
+     to change the subscript here.  We use a loop here in case the
+     list above is reordered.  */
+  for (i=0; lopts[i].name; i++)
+    if (lopts[i].bit == LIST_SHOW_SIG_SUBPACKETS)
+      {
+        lopts[i].value = &subpackets;
+        break;
+      }
 
   if(parse_options(str,&opt.list_options,lopts,1))
     {
@@ -2277,6 +2313,7 @@ main (int argc, char **argv)
     const char *fname;
     char *username;
     int may_coredump;
+    gpg_error_t tmperr;
     strlist_t sl;
     strlist_t remusr = NULL;
     strlist_t locusr = NULL;
@@ -2606,9 +2643,11 @@ main (int argc, char **argv)
 	  case aQuickKeygen:
 	  case aQuickAddUid:
 	  case aQuickAddKey:
+	  case aQuickAddADSK:
 	  case aQuickRevUid:
 	  case aQuickSetExpire:
 	  case aQuickSetPrimaryUid:
+	  case aQuickUpdatePref:
 	  case aExportOwnerTrust:
 	  case aImportOwnerTrust:
           case aRebuildKeydbCaches:
@@ -2682,6 +2721,10 @@ main (int argc, char **argv)
             nogreeting = 1;
             break;
 
+          case oProcAllSigs:
+            opt.flags.proc_all_sigs = 1;
+            break;
+
           case oUseAgent: /* Dummy. */
             break;
 
@@ -2735,6 +2778,15 @@ main (int argc, char **argv)
           case oDebugLevel: debug_level = pargs.r.ret_str; break;
 
           case oDebugIOLBF: break; /* Already set in pre-parse step.  */
+
+          case oCompatibilityFlags:
+            if (parse_compatibility_flags (pargs.r.ret_str, &opt.compat_flags,
+                                           compatibility_flags))
+              {
+                pargs.r_opt = ARGPARSE_INVALID_ARG;
+                pargs.err = ARGPARSE_PRINT_ERROR;
+              }
+            break;
 
 	  case oStatusFD:
             set_status_fd ( translate_sys2libc_fd_int (pargs.r.ret_int, 1) );
@@ -2981,6 +3033,8 @@ main (int argc, char **argv)
 	    break;
 	  case oPhotoViewer: opt.photo_viewer = pargs.r.ret_str; break;
 
+          case oForceOCB: opt.force_ocb = 1; break;
+
           case oDisableSignerUID: opt.flags.disable_signer_uid = 1; break;
           case oIncludeKeyBlock:  opt.flags.include_key_block = 1; break;
           case oNoIncludeKeyBlock: opt.flags.include_key_block = 0; break;
@@ -3096,6 +3150,12 @@ main (int argc, char **argv)
 	  case oCompress:
 	    /* this is the -z command line option */
 	    opt.compress_level = opt.bz2_compress_level = pargs.r.ret_int;
+            opt.explicit_compress_option = 1;
+	    break;
+	  case oNoCompress:
+	    /* --no-compress is the same as  -z0 */
+	    opt.compress_level = opt.bz2_compress_level = 0;
+            opt.explicit_compress_option = 1;
 	    break;
 	  case oCompressLevel: opt.compress_level = pargs.r.ret_int; break;
 	  case oBZ2CompressLevel: opt.bz2_compress_level = pargs.r.ret_int; break;
@@ -3335,7 +3395,7 @@ main (int argc, char **argv)
 	    break;
 	  case oUtf8Strings: utf8_strings = 1; break;
 	  case oNoUtf8Strings:
-#ifdef HAVE_W32_SYSTEM
+#ifndef HAVE_W32_SYSTEM
             utf8_strings = 0;
 #endif
             break;
@@ -3357,7 +3417,13 @@ main (int argc, char **argv)
 	  case oAllowFreeformUID: opt.allow_freeform_uid = 1; break;
 	  case oNoAllowFreeformUID: opt.allow_freeform_uid = 0; break;
 	  case oNoLiteral: opt.no_literal = 1; break;
-	  case oSetFilesize: opt.set_filesize = pargs.r.ret_ulong; break;
+
+	  case oSetFilesize:
+            /* There are restricts on the value (e.g. < 2^32); you
+             * need to check the entire code to understand this.  */
+            opt.set_filesize = pargs.r.ret_ulong;
+            break;
+
 	  case oFastListMode: opt.fast_list_mode = 1; break;
 	  case oFixedListMode: /* Dummy */ break;
           case oLegacyListMode: opt.legacy_list_mode = 1; break;
@@ -3562,10 +3628,6 @@ main (int argc, char **argv)
             opt.flags.allow_weak_key_signatures = 1;
             break;
 
-          case oOverrideComplianceCheck:
-            opt.flags.override_compliance_check = 1;
-            break;
-
           case oFakedSystemTime:
             {
               size_t len = strlen (pargs.r.ret_str);
@@ -3592,6 +3654,16 @@ main (int argc, char **argv)
             opt.def_new_key_algo = pargs.r.ret_str;
             break;
 
+          case oDefaultNewKeyADSK:
+            if (!strcmp (pargs.r.ret_str, "clear"))
+              FREE_STRLIST (opt.def_new_key_adsks);
+            else if (!tokenize_to_strlist (&opt.def_new_key_adsks,
+                                           pargs.r.ret_str, " \t,")
+                && (tmperr = gpg_err_code_from_syserror()) != GPG_ERR_ENOENT)
+              log_info (_("error parsing value for option '%s': %s\n"),
+                        "--default-new-key-algo", gpg_strerror (tmperr));
+            break;
+
           case oUseOnlyOpenPGPCard:
             opt.flags.use_only_openpgp_card = 1;
             break;
@@ -3603,6 +3675,13 @@ main (int argc, char **argv)
           case oRequireCompliance:
             opt.flags.require_compliance = 1;
             break;
+
+	  case oAddDesigRevoker:
+            if (!strcmp (pargs.r.ret_str, "clear"))
+              FREE_STRLIST (opt.desig_revokers);
+            else
+              append_to_strlist (&opt.desig_revokers, pargs.r.ret_str);
+	    break;
 
 	  case oNoop: break;
 
@@ -3762,17 +3841,13 @@ main (int argc, char **argv)
 	g10_exit(2);
       }
 
-    /* We allow overriding the compliance check only in non-batch mode
-     * so that the user has a chance to see the message.  */
-    if (opt.flags.override_compliance_check && opt.batch)
-      {
-        opt.flags.override_compliance_check = 0;
-        log_info ("Note: '%s' ignored due to batch mode\n",
-                  "--override-compliance-check");
-      }
-
     set_debug (debug_level);
-    gnupg_set_compliance_extra_info (opt.min_rsa_length);
+    if (opt.verbose) /* Print the compatibility flags.  */
+      parse_compatibility_flags (NULL, &opt.compat_flags, compatibility_flags);
+
+    gnupg_set_compliance_extra_info (CO_EXTRA_INFO_MIN_RSA, opt.min_rsa_length);
+    gnupg_set_compliance_extra_info (CO_EXTRA_INFO_VSD_ALLOW_OCB, 1);
+
     if (DBG_CLOCK)
       log_clock ("start");
 
@@ -4152,8 +4227,10 @@ main (int argc, char **argv)
       case aQuickKeygen:
       case aQuickAddUid:
       case aQuickAddKey:
+      case aQuickAddADSK:
       case aQuickRevUid:
       case aQuickSetPrimaryUid:
+      case aQuickUpdatePref:
       case aFullKeygen:
       case aKeygen:
       case aImport:
@@ -4618,6 +4695,17 @@ main (int argc, char **argv)
         }
 	break;
 
+      case aQuickAddADSK:
+        {
+          if (argc != 2)
+            wrong_args ("--quick-add-adsk FINGERPRINT ADSK-FINGERPRINT");
+          if (mopt.forbid_gen_key)
+            gen_key_forbidden ();
+          else
+            keyedit_quick_addadsk (ctrl, argv[0], argv[1]);
+        }
+	break;
+
       case aQuickRevUid:
         {
           const char *uid, *uidtorev;
@@ -4651,6 +4739,14 @@ main (int argc, char **argv)
           uid = *argv++; argc--;
           primaryuid = *argv++; argc--;
           keyedit_quick_set_primary (ctrl, uid, primaryuid);
+        }
+	break;
+
+      case aQuickUpdatePref:
+        {
+          if (argc != 1)
+            wrong_args ("--quick-update-pref USER-ID");
+          keyedit_quick_update_pref (ctrl, *argv);
         }
 	break;
 
@@ -4863,42 +4959,74 @@ main (int argc, char **argv)
 
       case aGenRandom:
 	{
-	    int level = argc ? atoi(*argv):0;
-	    int count = argc > 1 ? atoi(argv[1]): 0;
-	    int endless = !count;
+          int level = argc ? atoi(*argv):0;
+          int count = argc > 1 ? atoi(argv[1]): 0;
+          int endless = !count;
+          int hexhack = (level == 16);
 
-	    if( argc < 1 || argc > 2 || level < 0 || level > 2 || count < 0 )
-		wrong_args("--gen-random 0|1|2 [count]");
+          if (hexhack)
+            level = 1;
 
-	    while( endless || count ) {
-		byte *p;
-                /* Wee need a multiple of 3, so that in case of
-                   armored output we get a correct string.  No
-                   linefolding is done, as it is best to levae this to
-                   other tools */
-		size_t n = !endless && count < 99? count : 99;
+          /* Level 30 uses the same algorithm as our magic wand in
+           * pinentry/gpg-agent.  */
+          if (level == 30)
+            {
+              unsigned int nbits = 150;
+              size_t nbytes = (nbits + 7) / 8;
+              void *rand;
+              char *generated;
 
-		p = gcry_random_bytes (n, level);
-#ifdef HAVE_DOSISH_SYSTEM
-		setmode ( fileno(stdout), O_BINARY );
-#endif
-                if (opt.armor) {
-                    char *tmp = make_radix64_string (p, n);
-                    es_fputs (tmp, es_stdout);
-                    xfree (tmp);
-                    if (n%3 == 1)
-                      es_putc ('=', es_stdout);
-                    if (n%3)
-                      es_putc ('=', es_stdout);
-                } else {
-                    es_fwrite( p, n, 1, es_stdout );
-                }
-		xfree(p);
-		if( !endless )
-		    count -= n;
-	    }
-            if (opt.armor)
+              rand = gcry_random_bytes_secure (nbytes, GCRY_STRONG_RANDOM);
+              if (!rand)
+                log_fatal ("failed to generate random password\n");
+
+              generated = zb32_encode (rand, nbits);
+              gcry_free (rand);
+              es_fputs (generated, es_stdout);
               es_putc ('\n', es_stdout);
+              xfree (generated);
+              break;
+            }
+
+          if (argc < 1 || argc > 2 || level < 0 || level > 2 || count < 0)
+            wrong_args ("--gen-random 0|1|2|16|30 [count]");
+
+          while (endless || count)
+            {
+              byte *p;
+              /* We need a multiple of 3, so that in case of armored
+               * output we get a correct string.  No linefolding is
+               * done, as it is best to leave this to other tools */
+              size_t n = !endless && count < 99? count : 99;
+              size_t nn;
+
+              p = gcry_random_bytes (n, level);
+              if (hexhack)
+                {
+                  for (nn = 0; nn < n; nn++)
+                    es_fprintf (es_stdout, "%02x", p[nn]);
+                }
+              else if (opt.armor)
+                {
+                  char *tmp = make_radix64_string (p, n);
+                  es_fputs (tmp, es_stdout);
+                  xfree (tmp);
+                  if (n%3 == 1)
+                    es_putc ('=', es_stdout);
+                  if (n%3)
+                    es_putc ('=', es_stdout);
+                }
+              else
+                {
+                  es_set_binary (es_stdout);
+                  es_fwrite( p, n, 1, es_stdout );
+                }
+              xfree(p);
+              if (!endless)
+                count -= n;
+	    }
+          if (opt.armor || hexhack)
+            es_putc ('\n', es_stdout);
 	}
 	break;
 

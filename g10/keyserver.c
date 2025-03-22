@@ -1234,7 +1234,9 @@ keyserver_refresh (ctrl_t ctrl, strlist_t users)
 	      struct keyserver_spec *keyserver=desc[i].skipfncvalue;
 
               if (!opt.quiet)
-                log_info (_("refreshing %d key from %s\n"), 1, keyserver->uri);
+                log_info (ngettext("refreshing %d key from %s\n",
+                                   "refreshing %d keys from %s\n",
+                                   1), 1, keyserver->uri);
 
 	      /* We use the keyserver structure we parsed out before.
 		 Note that a preferred keyserver without a scheme://
@@ -1541,7 +1543,7 @@ keyserver_get_chunk (ctrl_t ctrl, KEYDB_SEARCH_DESC *desc, int ndesc,
 
       /* For LDAP servers we reset IMPORT_SELF_SIGS_ONLY unless it has
        * been set explicitly.  */
-      options = (opt.keyserver_options.import_options | IMPORT_NO_SECKEY);
+      options = (opt.keyserver_options.import_options | IMPORT_ONLY_PUBKEYS);
       if (source && (!strncmp (source, "ldap:", 5)
                      || !strncmp (source, "ldaps:", 6))
           && !opt.flags.expl_import_self_sigs_only)
@@ -1766,7 +1768,7 @@ keyserver_import_cert (ctrl_t ctrl, const char *name, int dane_mode,
               xfree (filtstr);
               if (!err)
                 err = import_keys_es_stream (ctrl, key, NULL, fpr, fpr_len,
-                                             IMPORT_NO_SECKEY,
+                                             IMPORT_ONLY_PUBKEYS,
                                              NULL, NULL, KEYORG_DANE, NULL);
               restore_import_filter (save_filt);
             }
@@ -1775,7 +1777,7 @@ keyserver_import_cert (ctrl_t ctrl, const char *name, int dane_mode,
         {
           err = import_keys_es_stream (ctrl, key, NULL, fpr, fpr_len,
                                        (opt.keyserver_options.import_options
-                                        | IMPORT_NO_SECKEY),
+                                        | IMPORT_ONLY_PUBKEYS),
                                        NULL, NULL, 0, NULL);
         }
 
@@ -1901,7 +1903,7 @@ keyserver_import_wkd (ctrl_t ctrl, const char *name, unsigned int flags,
           xfree (filtstr);
           if (!err)
             err = import_keys_es_stream (ctrl, key, NULL, fpr, fpr_len,
-                                         IMPORT_NO_SECKEY,
+                                         IMPORT_ONLY_PUBKEYS,
                                          NULL, NULL, KEYORG_WKD, url);
 
         }

@@ -1,0 +1,115 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Wed, 8 Jan 2025 10:12:53 -0500
+Subject: Fix spelling
+
+Forwarded: https://dev.gnupg.org/T7479
+---
+ NEWS                     | 2 +-
+ common/argparse.c        | 4 ++--
+ dirmngr/dirmngr_ldap.c   | 2 +-
+ dirmngr/http.c           | 2 +-
+ dirmngr/ks-engine-ldap.c | 2 +-
+ doc/gpg.texi             | 2 +-
+ doc/tools.texi           | 2 +-
+ 7 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/NEWS b/NEWS
+index abdbbca..fe8bf84 100644
+--- a/NEWS
++++ b/NEWS
+@@ -1471,7 +1471,7 @@ Noteworthy changes in version 2.2.7 (2018-05-02)
+   * dirmngr: Fallback to CRL if no default OCSP responder is configured.
+ 
+   * dirmngr: Implement CRL fetching via https.  Here a redirection to
+-    http is explictly allowed.
++    http is explicitly allowed.
+ 
+   * dirmngr: Make LDAP searching and CRL fetching work under Windows.
+     This stopped working with 2.1.  [#3937]
+diff --git a/common/argparse.c b/common/argparse.c
+index b63f800..2ff122b 100644
+--- a/common/argparse.c
++++ b/common/argparse.c
+@@ -217,7 +217,7 @@ gnupg_set_fixed_string_mapper (const char *(*f)(const char*))
+  *
+  * A trailing slash is ignored; to have the function lookup
+  * configuration files in the current directory, use ".".  There is no
+- * error return; more configuraion values may be added in future
++ * error return; more configuration values may be added in future
+  * revisions of this library.
+  */
+ void
+@@ -1596,7 +1596,7 @@ finish_read_sys (gnupg_argparse_t *arg)
+   if (arg->internal->ignore_all_seen)
+     {
+       /* [ignore-all] was used: Set all options which have not
+-       * explictly been set as ignore or not ignore to ignore.  */
++       * explicitly been set as ignore or not ignore to ignore.  */
+       for (i = 0; i < nopts; i++)
+         {
+           if (!opts[i].explicit_ignore)
+diff --git a/dirmngr/dirmngr_ldap.c b/dirmngr/dirmngr_ldap.c
+index 790663f..4dca1ab 100644
+--- a/dirmngr/dirmngr_ldap.c
++++ b/dirmngr/dirmngr_ldap.c
+@@ -108,7 +108,7 @@ static ARGPARSE_OPTS opts[] = {
+                                " a record oriented format"},
+   { oProxy,    "proxy",     2,
+                 "|NAME|ignore host part and connect through NAME"},
+-  { oStartTLS, "starttls",  0, "use STARTLS for the conenction"},
++  { oStartTLS, "starttls",  0, "use STARTTLS for the connection"},
+   { oLdapTLS,  "ldaptls",   0, "use a TLS for the connection"},
+   { oNtds,     "ntds",      0, "authenticate using AD"},
+   { oARecOnly, "areconly",  0, "do only an A record lookup"},
+diff --git a/dirmngr/http.c b/dirmngr/http.c
+index 7fe3b50..f74aea9 100644
+--- a/dirmngr/http.c
++++ b/dirmngr/http.c
+@@ -2842,7 +2842,7 @@ send_request (http_t hd, const char *httphost, const char *auth,
+ 
+   if (proxy && proxy->is_http_proxy)
+     {
+-      use_http_proxy = 1;  /* We want to use a proxy for the conenction.  */
++      use_http_proxy = 1;  /* We want to use a proxy for the connection.  */
+       err = connect_server (*proxy->uri->host ? proxy->uri->host : "localhost",
+                             proxy->uri->port ? proxy->uri->port : 80,
+                             hd->flags, NULL, timeout, &sock);
+diff --git a/dirmngr/ks-engine-ldap.c b/dirmngr/ks-engine-ldap.c
+index b416ac0..29cec7c 100644
+--- a/dirmngr/ks-engine-ldap.c
++++ b/dirmngr/ks-engine-ldap.c
+@@ -611,7 +611,7 @@ interrogate_ldap_dn (LDAP *ldap_conn, const char *basedn_search,
+  * including whether to use TLS and the username and password (see
+  * ldap_parse_uri for a description of the various fields).  Be
+  * default a PGP keyserver is assumed; if GENERIC is true a generic
+- * ldap conenction is instead established.
++ * ldap connection is instead established.
+  *
+  * Returns: The ldap connection handle in *LDAP_CONNP, R_BASEDN is set
+  * to the base DN for the PGP key space, several flags will be stored
+diff --git a/doc/gpg.texi b/doc/gpg.texi
+index a7dfc1d..a182516 100644
+--- a/doc/gpg.texi
++++ b/doc/gpg.texi
+@@ -2089,7 +2089,7 @@ The default list of options is: "self-sigs-only,
+ repair-keys, repair-pks-subkey-bug, export-attributes,
+ honor-pka-record". However, if
+ the actual used source is an LDAP server "no-self-sigs-only" is
+-assumed unless "self-sigs-only" has been explictly configured.
++assumed unless "self-sigs-only" has been explicitly configured.
+ 
+ 
+ @item --completes-needed @var{n}
+diff --git a/doc/tools.texi b/doc/tools.texi
+index 8381a63..529ff2d 100644
+--- a/doc/tools.texi
++++ b/doc/tools.texi
+@@ -298,7 +298,7 @@ shall go into the respective configuration file.
+ @item --apply-defaults
+ Update all configuration files with values taken from the global
+ configuration file (usually @file{/etc/gnupg/gpgconf.conf}).
+-Note: This is a legacy mechanism.  Please use global configuraion
++Note: This is a legacy mechanism.  Please use global configuration
+ files instead.
+ 
+ @item --list-dirs [@var{names}]

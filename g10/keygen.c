@@ -54,7 +54,7 @@
 
 /* When generating keys using the streamlined key generation dialog,
    use this as a default expiration interval.  */
-const char *default_expiration_interval = "2y";
+const char *default_expiration_interval = "3y";
 
 /* Flag bits used during key generation.  */
 #define KEYGEN_FLAG_NO_PROTECTION 1
@@ -91,6 +91,7 @@ enum para_name {
   pKEYSERVER,
   pKEYGRIP,
   pSUBKEYGRIP,
+  pADSK         /* this uses u.adsk  */
 };
 
 struct para_data_s {
@@ -102,6 +103,7 @@ struct para_data_s {
         u32 creation;
         unsigned int usage;
         struct revocation_key revkey;
+        PKT_public_key *adsk;  /* used with key == pADSK */
         char value[1];
     } u;
 };
@@ -121,9 +123,11 @@ struct output_control_s
 };
 
 
-struct opaque_data_usage_and_pk {
-    unsigned int usage;
-    PKT_public_key *pk;
+struct opaque_data_usage_and_pk
+{
+  unsigned int usage;
+  const char *cpl_notation;
+  PKT_public_key *pk;
 };
 
 
@@ -135,7 +139,11 @@ static int nhash_prefs;
 static byte zip_prefs[MAX_PREFS];
 static int nzip_prefs;
 static int mdc_available,ks_modify;
+static int aead_available;
 
+
+static void release_parameter_list (struct para_data_s *r);
+static struct para_data_s *prepare_adsk (ctrl_t ctrl, const char *name);
 static gpg_error_t parse_algo_usage_expire (ctrl_t ctrl, int for_subkey,
                                      const char *algostr, const char *usagestr,
                                      const char *expirestr,
@@ -151,6 +159,9 @@ static gpg_error_t gen_card_key (int keyno, int algo, int is_primary,
                                  u32 expireval);
 static unsigned int get_keysize_range (int algo,
                                        unsigned int *min, unsigned int *max);
+static void do_add_notation (PKT_signature *sig,
+                             const char *name, const char *value,
+                             int critical);
 
 
 
@@ -239,22 +250,26 @@ write_uid (kbnode_t root, const char *s)
 static void
 do_add_key_flags (PKT_signature *sig, unsigned int use)
 {
-    byte buf[1];
+  byte buf[2] = { 0, 0 };
 
-    buf[0] = 0;
+  /* The spec says that all primary keys MUST be able to certify. */
+  if(sig->sig_class!=0x18)
+    buf[0] |= 0x01;
 
-    /* The spec says that all primary keys MUST be able to certify. */
-    if(sig->sig_class!=0x18)
-      buf[0] |= 0x01;
+  if (use & PUBKEY_USAGE_SIG)
+    buf[0] |= 0x02;
+  if (use & PUBKEY_USAGE_ENC)
+    buf[0] |= 0x04 | 0x08;
+  if (use & PUBKEY_USAGE_AUTH)
+    buf[0] |= 0x20;
+  if (use & PUBKEY_USAGE_GROUP)
+    buf[0] |= 0x80;
 
-    if (use & PUBKEY_USAGE_SIG)
-      buf[0] |= 0x02;
-    if (use & PUBKEY_USAGE_ENC)
-        buf[0] |= 0x04 | 0x08;
-    if (use & PUBKEY_USAGE_AUTH)
-        buf[0] |= 0x20;
-
-    build_sig_subpkt (sig, SIGSUBPKT_KEY_FLAGS, buf, 1);
+  if (use & PUBKEY_USAGE_RENC)
+    buf[1] |= 0x04;
+  if (use & PUBKEY_USAGE_TIME)
+    buf[1] |= 0x08;
+  build_sig_subpkt (sig, SIGSUBPKT_KEY_FLAGS, buf, buf[1]? 2:1);
 }
 
 
@@ -301,12 +316,24 @@ keygen_add_key_flags (PKT_signature *sig, void *opaque)
 }
 
 
-static int
+int
 keygen_add_key_flags_and_expire (PKT_signature *sig, void *opaque)
+{
+  keygen_add_key_flags (sig, opaque);
+  return keygen_add_key_expire (sig, opaque);
+}
+
+
+/* This is only used to write the key binding signature.  It is not
+ * used for the primary key.  */
+static int
+keygen_add_key_flags_from_oduap (PKT_signature *sig, void *opaque)
 {
   struct opaque_data_usage_and_pk *oduap = opaque;
 
   do_add_key_flags (sig, oduap->usage);
+  if (oduap->cpl_notation)
+    do_add_notation (sig, "cpl@gnupg.org", oduap->cpl_notation, 0);
   return keygen_add_key_expire (sig, oduap->pk);
 }
 
@@ -354,7 +381,11 @@ keygen_set_std_prefs (const char *string,int personal)
     byte sym[MAX_PREFS], hash[MAX_PREFS], zip[MAX_PREFS];
     int nsym=0, nhash=0, nzip=0, val, rc=0;
     int mdc=1, modify=0; /* mdc defaults on, modify defaults off. */
+    int ocb;
     char dummy_string[20*4+1]; /* Enough for 20 items. */
+
+    /* Use OCB as default in GnuPG and de-vs mode.  */
+    ocb = GNUPG;
 
     if (!string || !ascii_strcasecmp (string, "default"))
       {
@@ -480,14 +511,24 @@ keygen_set_std_prefs (const char *string,int personal)
 		if(set_one_pref(val,3,tok,zip,&nzip))
 		  rc=-1;
 	      }
-	    else if (ascii_strcasecmp(tok,"mdc")==0)
+	    else if (!ascii_strcasecmp(tok, "mdc")
+                     || !ascii_strcasecmp(tok, "[mdc]"))
 	      mdc=1;
-	    else if (ascii_strcasecmp(tok,"no-mdc")==0)
+	    else if (!ascii_strcasecmp(tok, "no-mdc")
+                     || !ascii_strcasecmp(tok, "[no-mdc]"))
 	      mdc=0;
-	    else if (ascii_strcasecmp(tok,"ks-modify")==0)
+	    else if (!ascii_strcasecmp(tok, "ks-modify")
+                     || !ascii_strcasecmp(tok, "[ks-modify]"))
 	      modify=1;
-	    else if (ascii_strcasecmp(tok,"no-ks-modify")==0)
+	    else if (!ascii_strcasecmp(tok,"no-ks-modify")
+                     || !ascii_strcasecmp(tok,"[no-ks-modify]"))
 	      modify=0;
+	    else if (!ascii_strcasecmp(tok,"aead")
+                     || !ascii_strcasecmp(tok,"[aead]"))
+              ocb = 1;
+	    else if (!ascii_strcasecmp(tok,"no-aead")
+                     || !ascii_strcasecmp(tok,"[no-aead]"))
+              ocb = 0;
 	    else
 	      {
 		log_info (_("invalid item '%s' in preference string\n"),tok);
@@ -578,6 +619,7 @@ keygen_set_std_prefs (const char *string,int personal)
 	    memcpy (hash_prefs, hash, (nhash_prefs=nhash));
 	    memcpy (zip_prefs,  zip,  (nzip_prefs=nzip));
 	    mdc_available = mdc;
+            aead_available = ocb;
 	    ks_modify = modify;
 	    prefs_initialized = 1;
 	  }
@@ -585,6 +627,7 @@ keygen_set_std_prefs (const char *string,int personal)
 
     return rc;
 }
+
 
 /* Return a fake user ID containing the preferences.  Caller must
    free. */
@@ -624,6 +667,7 @@ keygen_get_std_prefs(void)
   uid->prefs[j].value=0;
 
   uid->flags.mdc=mdc_available;
+  uid->flags.aead=aead_available;
   uid->flags.ks_modify=ks_modify;
 
   return uid;
@@ -669,6 +713,49 @@ add_feature_mdc (PKT_signature *sig,int enabled)
 
     xfree (buf);
 }
+
+
+static void
+add_feature_aead (PKT_signature *sig, int enabled)
+{
+  const byte *s;
+  size_t n;
+  int i;
+  char *buf;
+
+  s = parse_sig_subpkt (sig->hashed, SIGSUBPKT_FEATURES, &n );
+  if (s && n && ((enabled && (s[0] & 0x02)) || (!enabled && !(s[0] & 0x02))))
+    return; /* Already set or cleared */
+
+  if (!s || !n)
+    { /* Create a new one */
+      n = 1;
+      buf = xmalloc_clear (n);
+    }
+  else
+    {
+      buf = xmalloc (n);
+      memcpy (buf, s, n);
+    }
+
+  if (enabled)
+    buf[0] |= 0x02; /* AEAD supported */
+  else
+    buf[0] &= ~0x02;
+
+  /* Are there any bits set? */
+  for (i=0; i < n; i++)
+    if (buf[i])
+      break;
+
+  if (i == n)
+    delete_sig_subpkt (sig->hashed, SIGSUBPKT_FEATURES);
+  else
+    build_sig_subpkt (sig, SIGSUBPKT_FEATURES, buf, n);
+
+  xfree (buf);
+}
+
 
 static void
 add_keyserver_modify (PKT_signature *sig,int enabled)
@@ -731,6 +818,14 @@ keygen_upd_std_prefs (PKT_signature *sig, void *opaque)
       delete_sig_subpkt (sig->unhashed, SIGSUBPKT_PREF_SYM);
     }
 
+  if (aead_available) /* The only preference is AEAD_ALGO_OCB. */
+    build_sig_subpkt (sig, SIGSUBPKT_PREF_AEAD, "\x02", 1);
+  else
+    {
+      delete_sig_subpkt (sig->hashed, SIGSUBPKT_PREF_AEAD);
+      delete_sig_subpkt (sig->unhashed, SIGSUBPKT_PREF_AEAD);
+    }
+
   if (nhash_prefs)
     build_sig_subpkt (sig, SIGSUBPKT_PREF_HASH, hash_prefs, nhash_prefs);
   else
@@ -747,8 +842,9 @@ keygen_upd_std_prefs (PKT_signature *sig, void *opaque)
       delete_sig_subpkt (sig->unhashed, SIGSUBPKT_PREF_COMPR);
     }
 
-  /* Make sure that the MDC feature flag is set if needed.  */
+  /* Make sure that the MDC and AEAD feature flags are set as needed.  */
   add_feature_mdc (sig,mdc_available);
+  add_feature_aead (sig, aead_available);
   add_keyserver_modify (sig,ks_modify);
   keygen_add_keyserver_url(sig,NULL);
 
@@ -788,6 +884,44 @@ keygen_add_keyserver_url(PKT_signature *sig, void *opaque)
 
   return 0;
 }
+
+
+/* This function is used to add a notations to a signature.  In
+ * general the caller should have cleared exiting notations before
+ * adding new ones.  For example by calling:
+ *
+ *  delete_sig_subpkt(sig->hashed,SIGSUBPKT_NOTATION);
+ *  delete_sig_subpkt(sig->unhashed,SIGSUBPKT_NOTATION);
+ *
+ * Only human readable notaions may be added.  NAME and value are
+ * expected to be UTF-* strings.
+ */
+static void
+do_add_notation (PKT_signature *sig, const char *name, const char *value,
+                 int critical)
+{
+  unsigned char *buf;
+  unsigned int n1,n2;
+
+  n1 = strlen (name);
+  n2 = strlen (value);
+
+  buf = xmalloc (8 + n1 + n2);
+
+  buf[0] = 0x80; /* human readable.  */
+  buf[1] = buf[2] = buf[3] = 0;
+  buf[4] = n1 >> 8;
+  buf[5] = n1;
+  buf[6] = n2 >> 8;
+  buf[7] = n2;
+  memcpy (buf+8, name, n1);
+  memcpy (buf+8+n1, value, n2);
+  build_sig_subpkt (sig,
+                    (SIGSUBPKT_NOTATION|(critical?SIGSUBPKT_FLAG_CRITICAL:0)),
+                    buf, 8+n1+n2 );
+  xfree (buf);
+}
+
 
 int
 keygen_add_notations(PKT_signature *sig,void *opaque)
@@ -837,6 +971,7 @@ keygen_add_notations(PKT_signature *sig,void *opaque)
 
   return 0;
 }
+
 
 int
 keygen_add_revkey (PKT_signature *sig, void *opaque)
@@ -949,6 +1084,74 @@ make_backsig (ctrl_t ctrl, PKT_signature *sig, PKT_public_key *pk,
 	  iobuf_close (backsig_out);
 	}
     }
+
+  return err;
+}
+
+
+/* This function should be called to make sure that
+ * opt.def_new_key_adsks has no duplicates and that tehre is no '!'
+ * suffix.  We don't do this during normal option processing because
+ * this list is only needed for a very few operations.  Callingit
+ * twice does not harm.  Users of the option list should skip empty
+ * items.  */
+static void
+keygen_prepare_new_key_adsks (void)
+{
+  strlist_t sl, slr;
+  char *p;
+
+  for (sl = opt.def_new_key_adsks; sl; sl = sl->next)
+    {
+      if (!*sl->d)
+        continue;
+      p = strchr (sl->d, '!');
+      if (p)
+        *p = 0;
+      for (slr = opt.def_new_key_adsks; slr != sl; slr = slr->next)
+        if (!ascii_strcasecmp (sl->d, slr->d))
+          {
+            *sl->d = 0; /* clear fpr to mark this as a duplicate.  */
+            break;
+          }
+    }
+}
+
+
+/* Append all default ADSKs to the KEYBLOCK but ignore those which are
+ * already on that keyblock.  Returns 0 if any key has been added;
+ * GPG_ERR_FALSE if no key was added or any other error code.  */
+gpg_error_t
+append_all_default_adsks (ctrl_t ctrl, kbnode_t keyblock)
+{
+  gpg_error_t err = 0;
+  int any_done = 0;
+  strlist_t sl;
+  struct para_data_s *para;
+  byte adskfpr[MAX_FINGERPRINT_LEN];
+  size_t adskfprlen;
+
+  keygen_prepare_new_key_adsks ();
+  for (sl = opt.def_new_key_adsks; sl && !err; sl = sl->next)
+    {
+      if (!*sl->d)
+        continue;
+      para = prepare_adsk (ctrl, sl->d);
+      if (para)
+        {
+          fingerprint_from_pk (para->u.adsk, adskfpr, &adskfprlen);
+          if (!has_key_with_fingerprint (keyblock, adskfpr, adskfprlen))
+            {
+              err = append_adsk_to_key (ctrl, keyblock, para->u.adsk);
+              if (!err)
+                any_done = 1;
+            }
+          release_parameter_list (para);
+        }
+    }
+
+  if (!err && !any_done)
+    err = gpg_error (GPG_ERR_FALSE);
 
   return err;
 }
@@ -1096,10 +1299,16 @@ write_keybinding (ctrl_t ctrl, kbnode_t root,
 
   /* Make the signature.  */
   oduap.usage = use;
+  if ((use & PUBKEY_USAGE_ENC)
+      && opt.compliance == CO_DE_VS
+      && gnupg_rng_is_compliant (CO_DE_VS))
+    oduap.cpl_notation = "de-vs";
+  else
+    oduap.cpl_notation = NULL;
   oduap.pk = sub_pk;
   err = make_keysig_packet (ctrl, &sig, pri_pk, NULL, sub_pk, pri_psk, 0x18,
                             0, timestamp, 0,
-                            keygen_add_key_flags_and_expire, &oduap,
+                            keygen_add_key_flags_from_oduap, &oduap,
                             cache_nonce);
   if (err)
     {
@@ -1730,6 +1939,9 @@ print_key_flags(int flags)
 
   if(flags&PUBKEY_USAGE_AUTH)
     tty_printf("%s ",_("Authenticate"));
+
+  if(flags&PUBKEY_USAGE_RENC)
+    tty_printf("%s ", "RENC");
 }
 
 
@@ -1763,8 +1975,11 @@ ask_key_flags_with_mask (int algo, int subkey, unsigned int current,
     }
 
   /* Mask the possible usage flags.  This is for example used for a
-   * card based key.  */
+   * card based key.  For ECDH we need to allows additional usages if
+   * they are provided.  RENC is not directly poissible here but see
+   * below for a workaround. */
   possible = (openpgp_pk_algo_usage (algo) & mask);
+  possible &= ~PUBKEY_USAGE_RENC;
 
   /* However, only primary keys may certify. */
   if (subkey)
@@ -1826,6 +2041,12 @@ ask_key_flags_with_mask (int algo, int subkey, unsigned int current,
                      will be set anyway.  This is for folks who
                      want to experiment with a cert-only primary key.  */
                   current |= PUBKEY_USAGE_CERT;
+                }
+              else if ((*s == 'r' || *s == 'R') && (possible&PUBKEY_USAGE_ENC))
+                {
+                  /* Allow to set RENC or an encryption capable key.
+                   * This is on purpose not shown in the menu.  */
+                  current |= PUBKEY_USAGE_RENC;
                 }
             }
           break;
@@ -2550,26 +2771,39 @@ ask_curve (int *algo, int *subkey_algo, const char *current)
  * similar.
  */
 u32
-parse_expire_string( const char *string )
+parse_expire_string (const char *string)
 {
   int mult;
   u32 seconds;
   u32 abs_date = 0;
   u32 curtime = make_timestamp ();
-  time_t tt;
+  uint64_t tt;
+  uint64_t tmp64;
 
   if (!string || !*string || !strcmp (string, "none")
       || !strcmp (string, "never") || !strcmp (string, "-"))
     seconds = 0;
   else if (!strncmp (string, "seconds=", 8))
-    seconds = atoi (string+8);
+    seconds = scan_secondsstr (string+8);
   else if ((abs_date = scan_isodatestr(string))
            && (abs_date+86400/2) > curtime)
     seconds = (abs_date+86400/2) - curtime;
-  else if ((tt = isotime2epoch (string)) != (time_t)(-1))
-    seconds = (u32)tt - curtime;
+  else if ((tt = isotime2epoch_u64 (string)) != (uint64_t)(-1))
+    {
+      tmp64 = tt - curtime;
+      if (tmp64 >= (u32)(-1))
+        seconds = (u32)(-1) - 1;  /* cap value.  */
+      else
+        seconds = (u32)tmp64;
+    }
   else if ((mult = check_valid_days (string)))
-    seconds = atoi (string) * 86400L * mult;
+    {
+      tmp64 = scan_secondsstr (string) * 86400L * mult;
+      if (tmp64 >= (u32)(-1))
+        seconds = (u32)(-1) - 1;  /* cap value.  */
+      else
+        seconds = (u32)tmp64;
+    }
   else
     seconds = (u32)(-1);
 
@@ -2586,11 +2820,16 @@ parse_creation_string (const char *string)
   if (!*string)
     seconds = 0;
   else if ( !strncmp (string, "seconds=", 8) )
-    seconds = atoi (string+8);
+    seconds = scan_secondsstr (string+8);
   else if ( !(seconds = scan_isodatestr (string)))
     {
-      time_t tmp = isotime2epoch (string);
-      seconds = (tmp == (time_t)(-1))? 0 : tmp;
+      uint64_t tmp = isotime2epoch_u64 (string);
+      if (tmp == (uint64_t)(-1))
+        seconds = 0;
+      else if (tmp > (u32)(-1))
+        seconds = 0;
+      else
+        seconds = tmp;
     }
   return seconds;
 }
@@ -3538,18 +3777,36 @@ release_parameter_list (struct para_data_s *r)
       r2 = r->next;
       if (r->key == pPASSPHRASE && *r->u.value)
         wipememory (r->u.value, strlen (r->u.value));
+      else if (r->key == pADSK)
+        free_public_key (r->u.adsk);
+
       xfree (r);
     }
 }
 
+/* Return the N-th parameter of name KEY from PARA.  An IDX of 0
+ * returns the first and so on.  */
 static struct para_data_s *
-get_parameter( struct para_data_s *para, enum para_name key )
+get_parameter_idx (struct para_data_s *para, enum para_name key,
+                   unsigned int idx)
 {
-    struct para_data_s *r;
+  struct para_data_s *r;
 
-    for( r = para; r && r->key != key; r = r->next )
-	;
-    return r;
+  for(r = para; r; r = r->next)
+    if (r->key == key)
+      {
+        if (!idx)
+          return r;
+        idx--;
+      }
+  return NULL;
+}
+
+/* Return the first parameter of name KEY from PARA.  */
+static struct para_data_s *
+get_parameter (struct para_data_s *para, enum para_name key)
+{
+  return get_parameter_idx (para, key, 0);
 }
 
 static const char *
@@ -3653,6 +3910,12 @@ parse_usagestr (const char *usagestr)
         use |= PUBKEY_USAGE_AUTH;
       else if (!ascii_strcasecmp (s, "cert"))
         use |= PUBKEY_USAGE_CERT;
+      else if (!ascii_strcasecmp (s, "renc"))
+        use |= PUBKEY_USAGE_RENC;
+      else if (!ascii_strcasecmp (s, "time"))
+        use |= PUBKEY_USAGE_TIME;
+      else if (!ascii_strcasecmp (s, "group"))
+        use |= PUBKEY_USAGE_GROUP;
       else
         {
           xfree (tokens);
@@ -3691,6 +3954,124 @@ parse_parameter_usage (const char *fname,
 }
 
 
+/* Parse the revocation key specified by NAME, check that the public
+ * key exists (so that we can get the required public key algorithm),
+ * and return a parameter wit the revocation key information.  On
+ * error print a diagnostic and return NULL.  */
+static struct para_data_s *
+prepare_desig_revoker (ctrl_t ctrl, const char *name)
+{
+  gpg_error_t err;
+  struct para_data_s *para = NULL;
+  KEYDB_SEARCH_DESC desc;
+  int sensitive = 0;
+  struct revocation_key revkey;
+  PKT_public_key *revoker_pk = NULL;
+  size_t fprlen;
+
+  if (!ascii_strncasecmp (name, "sensitive:", 10) && !spacep (name+10))
+    {
+      name += 10;
+      sensitive = 1;
+    }
+
+  if (classify_user_id (name, &desc, 1)
+      || !(desc.mode == KEYDB_SEARCH_MODE_FPR
+           || desc.mode == KEYDB_SEARCH_MODE_FPR20))
+    {
+      log_info (_("\"%s\" is not a fingerprint\n"), name);
+      err = gpg_error (GPG_ERR_INV_NAME);
+      goto leave;
+    }
+
+  revoker_pk = xcalloc (1, sizeof *revoker_pk);
+  revoker_pk->req_usage = PUBKEY_USAGE_CERT;
+  err = get_pubkey_byname (ctrl, GET_PUBKEY_NO_AKL,
+                           NULL, revoker_pk, name, NULL, NULL, 1);
+  if (err)
+    goto leave;
+
+  fingerprint_from_pk (revoker_pk, revkey.fpr, &fprlen);
+  if (fprlen != 20)
+    {
+      log_info (_("cannot appoint a PGP 2.x style key as a "
+                  "designated revoker\n"));
+      err = gpg_error (GPG_ERR_UNUSABLE_PUBKEY);
+      goto leave;
+    }
+  revkey.class = 0x80;
+  if (sensitive)
+    revkey.class |= 0x40;
+  revkey.algid = revoker_pk->pubkey_algo;
+
+  para = xcalloc (1, sizeof *para);
+  para->key = pREVOKER;
+  memcpy (&para->u.revkey, &revkey, sizeof revkey);
+
+ leave:
+  if (err)
+    log_error ("invalid revocation key '%s': %s\n", name, gpg_strerror (err));
+  free_public_key (revoker_pk);
+  return para;
+}
+
+
+/* Parse asn ADSK specified by NAME, check that the public key exists
+ * and return a parameter with the adsk information.  On error print a
+ * diagnostic and return NULL.  */
+static struct para_data_s *
+prepare_adsk (ctrl_t ctrl, const char *name)
+{
+  gpg_error_t err;
+  char *namebuffer = NULL;
+  struct para_data_s *para = NULL;
+  KEYDB_SEARCH_DESC desc;
+  PKT_public_key *adsk_pk = NULL;
+  char *p;
+
+  if (classify_user_id (name, &desc, 1)
+      || !(desc.mode == KEYDB_SEARCH_MODE_FPR
+           || desc.mode == KEYDB_SEARCH_MODE_FPR20))
+    {
+      log_info (_("\"%s\" is not a fingerprint\n"), name);
+      err = gpg_error (GPG_ERR_INV_NAME);
+      goto leave;
+    }
+
+  /* Force searching for that exact fingerprint.  */
+  if (!strchr (name, '!'))
+    {
+      namebuffer = xstrconcat (name, "!", NULL);
+      name = namebuffer;
+    }
+
+  adsk_pk = xcalloc (1, sizeof *adsk_pk);
+  adsk_pk->req_usage = PUBKEY_USAGE_ENC | PUBKEY_USAGE_RENC;
+  err = get_pubkey_byname (ctrl, GET_PUBKEY_NO_AKL,
+                           NULL, adsk_pk, name, NULL, NULL, 1);
+  if (err)
+    goto leave;
+
+  para = xcalloc (1, sizeof *para);
+  para->key = pADSK;
+  para->u.adsk = adsk_pk;
+  adsk_pk = NULL;
+
+ leave:
+  if (err)
+    {
+      if (namebuffer && (p=strchr (namebuffer, '!')))
+        *p = 0; /* Strip the ! for the diagnostic.  */
+      write_status_error ("add_adsk", err);
+      log_error ("invalid ADSK '%s' specified: %s\n", name, gpg_strerror (err));
+    }
+  free_public_key (adsk_pk);
+  xfree (namebuffer);
+  return para;
+}
+
+
+/* Parse a pREVOKER parameter into its dedicated parts.  */
 static int
 parse_revocation_key (const char *fname,
 		      struct para_data_s *para, enum para_name key)
@@ -3769,10 +4150,17 @@ get_parameter_uint( struct para_data_s *para, enum para_name key )
 }
 
 static struct revocation_key *
-get_parameter_revkey( struct para_data_s *para, enum para_name key )
+get_parameter_revkey (struct para_data_s *para, unsigned int idx)
 {
-    struct para_data_s *r = get_parameter( para, key );
-    return r? &r->u.revkey : NULL;
+  struct para_data_s *r = get_parameter_idx (para, pREVOKER, idx);
+  return r? &r->u.revkey : NULL;
+}
+
+static PKT_public_key *
+get_parameter_adsk (struct para_data_s *para, unsigned int idx)
+{
+  struct para_data_s *r = get_parameter_idx (para, pADSK, idx);
+  return r? r->u.adsk : NULL;
 }
 
 static int
@@ -3783,6 +4171,7 @@ proc_parameter_file (ctrl_t ctrl, struct para_data_s *para, const char *fname,
   const char *s1, *s2, *s3;
   size_t n;
   char *p;
+  strlist_t sl, slr;
   int is_default = 0;
   int have_user_id = 0;
   int err, algo;
@@ -3928,12 +4317,50 @@ proc_parameter_file (ctrl_t ctrl, struct para_data_s *para, const char *fname,
 	}
     }
 
-  /* Set revoker, if any. */
+  /* Set revoker from parameter file, if any.  Must be done first so
+   * that we don't find a parameter set via prepare_desig_revoker.  */
   if (parse_revocation_key (fname, para, pREVOKER))
     return -1;
 
+  /* Check and append revokers from the config file.  */
+  for (sl = opt.desig_revokers; sl; sl = sl->next)
+    {
+      r = prepare_desig_revoker (ctrl, sl->d);
+      if (!r)
+        return -1;
+      append_to_parameter (para, r);
+     }
 
-  /* Make KEYCREATIONDATE from Creation-Date.  */
+  /* Check and append ADSKs from the config file.  While doing this
+   * also check for duplicate specifications.  In addition we remove
+   * an optional '!' suffix for easier comparing; the suffix is anyway
+   * re-added later.  */
+  for (sl = opt.def_new_key_adsks; sl; sl = sl->next)
+    {
+      if (!*sl->d)
+        continue;
+      p = strchr (sl->d, '!');
+      if (p)
+        *p = 0;
+      for (slr = opt.def_new_key_adsks; slr != sl; slr = slr->next)
+        if (!ascii_strcasecmp (sl->d, slr->d))
+          {
+            *sl->d = 0; /* clear fpr to mark this as a duplicate.  */
+            break;
+          }
+      if (!*sl->d)
+        continue;
+
+      r = prepare_adsk (ctrl, sl->d);
+      if (!r)
+        return -1;
+      append_to_parameter (para, r);
+     }
+
+  /* Make KEYCREATIONDATE from Creation-Date.  We ignore this if the
+   * key has been taken from a card and a keycreationtime has already
+   * been set.  This is so that we don't generate a key with a
+   * fingerprint different from the one stored on the OpenPGP card. */
   r = get_parameter (para, pCREATIONDATE);
   if (r && *r->u.value)
     {
@@ -4197,14 +4624,17 @@ quickgen_set_para (struct para_data_s *para, int for_subkey,
 {
   struct para_data_s *r;
 
-  r = xmalloc_clear (sizeof *r + 30);
+  r = xmalloc_clear (sizeof *r + 50);
   r->key = for_subkey? pSUBKEYUSAGE :  pKEYUSAGE;
   if (use)
-    snprintf (r->u.value, 30, "%s%s%s%s",
+    snprintf (r->u.value, 30, "%s%s%s%s%s%s%s",
               (use & PUBKEY_USAGE_ENC)?  "encr " : "",
               (use & PUBKEY_USAGE_SIG)?  "sign " : "",
               (use & PUBKEY_USAGE_AUTH)? "auth " : "",
-              (use & PUBKEY_USAGE_CERT)? "cert " : "");
+              (use & PUBKEY_USAGE_CERT)? "cert " : "",
+              (use & PUBKEY_USAGE_RENC)? "renc " : "",
+              (use & PUBKEY_USAGE_TIME)? "time " : "",
+              (use & PUBKEY_USAGE_GROUP)?"group ": "");
   else
     strcpy (r->u.value, for_subkey ? "encr" : "sign");
   r->next = para;
@@ -4883,22 +5313,41 @@ card_store_key_with_backup (ctrl_t ctrl, PKT_public_key *sub_psk,
   char *cache_nonce = NULL;
   void *kek = NULL;
   size_t keklen;
+  char *ecdh_param_str = NULL;
 
   sk = copy_public_key (NULL, sub_psk);
   if (!sk)
     return gpg_error_from_syserror ();
 
   epoch2isotime (timestamp, (time_t)sk->timestamp);
+  if (sk->pubkey_algo == PUBKEY_ALGO_ECDH)
+    {
+      ecdh_param_str = ecdh_param_str_from_pk (sk);
+      if (!ecdh_param_str)
+        {
+          free_public_key (sk);
+          return gpg_error_from_syserror ();
+        }
+    }
   err = hexkeygrip_from_pk (sk, &hexgrip);
   if (err)
-    return err;
+    {
+      xfree (ecdh_param_str);
+      free_public_key (sk);
+      return err;
+    }
 
   memset(&info, 0, sizeof (info));
   rc = agent_scd_getattr ("SERIALNO", &info);
   if (rc)
-    return (gpg_error_t)rc;
+    {
+      xfree (ecdh_param_str);
+      free_public_key (sk);
+      return (gpg_error_t)rc;
+    }
 
-  rc = agent_keytocard (hexgrip, 2, 1, info.serialno, timestamp);
+  rc = agent_keytocard (hexgrip, 2, 1, info.serialno,
+                        timestamp, ecdh_param_str);
   xfree (info.serialno);
   if (rc)
     {
@@ -4937,10 +5386,14 @@ card_store_key_with_backup (ctrl_t ctrl, PKT_public_key *sub_psk,
   if (err)
     log_error ("writing card key to backup file: %s\n", gpg_strerror (err));
   else
-    /* Remove secret key data in agent side.  */
-    agent_scd_learn (NULL, 1);
+    {
+      /* Remove secret key data in agent side.  We use force 2 here to
+       * allow overwriting of the temporary private key.  */
+      agent_scd_learn (NULL, 2);
+    }
 
  leave:
+  xfree (ecdh_param_str);
   xfree (cache_nonce);
   gcry_cipher_close (cipherhd);
   xfree (kek);
@@ -4966,6 +5419,8 @@ do_generate_keypair (ctrl_t ctrl, struct para_data_s *para,
   int algo;
   u32 expire;
   const char *key_from_hexgrip = NULL;
+  unsigned int idx;
+  int any_adsk = 0;
 
   if (outctrl->dryrun)
     {
@@ -5067,9 +5522,12 @@ do_generate_keypair (ctrl_t ctrl, struct para_data_s *para,
       keyid_copy (pri_psk->main_keyid, pri_psk->keyid);
     }
 
-  if (!err && (revkey = get_parameter_revkey (para, pREVOKER)))
-    err = write_direct_sig (ctrl, pub_root, pri_psk,
-                            revkey, timestamp, cache_nonce);
+  /* Write all signatures specifying designated revokers.  */
+  for (idx=0; !err && (revkey = get_parameter_revkey (para, idx)); idx++)
+    {
+      err = write_direct_sig (ctrl, pub_root, pri_psk,
+                              revkey, timestamp, cache_nonce);
+    }
 
   if (!err && (s = get_parameter_value (para, pUSERID)))
     {
@@ -5146,6 +5604,25 @@ do_generate_keypair (ctrl_t ctrl, struct para_data_s *para,
       did_sub = 1;
     }
 
+
+  /* Get rid of the first empty packet.  */
+  if (!err)
+    commit_kbnode (&pub_root);
+
+  /* Add ADSKs if any are specified.  */
+  if (!err)
+    {
+      PKT_public_key *adsk;
+
+      for (idx=0; (adsk = get_parameter_adsk (para, idx)); idx++)
+        {
+          err = append_adsk_to_key (ctrl, pub_root, adsk);
+          if (err)
+            break;
+          any_adsk++;
+        }
+    }
+
   if (!err && outctrl->use_files)  /* Direct write to specified files.  */
     {
       err = write_keyblock (outctrl->pub.stream, pub_root);
@@ -5202,9 +5679,6 @@ do_generate_keypair (ctrl_t ctrl, struct para_data_s *para,
 
           gen_standard_revoke (ctrl, pk, cache_nonce);
 
-          /* Get rid of the first empty packet.  */
-          commit_kbnode (&pub_root);
-
           if (!opt.batch)
             {
               tty_printf (_("public and secret key created and signed.\n") );
@@ -5246,6 +5720,9 @@ do_generate_keypair (ctrl_t ctrl, struct para_data_s *para,
                                         PKT_PUBLIC_KEY)->pkt->pkt.public_key;
       print_status_key_created (did_sub? 'B':'P', pk,
                                 get_parameter_value (para, pHANDLE));
+      es_fflush (es_stdout);
+      if (any_adsk)
+        log_info (_("Note: The key has been created with one or more ADSK!\n"));
     }
 
   release_kbnode (pub_root);

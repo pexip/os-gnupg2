@@ -266,8 +266,8 @@ int  algo_available( preftype_t preftype, int algo,
 		     const struct pref_hint *hint );
 int  select_algo_from_prefs( PK_LIST pk_list, int preftype,
 			     int request, const struct pref_hint *hint);
-int  select_mdc_from_pklist (PK_LIST pk_list);
-void warn_missing_mdc_from_pklist (PK_LIST pk_list);
+aead_algo_t select_aead_from_pklist (PK_LIST pk_list);
+void warn_missing_aead_from_pklist (PK_LIST pk_list);
 void warn_missing_aes_from_pklist (PK_LIST pk_list);
 
 /*-- skclist.c --*/
@@ -337,6 +337,8 @@ int get_pubkey_fast (PKT_public_key *pk, u32 *keyid);
 kbnode_t get_pubkeyblock_for_sig (ctrl_t ctrl, PKT_signature *sig);
 
 /* Return the key block for the key with KEYID.  */
+#define GET_PUBKEYBLOCK_FLAG_ADSK  1 /* Allow returning ADSK key.  */
+kbnode_t get_pubkeyblock_ext (ctrl_t ctrl, u32 *keyid, unsigned int flags);
 kbnode_t get_pubkeyblock (ctrl_t ctrl, u32 *keyid);
 
 /* A list used by get_pubkeys to gather all of the matches.  */
@@ -377,7 +379,8 @@ gpg_error_t get_best_pubkey_byname (ctrl_t ctrl, enum get_pubkey_modes mode,
 
 /* Get a public key directly from file FNAME.  */
 gpg_error_t get_pubkey_fromfile (ctrl_t ctrl,
-                                 PKT_public_key *pk, const char *fname);
+                                 PKT_public_key *pk, const char *fname,
+                                 kbnode_t *r_keyblock);
 
 /* Get a public key from a buffer.  */
 gpg_error_t get_pubkey_from_buffer (ctrl_t ctrl, PKT_public_key *pkbuf,
@@ -453,6 +456,9 @@ void setup_main_keyids (kbnode_t keyblock);
    data structures.  */
 void merge_keys_and_selfsig (ctrl_t ctrl, kbnode_t keyblock);
 
+/* This function parses the key flags and returns PUBKEY_USAGE_ flags.  */
+unsigned int parse_key_usage (PKT_signature *sig);
+
 char *get_user_id_string_native (ctrl_t ctrl, u32 *keyid);
 char *get_long_user_id_string (ctrl_t ctrl, u32 *keyid);
 char *get_user_id (ctrl_t ctrl, u32 *keyid, size_t *rn, int *r_nouid);
@@ -465,6 +471,10 @@ int akl_empty_or_only_local (void);
 int parse_auto_key_locate(const char *options);
 int parse_key_origin (char *string);
 const char *key_origin_string (int origin);
+
+/* Return an error if KEYBLOCK has a primary or subkey with the fpr.  */
+gpg_error_t has_key_with_fingerprint (kbnode_t keyblock,
+                                      const byte *fpr, size_t fprlen);
 
 /*-- keyid.c --*/
 int pubkey_letter( int algo );
@@ -548,10 +558,12 @@ char *format_hexfingerprint (const char *fingerprint,
                              char *buffer, size_t buflen);
 gpg_error_t keygrip_from_pk (PKT_public_key *pk, unsigned char *array);
 gpg_error_t hexkeygrip_from_pk (PKT_public_key *pk, char **r_grip);
+char *ecdh_param_str_from_pk (PKT_public_key *pk);
 
 
 /*-- kbnode.c --*/
 KBNODE new_kbnode( PACKET *pkt );
+kbnode_t new_kbnode2 (kbnode_t list, PACKET *pkt);
 KBNODE clone_kbnode( KBNODE node );
 void release_kbnode( KBNODE n );
 void delete_kbnode( KBNODE node );
