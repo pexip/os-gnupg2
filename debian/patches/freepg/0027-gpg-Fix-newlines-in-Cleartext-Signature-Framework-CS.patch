@@ -1,4 +1,4 @@
-From c7c4ea53cf87ba20942fbe2cdaa39453ee4cf3ab Mon Sep 17 00:00:00 2001
+From 2634f60ed1daab4581d541d08d061f573298ea27 Mon Sep 17 00:00:00 2001
 From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
 Date: Thu, 20 Feb 2025 20:03:48 -0500
 Subject: [PATCH GnuPG] gpg: Fix newlines in Cleartext Signature Framework
@@ -45,10 +45,10 @@ Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
  4 files changed, 28 insertions(+), 53 deletions(-)
 
 diff --git a/g10/armor.c b/g10/armor.c
-index 8fcb74ac5..cc62e5279 100644
+index 81af15339..da4aedbf2 100644
 --- a/g10/armor.c
 +++ b/g10/armor.c
-@@ -731,6 +731,16 @@ fake_packet( armor_filter_context_t *afx, IOBUF a,
+@@ -777,6 +777,16 @@ fake_packet( armor_filter_context_t *afx, IOBUF a,
      }
  
      if( lastline ) { /* write last (ending) length header */
@@ -66,10 +66,10 @@ index 8fcb74ac5..cc62e5279 100644
  	  buf[len++]=tempbuf_len;
  	else
 diff --git a/g10/plaintext.c b/g10/plaintext.c
-index 10d567a8c..d63f59ca1 100644
+index 5c21dd7f6..c906d05b6 100644
 --- a/g10/plaintext.c
 +++ b/g10/plaintext.c
-@@ -454,9 +454,9 @@ handle_plaintext (PKT_plaintext * pt, md_filter_context_t * mfx,
+@@ -439,9 +439,9 @@ handle_plaintext (PKT_plaintext * pt, md_filter_context_t * mfx,
  	}
        pt->buf = NULL;
      }
@@ -81,7 +81,7 @@ index 10d567a8c..d63f59ca1 100644
  
        while ((c = iobuf_get (pt->buf)) != -1)
  	{
-@@ -479,37 +479,10 @@ handle_plaintext (PKT_plaintext * pt, md_filter_context_t * mfx,
+@@ -464,37 +464,10 @@ handle_plaintext (PKT_plaintext * pt, md_filter_context_t * mfx,
  	    }
  	  if (!mfx->md)
  	    continue;

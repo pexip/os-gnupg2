@@ -41,6 +41,26 @@ struct keyserver_spec
 };
 typedef struct keyserver_spec *keyserver_spec_t;
 
+/* The --auto-key-locate mechanisms object.  */
+struct akl
+{
+  enum {
+    AKL_NODEFAULT,
+    AKL_LOCAL,
+    AKL_CERT,
+    AKL_PKA,
+    AKL_DANE,
+    AKL_WKD,
+    AKL_LDAP,
+    AKL_NTDS,
+    AKL_KEYSERVER,
+    AKL_SPEC
+  } type;
+  keyserver_spec_t spec;
+  struct akl *next;
+};
+
+
 
 /* Global options for GPG.  */
 EXTERN_UNLESS_MAIN_MODULE
@@ -59,6 +79,9 @@ struct
    * progress info and to decide on how to allocate buffers.  */
   uint64_t input_size_hint;
 
+  /* The AEAD chunk size expressed as a power of 2.  */
+  int chunk_size;
+
   int dry_run;
   int autostart;
   int list_only;
@@ -76,9 +99,11 @@ struct
   int with_colons;
   int with_key_data;
   int with_icao_spelling; /* Print ICAO spelling with fingerprints.  */
+  int with_v5_fingerprint; /* Option --with-v5-fingerprint active.  */
   int with_fingerprint; /* Option --with-fingerprint active.  */
   int with_subkey_fingerprint; /* Option --with-subkey-fingerprint active.  */
   int with_keygrip;     /* Option --with-keygrip active.  */
+  int with_key_screening;/* Option --with-key-screening active.  */
   int with_tofu_info;   /* Option --with-tofu_info active.  */
   int with_secret;      /* Option --with-secret active.  */
   int with_wkd_hash;    /* Option --with-wkd-hash.  */
@@ -88,8 +113,10 @@ struct
   int no_armor;
   int list_packets; /* Option --list-packets active.  */
   int def_cipher_algo;
+  int force_mdc;
+  int disable_mdc;
+  int force_aead;
   int def_digest_algo;
-  int force_ocb;
   int cert_digest_algo;
   int compress_algo;
   int explicit_compress_option; /* A compress option was explicitly given. */
@@ -119,8 +146,9 @@ struct
   int marginals_needed;
   int completes_needed;
   int max_cert_depth;
-  const char *agent_program;
-  const char *dirmngr_program;
+  char *agent_program;
+  char *keyboxd_program;
+  char *dirmngr_program;
   int disable_dirmngr;
 
   const char *def_new_key_algo;
@@ -203,6 +231,7 @@ struct
   int ignore_valid_from;
   int ignore_crc_error;
   int ignore_mdc_error;
+  int ignore_expiration;
   int command_fd;
   const char *override_session_key;
   int show_session_key;
@@ -230,6 +259,14 @@ struct
      value. */
   int limit_card_insert_tries;
 
+  /* The list of --assert-signer option values.  Note: The values are
+   * modify to be uppercase if they represent a fingerrint */
+  strlist_t assert_signer_list;
+
+  /* A single string with the comma delimited args from
+   * --assert-pubkey_algo.  */
+  char *assert_pubkey_algos;
+
   struct
   {
     /* If set, require an 0x19 backsig to be present on signatures
@@ -240,7 +277,7 @@ struct
     unsigned int use_embedded_filename:1;
     unsigned int utf8_filename:1;
     unsigned int dsa2:1;
-    unsigned int allow_multiple_messages:1;
+    unsigned int allow_old_cipher_algos:1;
     unsigned int allow_weak_digest_algos:1;
     unsigned int allow_weak_key_signatures:1;
     unsigned int large_rsa:1;
@@ -254,11 +291,17 @@ struct
     /* Force the use of the OpenPGP card and do not allow the use of
      * another card.  */
     unsigned int use_only_openpgp_card:1;
+    unsigned int full_timestrings:1;
     /* Force signing keys even if a key signature already exists.  */
     unsigned int force_sign_key:1;
+    /* On key generation do not set the ownertrust.  */
+    unsigned int no_auto_trust_new_key:1;
     /* The next flag is set internally iff IMPORT_SELF_SIGS_ONLY has
      * been set by the user and is not the default value.  */
     unsigned int expl_import_self_sigs_only:1;
+    /* The next flag is set internally iff IMPORT_CLEAN has
+     * been set by the user and is not the default value.  */
+    unsigned int expl_import_clean:1;
     /* Fail if an operation can't be done in the requested compliance
      * mode.  */
     unsigned int require_compliance:1;
@@ -268,23 +311,7 @@ struct
 
   /* Linked list of ways to find a key if the key isn't on the local
      keyring. */
-  struct akl
-  {
-    enum {
-      AKL_NODEFAULT,
-      AKL_LOCAL,
-      AKL_CERT,
-      AKL_PKA,
-      AKL_DANE,
-      AKL_WKD,
-      AKL_LDAP,
-      AKL_NTDS,
-      AKL_KEYSERVER,
-      AKL_SPEC
-    } type;
-    keyserver_spec_t spec;
-    struct akl *next;
-  } *auto_key_locate;
+  struct akl *auto_key_locate;
 
   /* The value of --key-origin.  See parse_key_origin().  */
   int key_origin;
@@ -299,9 +326,12 @@ struct
 
   int no_symkey_cache;   /* Disable the cache used for --symmetric.  */
 
+  int use_keyboxd;       /* Use the external keyboxd as storage backend.  */
+
   /* Compatibility flags (COMPAT_FLAG_xxxx).  */
   unsigned int compat_flags;
 } opt;
+
 
 /* CTRL is used to keep some global variables we currently can't
    avoid.  Future concurrent versions of gpg will put it into a per
@@ -345,7 +375,6 @@ struct {
 #define DBG_TRUST  (opt.debug & DBG_TRUST_VALUE)
 #define DBG_HASHING (opt.debug & DBG_HASHING_VALUE)
 #define DBG_IPC     (opt.debug & DBG_IPC_VALUE)
-#define DBG_IPC     (opt.debug & DBG_IPC_VALUE)
 #define DBG_CLOCK   (opt.debug & DBG_CLOCK_VALUE)
 #define DBG_LOOKUP  (opt.debug & DBG_LOOKUP_VALUE)
 #define DBG_EXTPROG (opt.debug & DBG_EXTPROG_VALUE)
@@ -358,16 +387,16 @@ EXTERN_UNLESS_MAIN_MODULE int memory_debug_mode;
 EXTERN_UNLESS_MAIN_MODULE int memory_stat_debug_mode;
 
 /* Compatibility flags */
+/* #define COMPAT_FOO   1 */
 
 
 /* Compliance test macors.  */
 #define GNUPG   (opt.compliance==CO_GNUPG || opt.compliance==CO_DE_VS)
 #define RFC2440 (opt.compliance==CO_RFC2440)
 #define RFC4880 (opt.compliance==CO_RFC4880)
-#define PGP6    (opt.compliance==CO_PGP6)
 #define PGP7    (opt.compliance==CO_PGP7)
 #define PGP8    (opt.compliance==CO_PGP8)
-#define PGPX    (PGP6 || PGP7 || PGP8)
+#define PGPX    (PGP7 || PGP8)
 
 /* Various option flags.  Note that there should be no common string
    names between the IMPORT_ and EXPORT_ flags as they can be mixed in
@@ -387,17 +416,22 @@ EXTERN_UNLESS_MAIN_MODULE int memory_stat_debug_mode;
 #define IMPORT_REPAIR_KEYS               (1<<11)
 #define IMPORT_DRY_RUN                   (1<<12)
 #define IMPORT_SELF_SIGS_ONLY            (1<<14)
+#define IMPORT_COLLAPSE_UIDS             (1<<15)
+#define IMPORT_COLLAPSE_SUBKEYS          (1<<16)
+#define IMPORT_BULK                      (1<<17)
+#define IMPORT_IGNORE_ATTRIBUTES         (1<<18)
 
 #define EXPORT_LOCAL_SIGS                (1<<0)
 #define EXPORT_ATTRIBUTES                (1<<1)
 #define EXPORT_SENSITIVE_REVKEYS         (1<<2)
 #define EXPORT_RESET_SUBKEY_PASSWD       (1<<3)
-#define EXPORT_MINIMAL                   (1<<4)
-#define EXPORT_CLEAN                     (1<<5)
-#define EXPORT_PKA_FORMAT                (1<<6)
+#define EXPORT_MINIMAL                   (1<<5)
+#define EXPORT_CLEAN                     (1<<6)
 #define EXPORT_DANE_FORMAT               (1<<7)
 #define EXPORT_BACKUP                    (1<<10)
 #define EXPORT_REVOCS                    (1<<11)
+#define EXPORT_MODE1003                  (1<<12)
+#define EXPORT_REALCLEAN                 (1<<13)
 
 #define LIST_SHOW_PHOTOS                 (1<<0)
 #define LIST_SHOW_POLICY_URLS            (1<<1)
@@ -413,8 +447,11 @@ EXTERN_UNLESS_MAIN_MODULE int memory_stat_debug_mode;
 #define LIST_SHOW_SIG_SUBPACKETS         (1<<10)
 #define LIST_SHOW_USAGE                  (1<<11)
 #define LIST_SHOW_ONLY_FPR_MBOX          (1<<12)
+#define LIST_SORT_SIGS                   (1<<13)
 #define LIST_SHOW_PREF                   (1<<14)
 #define LIST_SHOW_PREF_VERBOSE           (1<<15)
+#define LIST_SHOW_UNUSABLE_SIGS          (1<<16)
+#define LIST_SHOW_OWNERTRUST             (1<<19)
 
 #define VERIFY_SHOW_PHOTOS               (1<<0)
 #define VERIFY_SHOW_POLICY_URLS          (1<<1)
@@ -424,8 +461,6 @@ EXTERN_UNLESS_MAIN_MODULE int memory_stat_debug_mode;
 #define VERIFY_SHOW_KEYSERVER_URLS       (1<<4)
 #define VERIFY_SHOW_UID_VALIDITY         (1<<5)
 #define VERIFY_SHOW_UNUSABLE_UIDS        (1<<6)
-#define VERIFY_PKA_LOOKUPS               (1<<7)
-#define VERIFY_PKA_TRUST_INCREASE        (1<<8)
 #define VERIFY_SHOW_PRIMARY_UID_ONLY     (1<<9)
 
 #define KEYSERVER_HTTP_PROXY             (1<<0)
@@ -433,7 +468,6 @@ EXTERN_UNLESS_MAIN_MODULE int memory_stat_debug_mode;
 #define KEYSERVER_ADD_FAKE_V3            (1<<2)
 #define KEYSERVER_AUTO_KEY_RETRIEVE      (1<<3)
 #define KEYSERVER_HONOR_KEYSERVER_URL    (1<<4)
-#define KEYSERVER_HONOR_PKA_RECORD       (1<<5)
 
 
 #endif /*G10_OPTIONS_H*/

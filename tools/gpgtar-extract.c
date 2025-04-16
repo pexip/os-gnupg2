@@ -470,7 +470,6 @@ gpgtar_extract (const char *filename, int decrypt)
 
       err = gnupg_spawn_process (opt.gpg_program, argv,
                                  except[0] == -1? NULL : except,
-                                 NULL,
                                  ((filename? 0 : GNUPG_SPAWN_KEEP_STDIN)
                                   | GNUPG_SPAWN_KEEP_STDERR),
                                  NULL, &stream, NULL, &pid);

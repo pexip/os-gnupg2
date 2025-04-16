@@ -1,5 +1,5 @@
 # speedo.mk - Speedo rebuilds speedily.
-# Copyright (C) 2008, 2014, 2019 g10 Code GmbH
+# Copyright (C) 2008, 2014, 2019, 2024 g10 Code GmbH
 #
 # speedo is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -41,64 +41,23 @@
 #
 # Lists packages and versions.
 #
-# The information reyured to sign the tarballs and binaries
+# The information required to sign the tarballs and binaries
 # are expected in the developer specific file ~/.gnupg-autogen.rc".
-# Here is an example:
-#--8<---------------cut here---------------start------------->8---
-# # Location of the released tarball archives.  Note that this is an
-# # internal archive and before uploading this to the public server,
-# # manual tests should be run and the git release tagged and pushed.
-# # This is greped by the Makefile.
-# RELEASE_ARCHIVE=foo@somehost:tarball-archive
-#
-# # The key used to sign the released sources.
-# # This is greped by the Makefile.
-# RELEASE_SIGNKEY=6DAA6E64A76D2840571B4902528897B826403ADA
-#
-# # For signing Windows binaries we need to employ a Windows machine.
-# # We connect to this machine via ssh and take the connection
-# # parameters via .ssh/config. For example a VM could be specified
-# # like this:
-# #
-# #   Host authenticode-signhost
-# #        HostName localhost
-# #        Port 27042
-# #        User gpgsign
-# #
-# # Depending on the used token it might be necessary to allow single
-# # signon and unlock the token before running the make.  The following
-# # variable references this entry.  This is greped by the Makefile.
-# AUTHENTICODE_SIGNHOST=authenticode-signhost
-#
-# # The name of the signtool as used on Windows.
-# # This is greped by the Makefile.
-# AUTHENTICODE_TOOL="C:\Program Files (x86)\Windows Kits\10\bin\signtool.exe"
-#
-# # To use osslsigncode the follwing entries are required and
-# # an empty string must be given for AUTHENTICODE_SIGNHOST.
-# # They are greped by the Makefile.
-# AUTHENTICODE_KEY=/home/foo/.gnupg/my-authenticode-key.p12
-# AUTHENTICODE_CERTS=/home/foo/.gnupg/my-authenticode-certs.pem
-#
-# If a tarball has not been published while building a release it
-# may be stored in a directory specified by:
-# OVERRIDE_TARBALLS=/home/foo/override-tarballs
-#--8<---------------cut here---------------end--------------->8---
+# Use "gpg-authcode-sign.sh --template" to create a template.
 
 
 # We need to know our own name.
 SPEEDO_MK := $(realpath $(lastword $(MAKEFILE_LIST)))
 
-.PHONY : help native native-gui w32-installer w32-source w32-wixlib
-.PHONY :      git-native git-native-gui git-w32-installer git-w32-source
-.PHONY :      this-native this-native-gui this-w32-installer this-w32-source
+.PHONY : help native      w32-installer      w32-source    w32-wixlib
+.PHONY :      git-native  git-w32-installer  git-w32-source
+.PHONY :      this-native this-w32-installer this-w32-source
 
 help:
 	@echo 'usage: make -f speedo.mk TARGET'
 	@echo '       with TARGET being one of:'
 	@echo '  help               This help'
 	@echo '  native             Native build of the GnuPG core'
-	@echo '  native-gui         Ditto but with pinentry and GPA'
 	@echo '  w32-installer      Build a Windows installer'
 	@echo '  w32-source         Pack a source archive'
 	@echo '  w32-release        Build a Windows release'
@@ -109,11 +68,12 @@ help:
 	@echo 'Prepend TARGET with "git-" to build from GIT repos.'
 	@echo 'Prepend TARGET with "this-" to build from the source tarball.'
 	@echo 'Use STATIC=1 to build with statically linked libraries.'
-	@echo 'Use SELFCHECK=0 for a non-released version.'
+	@echo 'Use SELFCHECK=1 for additional check of the gnupg version.'
 	@echo 'Use CUSTOM_SWDB=1 for an already downloaded swdb.lst.'
 	@echo 'Use WIXPREFIX to provide the WIX binaries for the MSI package.'
 	@echo '    Using WIX also requires wine with installed wine mono.'
 	@echo '    See help-wixlib for more information'
+	@echo 'Set W32VERSION=w64 to build a 64 bit Windows version.'
 
 help-wixlib:
 	@echo 'The buildsystem can create a wixlib to build MSI packages.'
@@ -133,7 +93,8 @@ help-wixlib:
 	@echo 'Alternative locations can be passed by WIXPREFIX variable'
 	@echo '  unzip -d ~/w32root/wixtools ~/Downloads/wix311-binaries.zip'
 	@echo ''
-	@echo 'Afterwards w32-release will build also a wixlib.'
+	@echo 'Afterwards w32-msi-release will also build a wixlib.'
+
 
 # NB: we can't use +$(MAKE) here because we would need to define the
 # dependencies of our packages.  This does not make much sense given that
@@ -142,62 +103,52 @@ help-wixlib:
 SPEEDOMAKE := $(MAKE) -f $(SPEEDO_MK) UPD_SWDB=1
 
 native: check-tools
-	$(SPEEDOMAKE) TARGETOS=native WHAT=release WITH_GUI=0 all
+	$(SPEEDOMAKE) TARGETOS=native WHAT=release  all
 
 git-native: check-tools
-	$(SPEEDOMAKE) TARGETOS=native WHAT=git     WITH_GUI=0 all
+	$(SPEEDOMAKE) TARGETOS=native WHAT=git      all
 
 this-native: check-tools
-	$(SPEEDOMAKE) TARGETOS=native WHAT=this    WITH_GUI=0 all
-
-native-gui: check-tools
-	$(SPEEDOMAKE) TARGETOS=native WHAT=release WITH_GUI=1 all
-
-git-native-gui: check-tools
-	$(SPEEDOMAKE) TARGETOS=native WHAT=git     WITH_GUI=1 all
-
-this-native-gui: check-tools
-	$(SPEEDOMAKE) TARGETOS=native WHAT=this    WITH_GUI=1 all
+	$(SPEEDOMAKE) TARGETOS=native WHAT=this     all
 
 w32-installer: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32    WHAT=release WITH_GUI=0 installer
+	$(SPEEDOMAKE) TARGETOS=w32    WHAT=release  installer
 
 git-w32-installer: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32    WHAT=git     WITH_GUI=0 installer
+	$(SPEEDOMAKE) TARGETOS=w32    WHAT=git      installer
 
 this-w32-installer: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32    WHAT=this    WITH_GUI=0 \
-	                                           CUSTOM_SWDB=1 installer
+	$(SPEEDOMAKE) TARGETOS=w32    WHAT=this  CUSTOM_SWDB=1 installer
 w32-wixlib: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32    WHAT=release WITH_GUI=0 wixlib
+	$(SPEEDOMAKE) TARGETOS=w32    WHAT=release  wixlib
 
 git-w32-wixlib: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32    WHAT=git     WITH_GUI=0 wixlib
+	$(SPEEDOMAKE) TARGETOS=w32    WHAT=git      wixlib
 
 this-w32-wixlib: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32    WHAT=this    WITH_GUI=0 \
-	                                           CUSTOM_SWDB=1 wixlib
+	$(SPEEDOMAKE) TARGETOS=w32    WHAT=this  CUSTOM_SWDB=1 wixlib
 
 w32-source: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32    WHAT=release WITH_GUI=0 dist-source
+	$(SPEEDOMAKE) TARGETOS=w32    WHAT=release  dist-source
 
 git-w32-source: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32    WHAT=git     WITH_GUI=0 dist-source
+	$(SPEEDOMAKE) TARGETOS=w32    WHAT=git      dist-source
 
 this-w32-source: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32    WHAT=this    WITH_GUI=0 \
-	                                           CUSTOM_SWDB=1 dist-source
+	$(SPEEDOMAKE) TARGETOS=w32    WHAT=this  CUSTOM_SWDB=1 dist-source
 
 w32-release: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32 WHAT=release    WITH_GUI=0 SELFCHECK=0 \
-                                                   installer-from-source
+	$(SPEEDOMAKE) TARGETOS=w32 WHAT=release   installer-from-source
+
+w32-msi-release: check-tools
+	$(SPEEDOMAKE) TARGETOS=w32 WHAT=release    \
+                                   WITH_WIXLIB=1   installer-from-source
 
 w32-sign-installer: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32 WHAT=release    WITH_GUI=0 SELFCHECK=0 \
-                                                   sign-installer
+	$(SPEEDOMAKE) TARGETOS=w32 WHAT=release    sign-installer
 
 w32-release-offline: check-tools
-	$(SPEEDOMAKE) TARGETOS=w32 WHAT=release    WITH_GUI=0 SELFCHECK=0 \
+	$(SPEEDOMAKE) TARGETOS=w32 WHAT=release     \
 	  CUSTOM_SWDB=1 pkgrep=${HOME}/b pkg10rep=${HOME}/b  \
 	  installer-from-source
 
@@ -207,11 +158,11 @@ w32-release-offline: check-tools
 #          to "this" from the unpacked sources.
 WHAT=git
 
-# Set target to "native" or "w32"
+# Set target to "native" or "w32".
 TARGETOS=
 
-# Set to 1 to build the GUI tools
-WITH_GUI=0
+# To build a 64 bit Windows version also change this to "w64"
+W32VERSION=w32
 
 # Set to 1 to use a pre-installed swdb.lst instead of the online version.
 CUSTOM_SWDB=0
@@ -219,8 +170,8 @@ CUSTOM_SWDB=0
 # Set to 1 to really download the swdb.
 UPD_SWDB=0
 
-# Set to 0 to skip the GnuPG version self-check
-SELFCHECK=1
+# Set to 1 to run an additional GnuPG version check
+SELFCHECK=0
 
 # Set to 1 to build with statically linked libraries.
 STATIC=0
@@ -229,30 +180,38 @@ STATIC=0
 # external packages.
 TARBALLS=$(shell pwd)/../tarballs
 
-#  Number of parallel make jobs in each package
-MAKE_J=3
+# Check if nproc is available, set MAKE_J accordingly
+MAKE_J = $(shell if command -v nproc >/dev/null 2>&1; then \
+           nproc; else echo 6; \
+         fi)
+
+# Extra options for wget(1)
+WGETOPT= --retry-connrefused  --retry-on-host-error
+
 
 # Name to use for the w32 installer and sources
+
+
 INST_NAME=gnupg-w32
 
-# Use this to override the installaion directory for native builds.
+# Use this to override the installation directory for native builds.
 INSTALL_PREFIX=none
 
 # Set this to the location of wixtools
 WIXPREFIX=$(shell readlink -f ~/w32root/wixtools)
 
+# If patchelf(1) is not available disable the command.
+PATCHELF := $(shell patchelf --version 2>/dev/null >/dev/null || echo "echo please run: ")patchelf
+
+# Set this to 1 to get verbose output
+VERBOSE=0
+
 # Read signing information from ~/.gnupg-autogen.rc
 define READ_AUTOGEN_template
-$(1) = $$(shell grep '^$(1)=' $$$$HOME/.gnupg-autogen.rc|cut -d= -f2)
+$(1) = $$(shell grep '^[[:blank:]]*$(1)[[:blank:]]*=' $$$$HOME/.gnupg-autogen.rc|cut -d= -f2|xargs)
 endef
-$(eval $(call READ_AUTOGEN_template,AUTHENTICODE_SIGNHOST))
-$(eval $(call READ_AUTOGEN_template,AUTHENTICODE_TOOL))
-$(eval $(call READ_AUTOGEN_template,AUTHENTICODE_KEY))
-$(eval $(call READ_AUTOGEN_template,AUTHENTICODE_CERTS))
-$(eval $(call READ_AUTOGEN_template,OSSLSIGNCODE))
-$(eval $(call READ_AUTOGEN_template,OSSLPKCS11ENGINE))
-$(eval $(call READ_AUTOGEN_template,SCUTEMODULE))
 $(eval $(call READ_AUTOGEN_template,OVERRIDE_TARBALLS))
+
 
 # All files given in AUTHENTICODE_FILES are signed before
 # they are put into the installer.
@@ -266,17 +225,19 @@ AUTHENTICODE_FILES= \
                     gpg-wks-client.exe        \
                     gpg.exe                   \
                     gpgconf.exe               \
-                    gpgconf-w32.exe           \
                     gpgme-w32spawn.exe        \
                     gpgsm.exe                 \
                     gpgtar.exe                \
                     gpgv.exe                  \
+                    gpg-card.exe              \
+                    keyboxd.exe               \
                     libassuan-9.dll           \
                     libgcrypt-20.dll          \
                     libgpg-error-0.dll        \
                     libgpgme-11.dll           \
                     libksba-8.dll             \
                     libnpth-0.dll             \
+                    libntbtls-0.dll           \
                     libsqlite3-0.dll          \
                     pinentry-w32.exe          \
                     scdaemon.exe	      \
@@ -307,60 +268,16 @@ w32src := $(topsrc)/build-aux/speedo/w32
 # Fixme: Do we need to build pkg-config for cross-building?
 
 speedo_spkgs  = \
-	libgpg-error npth libgcrypt
-
-ifeq ($(TARGETOS),w32)
-speedo_spkgs += \
-	zlib bzip2 sqlite
-ifeq ($(WITH_GUI),1)
-speedo_spkgs += gettext libiconv
-endif
-endif
-
-speedo_spkgs += \
-	libassuan libksba
-
-ifeq ($(TARGETOS),w32)
-speedo_spkgs += \
-	ntbtls
-endif
-
-speedo_spkgs += \
-	gnupg
-
-ifeq ($(TARGETOS),w32)
-ifeq ($(WITH_GUI),1)
-speedo_spkgs += \
-	libffi glib pkg-config
-endif
-endif
+	libgpg-error npth libgcrypt \
+	zlib bzip2 sqlite \
+        libassuan libksba ntbtls gnupg
 
 ifeq ($(STATIC),0)
-speedo_spkgs += \
-	gpgme
+speedo_spkgs += gpgme
 endif
 
 ifeq ($(TARGETOS),w32)
-ifeq ($(WITH_GUI),1)
-speedo_spkgs += \
-	libpng \
-	gdk-pixbuf atk pixman cairo pango gtk+
-endif
-endif
-
-ifeq ($(TARGETOS),w32)
-
 speedo_spkgs += pinentry
-ifeq ($(WITH_GUI),1)
-speedo_spkgs += gpa gpgex
-endif
-
-else
-
-ifeq ($(WITH_GUI),1)
-speedo_spkgs += pinentry gpa
-endif
-
 endif
 
 
@@ -370,16 +287,18 @@ endif
 # Packages which are additionally build for 64 bit Windows.  They are
 # only used for gpgex and thus we need to build them only if we want
 # a full installer.
-speedo_w64_spkgs  =
-ifeq ($(WITH_GUI),1)
-speedo_w64_spkgs += libgpg-error libiconv gettext libassuan gpgex
+ifeq ($(W32VERSION),w64)
+  # Keep this empty
+  speedo_w64_spkgs =
+else
+  speedo_w64_spkgs =
 endif
 
 # Packages which use the gnupg autogen.sh build style
 speedo_gnupg_style = \
 	libgpg-error npth libgcrypt  \
 	libassuan libksba ntbtls gnupg gpgme \
-	pinentry gpa gpgex
+	pinentry
 
 # Packages which use only make and no build directory
 speedo_make_only_style = \
@@ -394,6 +313,7 @@ endif
 ifeq ($(SELFCHECK),0)
 getswdb_options += --skip-selfcheck
 endif
+getswdb_options += --wgetopt="$(WGETOPT)"
 ifeq ($(UPD_SWDB),1)
 SWDB := $(shell $(topsrc)/build-aux/getswdb.sh $(getswdb_options) && echo okay)
 ifeq ($(strip $(SWDB)),)
@@ -405,7 +325,7 @@ endif
 # Version numbers of the released packages
 gnupg_ver_this = $(shell cat $(topsrc)/VERSION)
 
-gnupg_ver        := $(shell awk '$$1=="gnupg22_ver" {print $$2}' swdb.lst)
+gnupg_ver        := $(shell awk '$$1=="gnupg24_ver" {print $$2}' swdb.lst)
 
 libgpg_error_ver := $(shell awk '$$1=="libgpg_error_ver" {print $$2}' swdb.lst)
 libgpg_error_sha1:= $(shell awk '$$1=="libgpg_error_sha1" {print $$2}' swdb.lst)
@@ -415,9 +335,9 @@ npth_ver  := $(shell awk '$$1=="npth_ver" {print $$2}' swdb.lst)
 npth_sha1 := $(shell awk '$$1=="npth_sha1" {print $$2}' swdb.lst)
 npth_sha2 := $(shell awk '$$1=="npth_sha2" {print $$2}' swdb.lst)
 
-libgcrypt_ver  := $(shell awk '$$1=="libgcrypt18_ver" {print $$2}' swdb.lst)
-libgcrypt_sha1 := $(shell awk '$$1=="libgcrypt18_sha1" {print $$2}' swdb.lst)
-libgcrypt_sha2 := $(shell awk '$$1=="libgcrypt18_sha2" {print $$2}' swdb.lst)
+libgcrypt_ver  := $(shell awk '$$1=="libgcrypt_ver" {print $$2}' swdb.lst)
+libgcrypt_sha1 := $(shell awk '$$1=="libgcrypt_sha1" {print $$2}' swdb.lst)
+libgcrypt_sha2 := $(shell awk '$$1=="libgcrypt_sha2" {print $$2}' swdb.lst)
 
 libassuan_ver  := $(shell awk '$$1=="libassuan_ver" {print $$2}' swdb.lst)
 libassuan_sha1 := $(shell awk '$$1=="libassuan_sha1" {print $$2}' swdb.lst)
@@ -439,14 +359,6 @@ pinentry_ver  := $(shell awk '$$1=="pinentry_ver" {print $$2}' swdb.lst)
 pinentry_sha1 := $(shell awk '$$1=="pinentry_sha1" {print $$2}' swdb.lst)
 pinentry_sha2 := $(shell awk '$$1=="pinentry_sha2" {print $$2}' swdb.lst)
 
-gpa_ver  := $(shell awk '$$1=="gpa_ver" {print $$2}' swdb.lst)
-gpa_sha1 := $(shell awk '$$1=="gpa_sha1" {print $$2}' swdb.lst)
-gpa_sha2 := $(shell awk '$$1=="gpa_sha2" {print $$2}' swdb.lst)
-
-gpgex_ver  := $(shell awk '$$1=="gpgex_ver" {print $$2}' swdb.lst)
-gpgex_sha1 := $(shell awk '$$1=="gpgex_sha1" {print $$2}' swdb.lst)
-gpgex_sha2 := $(shell awk '$$1=="gpgex_sha2" {print $$2}' swdb.lst)
-
 zlib_ver  := $(shell awk '$$1=="zlib_ver" {print $$2}' swdb.lst)
 zlib_sha1 := $(shell awk '$$1=="zlib_sha1_gz" {print $$2}' swdb.lst)
 zlib_sha2 := $(shell awk '$$1=="zlib_sha2_gz" {print $$2}' swdb.lst)
@@ -460,9 +372,9 @@ sqlite_sha1 := $(shell awk '$$1=="sqlite_sha1_gz" {print $$2}' swdb.lst)
 sqlite_sha2 := $(shell awk '$$1=="sqlite_sha2_gz" {print $$2}' swdb.lst)
 
 
-$(info Information from the version database)
+$(info Information from the version database:)
 $(info GnuPG ..........: $(gnupg_ver) (building $(gnupg_ver_this)))
-$(info Libgpg-error ...: $(libgpg_error_ver))
+$(info GpgRT ..........: $(libgpg_error_ver))
 $(info Npth ...........: $(npth_ver))
 $(info Libgcrypt ......: $(libgcrypt_ver))
 $(info Libassuan ......: $(libassuan_ver))
@@ -473,31 +385,33 @@ $(info SQLite .........: $(sqlite_ver))
 $(info NtbTLS .. ......: $(ntbtls_ver))
 $(info GPGME ..........: $(gpgme_ver))
 $(info Pinentry .......: $(pinentry_ver))
-$(info GPA ............: $(gpa_ver))
-$(info GpgEX.... ......: $(gpgex_ver))
 endif
+
+$(info Information for this run:)
+$(info Build type .....: $(WHAT))
+$(info Target .........: $(TARGETOS))
+ifeq ($(TARGETOS),w32)
+  $(info Windows version : 32 bit)
+ifneq ($(W32VERSION),w32)
+# Noet that GnuPG 2.4 does not support 64 bit Windows - use GnuPG 2.6
+  $(error W32VERSION is not set to a proper value: Use only w32)
+endif
+endif
+
 
 # Version number for external packages
 pkg_config_ver = 0.23
 libiconv_ver = 1.14
 gettext_ver = 0.18.2.1
-libffi_ver = 3.0.13
-glib_ver = 2.34.3
-libpng_ver = 1.4.12
-gdk_pixbuf_ver = 2.26.5
-atk_ver = 1.32.0
-pango_ver = 1.29.4
-pixman_ver = 0.32.4
-cairo_ver = 1.12.16
-gtk__ver = 2.24.17
 
-# The GIT repository.  Using a local repo is much faster.
-#gitrep = git://git.gnupg.org
+
+# The GIT repository.  Using a local repo is much faster and more secure.
+# The default is to expect it below ~/s/
 gitrep = ${HOME}/s
 
 # The tarball directories
 pkgrep = https://gnupg.org/ftp/gcrypt
-pkg10rep = ftp://ftp.g10code.com/g10code
+pkg10rep = foo://no-default-repo.local
 pkg2rep = $(TARBALLS)
 
 # For each package, the following variables can be defined:
@@ -508,10 +422,11 @@ pkg2rep = $(TARBALLS)
 # speedo_pkg_PACKAGE_tar: URL to the tar file that should be built.
 #
 # Exactly one of the above variables is required.  Note that this
-# version of speedo does not cache repositories or tar files, and does
-# not test the integrity of the downloaded software.  If you care
-# about this, you can also specify filenames to locally verified files.
-# Filenames are differentiated from URLs by starting with a slash '/'.
+# version of speedo does not cache repositories or tar files.  The
+# integrity of the downloaded software is checked using the SWDB.
+# Note that you you can also specify filenames to already downloaded
+# files.  Filenames are differentiated from URLs by testing whether
+# the character is a slash ('/').
 #
 # speedo_pkg_PACKAGE_configure: Extra arguments to configure.
 #
@@ -540,10 +455,6 @@ else ifeq ($(WHAT),git)
   speedo_pkg_gpgme_gitref = master
   speedo_pkg_pinentry_git = $(gitrep)/pinentry
   speedo_pkg_pinentry_gitref = master
-  speedo_pkg_gpa_git = $(gitrep)/gpa
-  speedo_pkg_gpa_gitref = master
-  speedo_pkg_gpgex_git = $(gitrep)/gpgex
-  speedo_pkg_gpgex_gitref = master
 else ifeq ($(WHAT),release)
   speedo_pkg_libgpg_error_tar = \
 	$(pkgrep)/libgpg-error/libgpg-error-$(libgpg_error_ver).tar.bz2
@@ -561,10 +472,6 @@ else ifeq ($(WHAT),release)
 	$(pkgrep)/gpgme/gpgme-$(gpgme_ver).tar.bz2
   speedo_pkg_pinentry_tar = \
 	$(pkgrep)/pinentry/pinentry-$(pinentry_ver).tar.bz2
-  speedo_pkg_gpa_tar = \
-	$(pkgrep)/gpa/gpa-$(gpa_ver).tar.bz2
-  speedo_pkg_gpgex_tar = \
-	$(pkg10rep)/gpgex/gpgex-$(gpgex_ver).tar.bz2
 else
   $(error invalid value for WHAT (use on of: git release this))
 endif
@@ -575,15 +482,6 @@ speedo_pkg_bzip2_tar      = $(pkgrep)/bzip2/bzip2-$(bzip2_ver).tar.gz
 speedo_pkg_sqlite_tar     = $(pkgrep)/sqlite/sqlite-autoconf-$(sqlite_ver).tar.gz
 speedo_pkg_libiconv_tar   = $(pkg2rep)/libiconv-$(libiconv_ver).tar.gz
 speedo_pkg_gettext_tar    = $(pkg2rep)/gettext-$(gettext_ver).tar.gz
-speedo_pkg_libffi_tar     = $(pkg2rep)/libffi-$(libffi_ver).tar.gz
-speedo_pkg_glib_tar       = $(pkg2rep)/glib-$(glib_ver).tar.xz
-speedo_pkg_libpng_tar     = $(pkg2rep)/libpng-$(libpng_ver).tar.bz2
-speedo_pkg_gdk_pixbuf_tar = $(pkg2rep)/gdk-pixbuf-$(gdk_pixbuf_ver).tar.xz
-speedo_pkg_atk_tar        = $(pkg2rep)/atk-$(atk_ver).tar.bz2
-speedo_pkg_pango_tar      = $(pkg2rep)/pango-$(pango_ver).tar.bz2
-speedo_pkg_pixman_tar     = $(pkg2rep)/pixman-$(pixman_ver).tar.gz
-speedo_pkg_cairo_tar      = $(pkg2rep)/cairo-$(cairo_ver).tar.xz
-speedo_pkg_gtk__tar       = $(pkg2rep)/gtk+-$(gtk__ver).tar.xz
 
 
 #
@@ -592,8 +490,8 @@ speedo_pkg_gtk__tar       = $(pkg2rep)/gtk+-$(gtk__ver).tar.xz
 
 speedo_pkg_npth_configure = --enable-static
 
-speedo_pkg_libgpg_error_configure = --enable-static --enable-install-gpg-error-config
-speedo_pkg_w64_libgpg_error_configure = --enable-static --enable-install-gpg-error-config
+speedo_pkg_libgpg_error_configure = --enable-static
+speedo_pkg_w64_libgpg_error_configure = --enable-static
 speedo_pkg_libgpg_error_extracflags = -D_WIN32_WINNT=0x0600
 speedo_pkg_w64_libgpg_error_extracflags = -D_WIN32_WINNT=0x0600
 
@@ -603,9 +501,6 @@ speedo_pkg_w64_libassuan_configure = --enable-static
 speedo_pkg_libgcrypt_configure = --disable-static
 
 speedo_pkg_libksba_configure = --disable-static
-
-speedo_pkg_ntbtls_configure = --enable-static
-
 
 ifeq ($(STATIC),1)
 speedo_pkg_npth_configure += --disable-shared
@@ -619,16 +514,13 @@ speedo_pkg_libgcrypt_configure += --disable-shared
 speedo_pkg_libksba_configure += --disable-shared
 endif
 
-# For now we build ntbtls only static
-speedo_pkg_ntbtls_configure = --disable-shared
-
 ifeq ($(TARGETOS),w32)
 speedo_pkg_gnupg_configure = \
-        --disable-g13 --enable-ntbtls
+        --disable-g13 --enable-ntbtls --disable-tpm2d
 else
 speedo_pkg_gnupg_configure = --disable-g13 --enable-wks-tools
 endif
-speedo_pkg_gnupg_extracflags = -g
+speedo_pkg_gnupg_extracflags =
 
 # Create the version info files only for W32 so that they won't get
 # installed if for example INSTALL_PREFIX=/usr/local is used.
@@ -641,25 +533,13 @@ define speedo_pkg_gnupg_post_install
 endef
 endif
 
-# The LDFLAGS is needed for -lintl for glib.
-ifeq ($(WITH_GUI),1)
-speedo_pkg_gpgme_configure = \
-	--enable-static --enable-w32-glib  \
-	--with-gpg-error-prefix=$(idir) \
-	LDFLAGS=-L$(idir)/lib
-else
+# The LDFLAGS was needed for -lintl for glib.
 speedo_pkg_gpgme_configure = \
 	--disable-static --disable-w32-glib \
 	--with-gpg-error-prefix=$(idir) \
 	LDFLAGS=-L$(idir)/lib
-endif
 
 
-ifeq ($(TARGETOS),w32)
-speedo_pkg_pinentry_configure = --disable-pinentry-gtk2
-else
-speedo_pkg_pinentry_configure = --enable-pinentry-gtk2
-endif
 speedo_pkg_pinentry_configure += \
         --disable-pinentry-qt5   \
         --disable-pinentry-qt    \
@@ -668,22 +548,6 @@ speedo_pkg_pinentry_configure += \
 	CPPFLAGS=-I$(idir)/include   \
 	LDFLAGS=-L$(idir)/lib        \
 	CXXFLAGS=-static-libstdc++
-
-
-speedo_pkg_gpa_configure = \
-        --with-libiconv-prefix=$(idir) --with-libintl-prefix=$(idir) \
-        --with-gpgme-prefix=$(idir) --with-zlib=$(idir) \
-        --with-libassuan-prefix=$(idir) --with-gpg-error-prefix=$(idir)
-
-speedo_pkg_gpgex_configure = \
-	--with-gpg-error-prefix=$(idir) \
-	--with-libassuan-prefix=$(idir) \
-	--enable-gpa-only
-
-speedo_pkg_w64_gpgex_configure = \
-	--with-gpg-error-prefix=$(idir6) \
-	--with-libassuan-prefix=$(idir6) \
-	--enable-gpa-only
 
 
 #
@@ -732,6 +596,9 @@ speedo_pkg_bzip2_make_args = \
 
 speedo_pkg_bzip2_make_args_inst = \
 	PREFIX=$(idir) CC="$(host)-gcc" AR="$(host)-ar" RANLIB="$(host)-ranlib"
+else
+speedo_pkg_bzip2_make_args_inst = \
+	PREFIX=$(idir)
 endif
 
 speedo_pkg_w64_libiconv_configure = \
@@ -749,74 +616,31 @@ speedo_pkg_gettext_extracflags = -O2
 speedo_pkg_gettext_make_dir = gettext-runtime
 
 
-speedo_pkg_glib_configure = \
-	--disable-modular-tests \
-	--with-libiconv=gnu \
-	CPPFLAGS=-I$(idir)/include \
-	LDFLAGS=-L$(idir)/lib \
-	CCC=$(host)-g++ \
-        LIBFFI_CFLAGS=-I$(idir)/lib/libffi-$(libffi_ver)/include \
-	LIBFFI_LIBS=\"-L$(idir)/lib -lffi\"
-ifeq ($(TARGETOS),w32)
-speedo_pkg_glib_extracflags = -march=i486
-endif
-
-ifeq ($(TARGETOS),w32)
-speedo_pkg_libpng_configure = \
-	CPPFLAGS=\"-I$(idir)/include -DPNG_BUILD_DLL\" \
-	LDFLAGS=\"-L$(idir)/lib\" LIBPNG_DEFINES=\"-DPNG_BUILD_DLL\"
-else
-speedo_pkg_libpng_configure = \
-        CPPFLAGS=\"-I$(idir)/include\" \
-        LDFLAGS=\"-L$(idir)/lib\"
-endif
-
-ifneq ($(TARGETOS),w32)
-speedo_pkg_gdk_pixbuf_configure = --without-libtiff --without-libjpeg
-endif
-
-speedo_pkg_pixman_configure = \
-	CPPFLAGS=-I$(idir)/include \
-	LDFLAGS=-L$(idir)/lib
-
-ifeq ($(TARGETOS),w32)
-speedo_pkg_cairo_configure = \
-	--disable-qt --disable-ft --disable-fc \
-	--enable-win32 --enable-win32-font \
-	CPPFLAGS=-I$(idir)/include \
-	LDFLAGS=-L$(idir)/lib
-else
-speedo_pkg_cairo_configure = \
-	--disable-qt \
-        CPPFLAGS=-I$(idir)/include \
-        LDFLAGS=-L$(idir)/lib
-endif
-
-speedo_pkg_pango_configure = \
-	--disable-gtk-doc  \
-	CPPFLAGS=-I$(idir)/include \
-	LDFLAGS=-L$(idir)/lib
-
-speedo_pkg_gtk__configure = \
-	--disable-cups \
-	CPPFLAGS=-I$(idir)/include \
-	LDFLAGS=-L$(idir)/lib
-
-
 # ---------
 
 all: all-speedo
+
+install: install-speedo
 
 report: report-speedo
 
 clean: clean-speedo
 
+
+ifeq ($(W32VERSION),w64)
+W32CC_PREFIX = x86_64
+else
+W32CC_PREFIX = i686
+endif
+
 ifeq ($(TARGETOS),w32)
-STRIP = i686-w64-mingw32-strip
+STRIP = $(W32CC_PREFIX)-w64-mingw32-strip
+W32STRIP32 = i686-w64-mingw32-strip
 else
 STRIP = strip
 endif
-W32CC = i686-w64-mingw32-gcc
+W32CC = $(W32CC_PREFIX)-w64-mingw32-gcc
+W32CC32 = i686-w64-mingw32-gcc
 
 -include config.mk
 
@@ -855,16 +679,27 @@ speedo_w64_build_list = $(speedo_w64_spkgs)
 # assignments), we check that the targetos has been given
 ifneq ($(TARGETOS),)
 
+# Check for VERBOSE variable to conditionally set the silent option
+ifeq ($(VERBOSE),1)
+  slient_flag =
+  autogen_sh_silent_flag =
+else
+  slient_flag = --silent
+  autogen_sh_silent_flag = AUTOGEN_SH_SILENT=1
+endif
+
 # Determine build and host system
-build := $(shell $(topsrc)/autogen.sh --silent --print-build)
+build := $(shell $(topsrc)/autogen.sh $(silent_flag) --print-build)
 ifeq ($(TARGETOS),w32)
-  speedo_autogen_buildopt := --build-w32
+  speedo_autogen_buildopt := --build-$(W32VERSION)
   speedo_autogen_buildopt6 := --build-w64
-  host := $(shell $(topsrc)/autogen.sh --silent --print-host --build-w32)
-  host6:= $(shell $(topsrc)/autogen.sh --silent --print-host --build-w64)
+  host := $(shell $(topsrc)/autogen.sh $(silent_flag) --print-host \
+            --build-$(W32VERSION))
+  host6:= $(shell $(topsrc)/autogen.sh $(silent_flag) --print-host \
+            --build-w64)
   speedo_host_build_option := --host=$(host) --build=$(build)
   speedo_host_build_option6 := --host=$(host6) --build=$(build)
-  speedo_w32_cflags := -mms-bitfields
+  speedo_w32_cflags := -fcf-protection=full
 else
   speedo_autogen_buildopt :=
   host :=
@@ -897,7 +732,6 @@ ifeq ($(TARGETOS),w32)
 endif
 	touch $(stampdir)/stamp-directories
 
-
 # Frob the name $1 by converting all '-' and '+' characters to '_'.
 define FROB_macro
 $(subst +,_,$(subst -,_,$(1)))
@@ -926,6 +760,9 @@ define SETVARS
         fi;                                                             \
         pkgbdir="$(bdir)/$(1)";                                         \
         pkgcfg="$(call GETVAR,speedo_pkg_$(1)_configure)";              \
+        if [ "$(TARGETOS)" != native ]; then                            \
+          pkgcfg="$(pkgcfg) --libdir=$(idir)/lib";                      \
+        fi;                                                             \
         tmp="$(speedo_w32_cflags)                                       \
              $(call GETVAR,speedo_pkg_$(1)_extracflags)";               \
         if [ x$$$$(echo "$$$$tmp" | tr -d '[:space:]')x != xx ]; then   \
@@ -991,7 +828,7 @@ endef
 #
 define SPKG_template
 
-$(stampdir)/stamp-$(1)-00-unpack:
+$(stampdir)/stamp-$(1)-00-unpack: $(stampdir)/stamp-directories
 	@echo "speedo: /*"
 	@echo "speedo:  *   $(1)"
 	@echo "speedo:  */"
@@ -1030,7 +867,7 @@ $(stampdir)/stamp-$(1)-00-unpack:
            [ -f tmp.tgz ] && rm tmp.tgz;                \
            case "$$$${tar}" in				\
 	     /*) $$$${pretar} < $$$${tar} | tar xf - ;;	\
-	     *)  wget -q -O - $$$${tar} | tee tmp.tgz   \
+	     *)  wget $(WGETOPT) -q -O - $$$${tar} | tee tmp.tgz   \
                   | $$$${pretar} | tar x$$$${opt}f - ;; \
 	   esac;					\
 	   if [ -f tmp.tgz ]; then                      \
@@ -1085,13 +922,14 @@ else ifneq ($(findstring $(1),$(speedo_gnupg_style)),)
 	 mkdir "$$$${pkgbdir}";				\
 	 cd "$$$${pkgbdir}";		        	\
          if [ -n "$(speedo_autogen_buildopt)" ]; then   \
-            eval AUTOGEN_SH_SILENT=1 w32root="$(idir)"  \
+            eval $(autogen_sh_silent_flag)              \
+               $(W32VERSION)root="$(idir)"              \
                "$$$${pkgsdir}/autogen.sh"               \
                $(speedo_autogen_buildopt)            	\
                $$$${pkgcfg} $$$${pkgextracflags}; 	\
          else                                        	\
             eval "$$$${pkgsdir}/configure" 		\
-	       --silent                 		\
+	       $(silent_flag)                 		\
 	       --enable-maintainer-mode			\
                --prefix="$(idir)"		        \
                $$$${pkgcfg} $$$${pkgextracflags};     	\
@@ -1101,14 +939,14 @@ else
 	 mkdir "$$$${pkgbdir}";				\
 	 cd "$$$${pkgbdir}";		        	\
 	 eval "$$$${pkgsdir}/configure" 		\
-	     --silent $(speedo_host_build_option)	\
+	     $(silent_flag) $(speedo_host_build_option)	\
              --prefix="$(idir)"		        	\
 	     $$$${pkgcfg}  $$$${pkgextracflags};	\
 	 )
 endif
 	@touch $(stampdir)/stamp-$(1)-01-configure
 
-# Note that unpack has no 64 bit version becuase it is just the source.
+# Note that unpack has no 64 bit version because it is just the source.
 # Fixme: We should use templates to create the standard and w64
 # version of these rules.
 $(stampdir)/stamp-w64-$(1)-01-configure: $(stampdir)/stamp-$(1)-00-unpack
@@ -1120,13 +958,13 @@ else ifneq ($(findstring $(1),$(speedo_gnupg_style)),)
 	 mkdir "$$$${pkgbdir}";				\
 	 cd "$$$${pkgbdir}";		        	\
          if [ -n "$(speedo_autogen_buildopt)" ]; then   \
-            eval AUTOGEN_SH_SILENT=1 w64root="$(idir6)" \
+            eval $(autogen_sh_silent_flag) w64root="$(idir6)" \
                "$$$${pkgsdir}/autogen.sh"               \
                $(speedo_autogen_buildopt6)            	\
                $$$${pkgcfg} $$$${pkgextracflags};       \
          else                                        	\
             eval "$$$${pkgsdir}/configure" 		\
-	       --silent                 		\
+	       $(silent_flag)                 		\
 	       --enable-maintainer-mode			\
                --prefix="$(idir6)"		        \
                $$$${pkgcfg} $$$${pkgextracflags};       \
@@ -1136,7 +974,7 @@ else
 	 mkdir "$$$${pkgbdir}";				\
 	 cd "$$$${pkgbdir}";		        	\
 	 eval "$$$${pkgsdir}/configure" 		\
-	     --silent $(speedo_host_build_option6)	\
+	     $(silent_flag) $(speedo_host_build_option6)	\
              --prefix="$(idir6)"	        	\
 	     $$$${pkgcfg} $$$${pkgextracflags};       	\
 	 )
@@ -1266,7 +1104,7 @@ endef
 # Insert the template for each source package.
 $(foreach spkg, $(speedo_spkgs), $(eval $(call SPKG_template,$(spkg))))
 
-$(stampdir)/stamp-final: clean-pkg-versions
+$(stampdir)/stamp-final: $(stampdir)/stamp-directories clean-pkg-versions
 ifeq ($(TARGETOS),w32)
 $(stampdir)/stamp-final: $(addprefix $(stampdir)/stamp-w64-final-,$(speedo_w64_build_list))
 endif
@@ -1277,10 +1115,75 @@ clean-pkg-versions:
         @: >$(bdir)/pkg-versions.txt
 
 all-speedo: $(stampdir)/stamp-final
+ifneq ($(TARGETOS),w32)
+	@(set -e;\
+	 cd "$(idir)"; \
+         echo "speedo: Making RPATH relative";\
+         for d in bin sbin libexec lib; do \
+           for f in $$(find $$d -type f); do \
+             if file $$f | grep ELF >/dev/null; then \
+               $(PATCHELF) --set-rpath '$$ORIGIN/../lib' $$f; \
+             fi; \
+           done; \
+         done; \
+	 echo "sysconfdir = /etc/gnupg"  >bin/gpgconf.ctl ;\
+	 echo "rootdir = $(idir)" >>bin/gpgconf.ctl ;\
+	 echo "speedo: /*" ;\
+	 echo "speedo:  * Now copy $(idir)/ to the final location and" ;\
+	 echo "speedo:  * adjust $(idir)/bin/gpgconf.ctl accordingly" ;\
+	 echo "speedo:  * Or run run for example:" ;\
+	 echo "speedo:  *   make -f $(topsrc)/build-aux/speedo.mk install SYSROOT=/usr/local/gnupg24" ;\
+	 echo "speedo:  */")
+endif
+
+# No dependencies for the install target; instead we test whether
+# some of the to be installed files are available.  This avoids
+# accidental rebuilds under a wrong account.
+install-speedo:
+ifneq ($(TARGETOS),w32)
+	@(set -e; \
+         cd "$(idir)"; \
+         if [ x"$$SYSROOT" = x ]; then \
+           echo "speedo: ERROR: SYSROOT has not been given";\
+           echo "speedo: Set SYSROOT to the desired install directory";\
+	   echo "speedo: Example:";\
+           echo "speedo:   make -f $(topsrc)/build-aux/speedo.mk install SYSROOT=/usr/local/gnupg24";\
+           exit 1;\
+         fi;\
+         if [ ! -d "$$SYSROOT"/bin ]; then if ! mkdir "$$SYSROOT"/bin; then \
+           echo "speedo: error creating target directory";\
+           exit 1;\
+         fi; fi;\
+         if ! touch "$$SYSROOT"/bin/gpgconf.ctl; then \
+           echo "speedo: Error writing $$SYSROOT/bin/gpgconf.ctl";\
+           echo "speedo: Please check the permissions";\
+           exit 1;\
+         fi;\
+         if [ ! -f bin/gpgconf.ctl ]; then \
+           echo "speedo: ERROR: Nothing to install";\
+           echo "speedo: Please run a build first";\
+	   echo "speedo: Example:";\
+           echo "speedo:   make -f build-aux/speedo.mk native";\
+           exit 1;\
+         fi;\
+         echo "speedo: Installing files to $$SYSROOT";\
+         find . -type f -executable \
+                -exec install -Dm 755 "{}" "$$SYSROOT/{}" \; ;\
+         find . -type l -executable \
+                -exec install -Dm 755 "{}" "$$SYSROOT/{}" \; ;\
+         find . -type f \! -executable \
+                -exec install -Dm 644 "{}" "$$SYSROOT/{}" \; ;\
+	 echo "sysconfdir = /etc/gnupg" > "$$SYSROOT"/bin/gpgconf.ctl ;\
+	 echo "rootdir = $$SYSROOT"    >> "$$SYSROOT"/bin/gpgconf.ctl ;\
+         echo '/*' ;\
+         echo " * Installation to $$SYSROOT done" ;\
+	 echo ' */' )
+endif
+
 
 report-speedo: $(addprefix report-,$(speedo_build_list))
 
-# Just to check if we catched all stamps.
+# Just to check if we caught all stamps.
 clean-stamps:
 	$(RM) -fR $(stampdir)
 
@@ -1334,13 +1237,13 @@ $(bdir)/README.txt: $(bdir)/NEWS.tmp $(topsrc)/README $(w32src)/README.txt \
 
 $(bdir)/g4wihelp.dll: $(w32src)/g4wihelp.c $(w32src)/exdll.h $(w32src)/exdll.c
 	(set -e; cd $(bdir); \
-         $(W32CC) -DUNICODE -static-libgcc -I . -O2 -c \
+         $(W32CC32) -DUNICODE -static-libgcc -I . -O2 -c \
                           -o exdll.o $(w32src)/exdll.c; \
-	 $(W32CC) -DUNICODE -static-libgcc -I. -shared -O2 \
+	 $(W32CC32) -DUNICODE -static-libgcc -I. -shared -O2 \
                           -o g4wihelp.dll $(w32src)/g4wihelp.c exdll.o \
 	                  -lwinmm -lgdi32 -luserenv \
                           -lshell32 -loleaut32 -lshlwapi -lmsimg32; \
-	 $(STRIP) g4wihelp.dll)
+	 $(W32STRIP32) g4wihelp.dll)
 
 w32_insthelpers: $(bdir)/g4wihelp.dll
 
@@ -1348,9 +1251,6 @@ $(bdir)/inst-options.ini: $(w32src)/inst-options.ini
 	cat $(w32src)/inst-options.ini >$(bdir)/inst-options.ini
 
 extra_installer_options =
-ifeq ($(WITH_GUI),1)
-extra_installer_options += -DWITH_GUI=1
-endif
 
 # Note that we sign only when doing the final installer.
 installer: all w32_insthelpers $(w32src)/inst-options.ini $(bdir)/README.txt
@@ -1439,7 +1339,7 @@ wixlib: installer $(bdir)/README.txt $(w32src)/wixlib.wxs
 	)
 
 define MKSWDB_commands
- ( pref="#+macro: gnupg22_w32_$(3)" ;\
+ ( pref="#+macro: gnupg24_w32_$(3)" ;\
    echo "$${pref}ver  $(INST_VERSION)_$(BUILD_DATESTR)"  ;\
    echo "$${pref}date $(2)" ;\
    echo "$${pref}size $$(wc -c <$(1)|awk '{print int($$1/1024)}')k";\
@@ -1450,35 +1350,13 @@ endef
 
 # Sign the file $1 and save the result as $2
 define AUTHENTICODE_sign
-   set -e;\
-   if [ -n "$(AUTHENTICODE_SIGNHOST)" ]; then \
-     echo "speedo: Signing via host $(AUTHENTICODE_SIGNHOST)";\
-     scp $(1) "$(AUTHENTICODE_SIGNHOST):a.exe" ;\
-     ssh "$(AUTHENTICODE_SIGNHOST)" '$(AUTHENTICODE_TOOL)' sign \
-        /a /n '"g10 Code GmbH"' \
-        /tr 'http://rfc3161timestamp.globalsign.com/advanced' /td sha256 \
-        /fd sha256 /du https://gnupg.org a.exe ;\
-     scp "$(AUTHENTICODE_SIGNHOST):a.exe" $(2);\
-     echo "speedo: signed file is '$(2)'" ;\
-   elif [ "$(AUTHENTICODE_KEY)" = card ]; then \
-     echo "speedo: Signing using a card";\
-     $(OSSLSIGNCODE) sign \
-       -pkcs11engine $(OSSLPKCS11ENGINE) \
-       -pkcs11module $(SCUTEMODULE) \
-       -certs $(AUTHENTICODE_CERTS) \
-       -h sha256 -n GnuPG -i https://gnupg.org \
-       -ts http://rfc3161timestamp.globalsign.com/advanced \
-       -in $(1) -out $(2).tmp ; mv $(2).tmp $(2) ; \
-   elif [ -e "$(AUTHENTICODE_KEY)" ]; then \
-     echo "speedo: Signing using key $(AUTHENTICODE_KEY)";\
-     osslsigncode sign -certs $(AUTHENTICODE_CERTS) \
-       -pkcs12 $(AUTHENTICODE_KEY) -askpass \
-       -ts "http://timestamp.globalsign.com/scripts/timstamp.dll" \
-       -h sha256 -n GnuPG -i https://gnupg.org \
-       -in $(1) -out $(2) ;\
+   (set -e; \
+    if (gpg-authcode-sign.sh --version >/dev/null); then \
+     gpg-authcode-sign.sh "$(1)" "$(2)"; \
    else \
-     echo "speedo: WARNING: Binaries are not signed"; \
-   fi
+     echo 2>&1 "warning: Please install gpg-authcode-sign.sh to sign files." ;\
+     [ "$(1)" != "$(2)" ] && cp "$(1)" "$(2)" ;\
+   fi)
 endef
 
 # Help target for testing to sign a file.
@@ -1499,7 +1377,7 @@ installer-from-source: dist-source
 	 tar xJf "../$(INST_NAME)-$(INST_VERSION)_$(BUILD_DATESTR).tar.xz";\
 	 cd $(INST_NAME)-$(INST_VERSION); \
 	 $(MAKE) -f build-aux/speedo.mk this-w32-installer SELFCHECK=0;\
-	 if [ -d "$(WIXPREFIX)" ]; then \
+	 if [ -d "$(WIXPREFIX)" -a x"$(WITH_WIXLIB)" = x1 ]; then \
 		 $(MAKE) -f build-aux/speedo.mk this-w32-wixlib SELFCHECK=0;\
 	 fi; \
 	 reldate="$$(date -u +%Y-%m-%d)" ;\
@@ -1532,7 +1410,7 @@ sign-installer:
 	 exefile="../../$$exefile" ;\
 	 msifile="../../$$msifile" ;\
 	 $(call MKSWDB_commands,$${exefile},$${reldate}); \
-	 if [ -e "$${msifile}" ]; then \
+	 if [ -f "$${msifile}" ]; then \
 	   $(call MKSWDB_commands,$${msifile},$${reldate},"wixlib_"); \
 	 fi; \
 	 echo "speedo: /* (osslsigncode verify disabled) */" ;\
@@ -1546,13 +1424,14 @@ endif
 
 
 #
-# Check availibility of standard tools and prepare everything.
+# Check availability of standard tools and prepare everything.
 #
 check-tools: $(stampdir)/stamp-directories
+
 
 
 #
 # Mark phony targets
 #
 .PHONY: all all-speedo report-speedo clean-stamps clean-speedo installer \
-	w32_insthelpers check-tools clean-pkg-versions
+	w32_insthelpers check-tools clean-pkg-versions install-speedo install

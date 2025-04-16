@@ -13,7 +13,7 @@ diff --git a/doc/gpg.texi b/doc/gpg.texi
 index 9ccb74996..a11857235 100644
 --- a/doc/gpg.texi
 +++ b/doc/gpg.texi
-@@ -1477,12 +1477,11 @@ the opposite meaning. The options are:
+@@ -1543,12 +1543,11 @@ the opposite meaning. The options are:
  @itemx --disable-large-rsa
  @opindex enable-large-rsa
  @opindex disable-large-rsa
@@ -62,7 +62,7 @@ index 71d222a22..37ac708fc 100755
 +(define mega "Mega <mega@invalid.example.net>")
  (define alpha "Alpha <alpha@invalid.example.net>")
  (define bravo "Bravo <bravo@invalid.example.net>")
- (define charlie "Charlie <charlie@invalid.example.net>")
+ (define bravohash "F75B1420CC5881F4005333379355CFF5873094DE")
 @@ -54,6 +62,11 @@
  (assert (= 1 (count-uids-of-secret-key alpha)))
  (assert (not (equal? "" (:expire (assoc "pub" keyinfo)))))

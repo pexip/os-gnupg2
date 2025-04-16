@@ -26,7 +26,8 @@ endif
 # Parallel tests generates high load on machine which causes timeouts and thus
 # triggers unexpected failures.
 ifeq (,$(filter $(DEB_HOST_ARCH), hppa riscv64))
-AUTOTEST_FLAGS = "--parallel"
+# And also, avoid parallel tests due to swtpm failures (see https://dev.gnupg.org/T7494)
+AUTOTEST_FLAGS = "--no-parallel"
 else
 AUTOTEST_FLAGS = "--no-parallel"
 endif
@@ -38,11 +39,10 @@ endif
 %:
 	dh $@ --with=autoreconf --builddirectory=build
 
-GPGV_UDEB_UNNEEDED = gpgtar bzip2 gpgsm scdaemon dirmngr doc tofu exec ldap gnutls sqlite libdns
+GPGV_UDEB_UNNEEDED = gpgtar bzip2 gpgsm scdaemon dirmngr doc tofu exec ldap gnutls sqlite libdns keyboxd tpm2d npth
 
 WIN32_FLAGS=LDFLAGS="-Xlinker --no-insert-timestamp -static" CFLAGS="-g -Os" CPPFLAGS=
 
-# runs for both arch-all and arch-indep builds
 execute_after_dh_auto_configure:
 	dh_auto_configure --builddirectory=build --verbose -- \
 		--libexecdir=\$${prefix}/lib/gnupg \
@@ -51,6 +51,7 @@ execute_after_dh_auto_configure:
 		--with-agent-s2k-calibration=300 \
 		--enable-large-secmem \
 		--with-mailprog=/usr/sbin/sendmail \
+		--enable-maintainer-mode \
 		$(NODOC)
 	# win32 uses hand-written *FLAGS
 	# mkdefsinc is built with *_FOR_BUILD
@@ -60,10 +61,6 @@ execute_after_dh_auto_configure:
 	@echo 'blhc: ignore-line-regexp: .*-o gpgscm .*'
 
 override_dh_auto_configure-arch:
-	dh_auto_configure --builddirectory=build-maintainer -- \
-		--enable-maintainer-mode \
-	   	$(foreach x, $(GPGV_UDEB_UNNEEDED), --disable-$(x)) \
-		$(NODOC)
 	dh_auto_configure --builddirectory=build-gpgv-udeb -- \
 		$(NODOC) \
 		$(foreach x, $(GPGV_UDEB_UNNEEDED), --disable-$(x))
@@ -71,13 +68,11 @@ override_dh_auto_configure-arch:
 override_dh_auto_configure-indep:
 	# nothing to do
 
-# needed for both arch-all and -indep builds
 execute_after_dh_auto_build:
 	dh_auto_build --builddirectory=build
 
 override_dh_auto_build-arch:
 	dh_auto_build --builddirectory=build-gpgv-udeb
-	dh_auto_build --builddirectory=build-maintainer
 	cp -a build-gpgv-udeb build-gpgv-static
 	rm -f build-gpgv-static/g10/gpgv
 	cd build-gpgv-static/g10 && $(MAKE) LDFLAGS="$$LDFLAGS $(GPGV_STATIC_HARDENING) -static" gpgv
@@ -87,22 +82,27 @@ override_dh_auto_build-indep:
 	mkdir -p build-gpgv-win32
 	cd build-gpgv-win32 && $(WIN32_FLAGS) ../configure \
 	   	$(foreach x, $(GPGV_UDEB_UNNEEDED), --disable-$(x)) \
-		$(foreach x, libgpg-error libgcrypt libassuan ksba npth, --with-$x-prefix=/usr/i686-w64-mingw32) \
+		$(foreach x, libgpg-error libgcrypt libassuan ksba, --with-$x-prefix=/usr/i686-w64-mingw32) \
 		$(NODOC) \
 		--enable-gpg2-is-gpg \
 		--with-zlib=/usr/i686-w64-mingw \
 		--prefix=/usr/i686-w64-mingw32 \
 		--host i686-w64-mingw32
 	cd build-gpgv-win32/common && $(WIN32_FLAGS) $(MAKE) status-codes.h audit-events.h
-	cd build-gpgv-win32/common && $(WIN32_FLAGS) $(MAKE) libcommon.a
 	cd build-gpgv-win32/common && $(WIN32_FLAGS) $(MAKE) libgpgrl.a
 	cd build-gpgv-win32/common && $(WIN32_FLAGS) $(MAKE) libsimple-pwquery.a
+	cd build-gpgv-win32/common && $(WIN32_FLAGS) $(MAKE) libcommon.a
 	cd build-gpgv-win32/kbx && $(WIN32_FLAGS) $(MAKE) libkeybox.a
 	cd build-gpgv-win32/regexp && $(WIN32_FLAGS) $(MAKE) _unicode_mapping.c
 	cd build-gpgv-win32/regexp && $(WIN32_FLAGS) $(MAKE) libregexp.a
 	cd build-gpgv-win32/g10 && $(WIN32_FLAGS) $(MAKE) gpgv.exe
 	strip build-gpgv-win32/g10/gpgv.exe
 
+execute_after_dh_installdocs:
+	# These are already shipped in the respective packages
+	rm -vf \
+		debian/gnupg/usr/share/doc/gnupg/examples/systemd-user/*.service \
+		debian/gnupg/usr/share/doc/gnupg/examples/systemd-user/*.socket
 
 override_dh_auto_test:
 	dh_auto_test --builddirectory=build -- verbose=3 TESTFLAGS=$(AUTOTEST_FLAGS)
