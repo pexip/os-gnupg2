@@ -37,7 +37,7 @@
 #include "gpgtar.h"
 
 static gpg_error_t
-check_suspicious_name (const char *name)
+check_suspicious_name (const char *name, tarinfo_t info)
 {
   size_t n;
 
@@ -47,6 +47,7 @@ check_suspicious_name (const char *name)
     {
       log_error ("filename '%s' contains a backslash - "
                  "can't extract on this system\n", name);
+      info->skipped_badname++;
       return gpg_error (GPG_ERR_INV_NAME);
     }
 #endif /*HAVE_DOSISH_SYSTEM*/
@@ -59,11 +60,66 @@ check_suspicious_name (const char *name)
     {
       log_error ("filename '%s' has suspicious parts - not extracting\n",
                  name);
+      info->skipped_suspicious++;
       return gpg_error (GPG_ERR_INV_NAME);
     }
 
   return 0;
 }
+
+
+/* This is our version of mkdir -p.  DIRECTORY is the full filename of
+ * the directory and PREFIXLEN is the length of an intial directory
+ * part which already exists.  If STRIP is set filename is removed.
+ * If VERBOSE is set a diagnostic is printed to show the created
+ * directory.  */
+static gpg_error_t
+try_mkdir_p (const char *directory, size_t prefixlen, int strip, int verbose)
+{
+  gpg_error_t err = 0;
+  char *fname;
+  char *p;
+
+  fname = xtrystrdup (directory);
+  if (!fname)
+    return gpg_error_from_syserror ();
+
+  if (strip) /* Strip last file name. */
+    {
+      p = strrchr (fname, '/');
+      if (p)
+        *p = 0;
+    }
+  else /* Remove a possible trailing slash.  */
+    {
+      if (fname[strlen (fname)-1] == '/')
+        fname[strlen (fname)-1] = 0;
+    }
+
+  if (prefixlen >= strlen (fname))
+    goto leave; /* Nothing to create */
+
+  for (p = fname+prefixlen; (p = strchr (p, '/')); p++)
+    {
+      *p = 0;
+      err = gnupg_mkdir (fname, "-rwx------");
+      if (gpg_err_code (err) == GPG_ERR_EEXIST)
+        err = 0;
+      *p = '/';
+      if (err)
+        goto leave;
+    }
+  err = gnupg_mkdir (fname, "-rwx------");
+  if (gpg_err_code (err) == GPG_ERR_EEXIST)
+    err = 0;
+  if (!err && verbose)
+    log_info ("created   '%s/'\n", fname);
+
+ leave:
+  xfree (fname);
+  return err;
+}
+
 
 
 static gpg_error_t
@@ -83,7 +139,7 @@ extract_regular (estream_t stream, const char *dirname,
     if (sl->flags == 1)
       fname = sl->d;
 
-  err = check_suspicious_name (fname);
+  err = check_suspicious_name (fname, info);
   if (err)
     goto leave;
 
@@ -96,7 +152,6 @@ extract_regular (estream_t stream, const char *dirname,
     }
   fname = fname_buffer;
 
-
   if (opt.dry_run)
     outfp = es_fopen ("/dev/null", "wb");
   else
@@ -104,8 +159,18 @@ extract_regular (estream_t stream, const char *dirname,
   if (!outfp)
     {
       err = gpg_error_from_syserror ();
-      log_error ("error creating '%s': %s\n", fname, gpg_strerror (err));
-      goto leave;
+      /* On ENOENT, try afain after trying to create the directories.  */
+      if (!opt.dry_run && gpg_err_code (GPG_ERR_ENOENT)
+          && !try_mkdir_p (fname, strlen (dirname) + 1, 1, opt.verbose))
+        {
+          outfp = es_fopen (fname, "wb,sysopen");
+          err = outfp? 0 : gpg_error_from_syserror ();
+        }
+      if (err)
+        {
+          log_error ("error creating '%s': %s\n", fname, gpg_strerror (err));
+          goto leave;
+        }
     }
 
   for (n=0; n < hdr->nrecords;)
@@ -131,8 +196,12 @@ extract_regular (estream_t stream, const char *dirname,
   /* Fixme: Set permissions etc.  */
 
  leave:
-  if (!err && opt.verbose)
-    log_info ("extracted '%s'\n", fname);
+  if (!err)
+    {
+      if (opt.verbose)
+        log_info ("extracted '%s'\n", fname);
+      info->nextracted++;
+    }
   es_fclose (outfp);
   if (err && fname && outfp)
     {
@@ -146,7 +215,8 @@ extract_regular (estream_t stream, const char *dirname,
 
 
 static gpg_error_t
-extract_directory (const char *dirname, tar_header_t hdr, strlist_t exthdr)
+extract_directory (const char *dirname, tarinfo_t info,
+                   tar_header_t hdr, strlist_t exthdr)
 {
   gpg_error_t err;
   const char *name;
@@ -158,7 +228,7 @@ extract_directory (const char *dirname, tar_header_t hdr, strlist_t exthdr)
     if (sl->flags == 1)
       name = sl->d;
 
-  err = check_suspicious_name (name);
+  err = check_suspicious_name (name, info);
   if (err)
     goto leave;
 
@@ -173,38 +243,20 @@ extract_directory (const char *dirname, tar_header_t hdr, strlist_t exthdr)
   if (fname[strlen (fname)-1] == '/')
     fname[strlen (fname)-1] = 0;
 
-  if (! opt.dry_run && gnupg_mkdir (fname, "-rwx------"))
+  if (!opt.dry_run && gnupg_mkdir (fname, "-rwx------"))
     {
       err = gpg_error_from_syserror ();
+      /* Ignore existing directories while extracting.  */
       if (gpg_err_code (err) == GPG_ERR_EEXIST)
-        {
-          /* Ignore existing directories while extracting.  */
-          err = 0;
-        }
-
-      if (gpg_err_code (err) == GPG_ERR_ENOENT)
+        err = 0;
+      else if (gpg_err_code (err) == GPG_ERR_ENOENT)
         {
           /* Try to create the directory with parents but keep the
              original error code in case of a failure.  */
-          int rc = 0;
-          char *p;
-          size_t prefixlen;
-
-          /* (PREFIXLEN is the length of the new directory we use to
-           *  extract the tarball.)  */
-          prefixlen = strlen (dirname) + 1;
-
-          for (p = fname+prefixlen; (p = strchr (p, '/')); p++)
-            {
-              *p = 0;
-              rc = gnupg_mkdir (fname, "-rwx------");
-              *p = '/';
-              if (rc)
-                break;
-            }
-          if (!rc && !gnupg_mkdir (fname, "-rwx------"))
+          if (!try_mkdir_p (fname, strlen (dirname) + 1, 0, 0))
             err = 0;
         }
+
       if (err)
         log_error ("error creating directory '%s': %s\n",
                    fname, gpg_strerror (err));
@@ -228,13 +280,19 @@ extract (estream_t stream, const char *dirname, tarinfo_t info,
   if (hdr->typeflag == TF_REGULAR || hdr->typeflag == TF_UNKNOWN)
     err = extract_regular (stream, dirname, info, hdr, exthdr);
   else if (hdr->typeflag == TF_DIRECTORY)
-    err = extract_directory (dirname, hdr, exthdr);
+    err = extract_directory (dirname, info, hdr, exthdr);
   else
     {
       char record[RECORDSIZE];
 
       log_info ("unsupported file type %d for '%s' - skipped\n",
                 (int)hdr->typeflag, hdr->name);
+      if (hdr->typeflag == TF_SYMLINK)
+        info->skipped_symlinks++;
+      else if (hdr->typeflag == TF_HARDLINK)
+        info->skipped_hardlinks++;
+      else
+        info->skipped_other++;
       for (err = 0, n=0; !err && n < hdr->nrecords; n++)
         {
           err = read_record (stream, record);
@@ -326,7 +384,7 @@ gpgtar_extract (const char *filename, int decrypt)
   tarinfo_t tarinfo = &tarinfo_buffer;
   pid_t pid = (pid_t)(-1);
   char *logfilename = NULL;
-
+  unsigned long long notextracted;
 
   memset (&tarinfo_buffer, 0, sizeof tarinfo_buffer);
 
@@ -369,6 +427,7 @@ gpgtar_extract (const char *filename, int decrypt)
     {
       strlist_t arg;
       ccparray_t ccp;
+      int except[2] = { -1, -1 };
       const char **argv;
 
       ccparray_init (&ccp, 0);
@@ -382,6 +441,7 @@ gpgtar_extract (const char *filename, int decrypt)
 
           snprintf (tmpbuf, sizeof tmpbuf, "--status-fd=%d", opt.status_fd);
           ccparray_put (&ccp, tmpbuf);
+          except[0] = opt.status_fd;
         }
       if (opt.with_log)
         {
@@ -408,7 +468,9 @@ gpgtar_extract (const char *filename, int decrypt)
           goto leave;
         }
 
-      err = gnupg_spawn_process (opt.gpg_program, argv, NULL, NULL,
+      err = gnupg_spawn_process (opt.gpg_program, argv,
+                                 except[0] == -1? NULL : except,
+                                 NULL,
                                  ((filename? 0 : GNUPG_SPAWN_KEEP_STDIN)
                                   | GNUPG_SPAWN_KEEP_STDERR),
                                  NULL, &stream, NULL, &pid);
@@ -473,8 +535,37 @@ gpgtar_extract (const char *filename, int decrypt)
         }
     }
 
-
  leave:
+  notextracted  = tarinfo->skipped_badname;
+  notextracted += tarinfo->skipped_suspicious;
+  notextracted += tarinfo->skipped_symlinks;
+  notextracted += tarinfo->skipped_hardlinks;
+  notextracted += tarinfo->skipped_other;
+  if (opt.status_stream)
+    es_fprintf (opt.status_stream, "[GNUPG:] GPGTAR_EXTRACT"
+                " %llu %llu %lu %lu %lu %lu %lu\n",
+                tarinfo->nextracted,
+                notextracted,
+                tarinfo->skipped_badname,
+                tarinfo->skipped_suspicious,
+                tarinfo->skipped_symlinks,
+                tarinfo->skipped_hardlinks,
+                tarinfo->skipped_other);
+  if (notextracted && !opt.quiet)
+    {
+      log_info ("Number of files not extracted: %llu\n", notextracted);
+      if (tarinfo->skipped_badname)
+        log_info ("     invalid name: %lu\n", tarinfo->skipped_badname);
+      if (tarinfo->skipped_suspicious)
+        log_info ("  suspicious name: %lu\n", tarinfo->skipped_suspicious);
+      if (tarinfo->skipped_symlinks)
+        log_info ("          symlink: %lu\n", tarinfo->skipped_symlinks);
+      if (tarinfo->skipped_hardlinks)
+        log_info ("         hardlink: %lu\n", tarinfo->skipped_hardlinks);
+      if (tarinfo->skipped_other)
+        log_info ("     other reason: %lu\n", tarinfo->skipped_other);
+    }
+
   free_strlist (extheader);
   xfree (header);
   xfree (dirname);

@@ -233,7 +233,6 @@ void display_online_help( const char *keyword );
 
 /*-- encode.c --*/
 gpg_error_t setup_symkey (STRING2KEY **symkey_s2k,DEK **symkey_dek);
-void encrypt_seskey (DEK *dek, DEK **seskey, byte *enckey);
 int use_mdc (pk_list_t pk_list,int algo);
 int encrypt_symmetric (const char *filename );
 int encrypt_store (const char *filename );
@@ -311,6 +310,7 @@ int keygen_set_std_prefs (const char *string,int personal);
 PKT_user_id *keygen_get_std_prefs (void);
 int keygen_add_key_expire( PKT_signature *sig, void *opaque );
 int keygen_add_key_flags (PKT_signature *sig, void *opaque);
+int keygen_add_key_flags_and_expire (PKT_signature *sig, void *opaque);
 int keygen_add_std_prefs( PKT_signature *sig, void *opaque );
 int keygen_upd_std_prefs( PKT_signature *sig, void *opaque );
 int keygen_add_keyserver_url(PKT_signature *sig, void *opaque);
@@ -320,6 +320,7 @@ gpg_error_t make_backsig (ctrl_t ctrl,
                           PKT_signature *sig, PKT_public_key *pk,
                           PKT_public_key *sub_pk, PKT_public_key *sub_psk,
                           u32 timestamp, const char *cache_nonce);
+gpg_error_t append_all_default_adsks (ctrl_t ctrl, kbnode_t pub_root);
 gpg_error_t generate_subkeypair (ctrl_t ctrl, kbnode_t keyblock,
                                  const char *algostr,
                                  const char *usagestr,
@@ -466,6 +467,7 @@ int  cmp_signodes (const void *av, const void *bv);
 void print_fingerprint (ctrl_t ctrl, estream_t fp,
                         PKT_public_key *pk, int mode);
 void print_revokers (estream_t fp, PKT_public_key *pk);
+void show_preferences (PKT_user_id *uid, int indent, int mode, int verbose);
 void show_policy_url(PKT_signature *sig,int indent,int mode);
 void show_keyserver_url(PKT_signature *sig,int indent,int mode);
 void show_notation(PKT_signature *sig,int indent,int mode,int which);
@@ -506,7 +508,7 @@ void change_pin (int no, int allow_admin);
 void card_status (ctrl_t ctrl, estream_t fp, const char *serialno);
 void card_edit (ctrl_t ctrl, strlist_t commands);
 gpg_error_t  card_generate_subkey (ctrl_t ctrl, kbnode_t pub_keyblock);
-int  card_store_subkey (KBNODE node, int use);
+int  card_store_subkey (KBNODE node, int use, strlist_t *processed_keys);
 #endif
 
 #define S2K_DECODE_COUNT(_val) ((16ul + ((_val) & 15)) << (((_val) >> 4) + 6))
