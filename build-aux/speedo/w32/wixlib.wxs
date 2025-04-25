@@ -91,8 +91,8 @@ and then manually edited:
       <Component Id="cmp2D1FC2D5A2C9B057FC22A0EBE475D6C2" Directory="dirAA72FFDDFA224FB221D53750596B0142" Guid="AF6741CB-C010-436E-BD56-B622EEED11D9">
         <File Id="fil8403D82C4985B5B7EAF7365C15C2A799" KeyPath="yes" Source="$(var.SourceDir)\bin\gpgv.exe"/>
       </Component>
-      <Component Id="cmpF92C3483916C55841364708FCE4E1773" Directory="dirAA72FFDDFA224FB221D53750596B0142" Guid="A8AEC3EA-1634-43C1-B47B-1A87BC39CF6B">
-        <File Id="filEE96FA35D6EEEBB2244C7F37E619364D" KeyPath="yes" Source="$(var.SourceDir)\bin\libassuan-0.dll"/>
+      <Component Id="cmpF92C3483916C55841364708FCE4E1773" Directory="dirAA72FFDDFA224FB221D53750596B0142" Guid="A8AEC3EA-1634-43C1-B47B-1A87BC39CF6C">
+        <File Id="filEE96FA35D6EEEBB2244C7F37E619364D" KeyPath="yes" Source="$(var.SourceDir)\bin\libassuan-9.dll"/>
       </Component>
       <Component Id="cmp387993E51EFE71AAD3DB75D48EF2C869" Directory="dirAA72FFDDFA224FB221D53750596B0142" Guid="B40F4166-2B27-4F9C-A6C5-9788042EE134">
         <File Id="filEE39C3CE2166E1496C1618124EDBBB7E" KeyPath="yes" Source="$(var.SourceDir)\bin\libgcrypt-20.dll"/>
@@ -156,9 +156,6 @@ and then manually edited:
       </Component>
       <Component Id="cmpB5509E83C14EE3080355A3EAF09D1C8D" Directory="dir6694D0A4AAD84EF827096DD86D1B4FA2" Guid="FEC81836-944E-4613-A498-E620B981EB04">
         <File Id="fil0615847C26E386E0B892124531F2ABBC" KeyPath="yes" Source="$(var.SourceDir)\lib\libnpth.dll.a" Name="libnpth.imp"/>
-      </Component>
-      <Component Id="cmp909B0412FDFCFD5092D93932AF982A72" Directory="dirC2E6BF1CC65903EA3A1AD83349586122" Guid="D30E7138-0D1C-48F4-8F53-E1EC6333F610">
-        <File Id="fil322067E40CE41C36574A7CC520D75876" KeyPath="yes" Source="$(var.SourceDir)\share\doc\gnupg\examples\VS-NfD.prf" Name="VS-NfD.prf"/>
       </Component>
       <Component Id="cmp909B0412FDFCFD5092D93932AF982A73" Directory="dirC2E6BF1CC65903EA3A1AD83349586122" Guid="D30E7138-0D1C-48F4-8F53-E1EC6333F611">
         <File Id="fil322067E40CE41C36574A7CC520D75877" KeyPath="yes" Source="$(var.SourceDir)\share\doc\gnupg\examples\Automatic.prf" Name="Automatic.prf"/>

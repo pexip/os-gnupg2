@@ -1,5 +1,4 @@
 debian/Xsession.d/90gpg-agent etc/X11/Xsession.d
-debian/systemd-environment-generator/90gpg-agent usr/lib/systemd/user-environment-generators
 debian/tmp/usr/bin/gpg-agent
 debian/tmp/usr/lib/gnupg/gpg-check-pattern
 debian/tmp/usr/lib/gnupg/gpg-preset-passphrase

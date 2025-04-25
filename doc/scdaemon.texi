@@ -251,7 +251,7 @@ socket.
 @item --pcsc-shared
 @opindex pcsc-shared
 Use shared mode to access the card via PC/SC.  This is a somewhat
-dangerous option because Scdaemon assumes exclusivbe access to teh
+dangerous option because Scdaemon assumes exclusive access to the
 card and for example caches certain information from the card.  Use
 this option only if you know what you are doing.
 
@@ -369,9 +369,8 @@ future also be useful with @command{gpgsm}.  Version 1 and version 2 of
 the card is supported.
 
 @noindent
-The specifications for these cards are available at@*
-@uref{http://g10code.com/docs/openpgp-card-1.0.pdf} and@*
-@uref{http://g10code.com/docs/openpgp-card-2.0.pdf}.
+The specification for this card is available at@*
+@uref{https://gnupg.org/ftp/specs/} .
 
 @node NKS Card
 @subsection The Telesec NetKey card ``nks''
@@ -774,4 +773,3 @@ length up to N bytes.  If N is not given a default value is used
 @command{gpg2}(1)
 @end ifset
 @include see-also-note.texi
-

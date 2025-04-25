@@ -1,4 +1,4 @@
-.TH "gpgcompose" 1 "June 2017" 
+.TH gpgcompose 1 "June 2017"
 
 .SH NAME
 gpgcompose \- Generate a stream of OpenPGP packets
@@ -7,13 +7,13 @@ gpgcompose \- Generate a stream of OpenPGP packets
 .B gpgcompose
 .RI [[ OPTION
 .RI [ ARGS ]]
-\&... ]
+\&...\& ]
 
-.B gpgcompose --help
+.B gpgcompose \-\-help
 
 .B gpgcompose
 .I OPTION
-.B --help
+.B \-\-help
 
 .SH DESCRIPTION
 .B gpgcompose
@@ -40,14 +40,14 @@ Occasionally,
 will need to look up existing public keys for reference (e.g.,
 .BR \-\-public-key ).
 It will do so in
-.BR ~/.gnupg/keyring.kbx,
+.BR ~/.gnupg/keyring.kbx ,
 or in
 .B $GNUPGHOME/keyring.kbx
 if that variable is set.
 
 .SH SEE ALSO
 
-RFC 4880, gpg(1), gpg-agent(1), gpg-connect-agent(1)
+.BR "RFC 4880" ", " gpg "(1), " gpg-agent "(1), " gpg-connect-agent (1)
 
 .SH AUTHOR
 gpgcompose is copyright (C) 2016, g10 Code GmbH.
