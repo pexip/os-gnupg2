@@ -1,3 +1,18 @@
+gnupg2 (2.4.7-17) unstable; urgency=medium
+
+  * re-enable piuparts in salsa-ci, keyboxd package is no more.
+  * disable missing-breaks salsa ci. (fp: gpg-from-sq)
+  * Add pkg.gnupg2.gpgvonly build profile. (Thanks, Helmut Grohne)
+    Closes: #1104210
+
+ -- Andreas Metzler <ametzler@debian.org>  Mon, 28 Apr 2025 18:13:47 +0200
+
+gnupg2 (2.4.7-16) unstable; urgency=medium
+
+  * Hardcode the list of archs where swtpm is available (Closes: #1103931)
+
+ -- Andreas Metzler <ametzler@debian.org>  Sat, 26 Apr 2025 16:19:09 +0200
+
 gnupg2 (2.4.7-15) unstable; urgency=medium
 
   [ Andreas Metzler ]
