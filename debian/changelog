@@ -1,3 +1,9 @@
+gnupg2 (2.2.46-6+pexip25u1) pexip-trixie; urgency=medium
+
+  * Initial trixie build
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Tue, 29 Apr 2025 22:32:43 +0100
+
 gnupg2 (2.2.46-6) unstable; urgency=high
 
   * Formatting fixes for gpgcompose.1 by Bjarni Ingi Gislason.
