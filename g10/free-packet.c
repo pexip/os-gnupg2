@@ -30,8 +30,10 @@
 #include "options.h"
 
 
-/* This is mpi_copy with a fix for opaque MPIs which store a NULL
-   pointer.  This will also be fixed in Libggcrypt 1.7.0.  */
+/* This is a wrapper for mpi_copy which handles opaque MPIs with a
+ * NULL pointer as opaque data; e.g. gcry_mpi_set_opaque(a, NULL, 0).
+ * It seems that at least gcry_mpi_set_opaque_copy does not yet handle
+ * this correctly.  */
 static gcry_mpi_t
 my_mpi_copy (gcry_mpi_t a)
 {
@@ -77,11 +79,6 @@ free_seckey_enc( PKT_signature *sig )
   xfree(sig->hashed);
   xfree(sig->unhashed);
 
-  if (sig->pka_info)
-    {
-      xfree (sig->pka_info->uri);
-      xfree (sig->pka_info);
-    }
   xfree (sig->signers_uid);
 
   xfree(sig);
@@ -240,8 +237,6 @@ copy_public_key (PKT_public_key *d, PKT_public_key *s)
       d->revkey = xmalloc(sizeof(struct revocation_key)*s->numrevkeys);
       memcpy(d->revkey,s->revkey,sizeof(struct revocation_key)*s->numrevkeys);
     }
-  else
-    d->revkey = NULL;
 
   if (s->serialno)
     d->serialno = xstrdup (s->serialno);
@@ -251,20 +246,6 @@ copy_public_key (PKT_public_key *d, PKT_public_key *s)
   return d;
 }
 
-
-
-static pka_info_t *
-cp_pka_info (const pka_info_t *s)
-{
-  pka_info_t *d = xmalloc (sizeof *s + strlen (s->email));
-
-  d->valid = s->valid;
-  d->checked = s->checked;
-  d->uri = s->uri? xstrdup (s->uri):NULL;
-  memcpy (d->fpr, s->fpr, sizeof s->fpr);
-  strcpy (d->email, s->email);
-  return d;
-}
 
 
 PKT_signature *
@@ -282,7 +263,6 @@ copy_signature( PKT_signature *d, PKT_signature *s )
 	for(i=0; i < n; i++ )
 	    d->data[i] = my_mpi_copy( s->data[i] );
     }
-    d->pka_info = s->pka_info? cp_pka_info (s->pka_info) : NULL;
     d->hashed = cp_subpktarea (s->hashed);
     d->unhashed = cp_subpktarea (s->unhashed);
     if (s->signers_uid)

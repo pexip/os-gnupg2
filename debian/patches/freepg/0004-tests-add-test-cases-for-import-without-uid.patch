@@ -1,4 +1,4 @@
-From d9cc29186b22b300901a4a054094653552185bb1 Mon Sep 17 00:00:00 2001
+From 659ca2edbc01f11d997c5453987b0202810a5985 Mon Sep 17 00:00:00 2001
 From: Vincent Breitmoser <look@my.amazin.horse>
 Date: Thu, 13 Jun 2019 21:27:41 +0200
 Subject: tests: add test cases for import without uid
@@ -36,10 +36,10 @@ Signed-Off-By: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
  create mode 100644 tests/openpgp/import-incomplete/primary+uid.asc
 
 diff --git a/tests/openpgp/Makefile.am b/tests/openpgp/Makefile.am
-index 2cef2fc34..70a63e672 100644
+index 7998d2ab9..ea8207e28 100644
 --- a/tests/openpgp/Makefile.am
 +++ b/tests/openpgp/Makefile.am
-@@ -78,6 +78,7 @@ XTESTS = \
+@@ -81,6 +81,7 @@ XTESTS = \
  	gpgv-forged-keyring.scm \
  	armor.scm \
  	import.scm \

@@ -86,6 +86,7 @@ struct part
   struct part *down;      /* A contained part. */
   HDR_LINE hdr_lines;       /* Header lines os that part. */
   HDR_LINE *hdr_lines_tail; /* Helper for adding lines. */
+  const char *last_hdr_line;/* NULL or a ptr to the last inserted hdr.  */
   char *boundary;           /* Only used in the first part. */
 };
 typedef struct part *part_t;
@@ -96,7 +97,7 @@ struct rfc822parse_context
   void *callback_value;
   int callback_error;
   int in_body;
-  int in_preamble;      /* Wether we are before the first boundary. */
+  int in_preamble;      /* Whether we are before the first boundary. */
   part_t parts;         /* The tree of parts. */
   part_t current_part;  /* Whom we are processing (points into parts). */
   const char *boundary; /* Current boundary. */
@@ -176,7 +177,7 @@ my_stpcpy (char *a,const char *b)
 #endif
 
 
-/* If a callback has been registerd, call it for the event of type
+/* If a callback has been registered, call it for the event of type
    EVENT. */
 static int
 do_callback (rfc822parse_t msg, rfc822parse_event_t event)
@@ -237,6 +238,15 @@ release_handle_data (rfc822parse_t msg)
 }
 
 
+/* Wrapper around free becuase in this moulde we use a plain free.  */
+void
+rfc822_free (void *a)
+{
+  if (a)
+    free (a);
+}
+
+
 /* Check that the header name is valid.  We allow all lower and
  * uppercase letters and, except for the first character, digits and
  * the dash.  The check stops at the first colon or at string end.
@@ -291,6 +301,22 @@ rfc822_capitalize_header_name (char *name)
     }
 }
 
+
+/* This is an strcmp which considers a colon also as end-of-string.
+ * Use this function to compare capitalized header names.  */
+int
+rfc822_cmp_header_name (const char *a, const char *b)
+{
+  for (; *a && *a != ':' && *b && *b != ':'; a++, b++)
+    {
+      if (*a != *b )
+        break;
+    }
+  if (*a == *b || (!*a && *b == ':') || (!*b && *a == ':'))
+    return 0;
+  else
+    return (*(signed char *)a - *(signed char *)b);
+}
 
 
 /* Create a new parsing context for an entire rfc822 message and
@@ -420,7 +446,12 @@ transition_to_body (rfc822parse_t msg)
               s = rfc822parse_query_parameter (ctx, "boundary", 0);
               if (s)
                 {
-                  assert (!msg->current_part->boundary);
+                  if (msg->current_part->boundary)
+                    {
+                      errno = ENOENT;
+                      return -1;
+                    }
+
                   msg->current_part->boundary = malloc (strlen (s) + 1);
                   if (msg->current_part->boundary)
                     {
@@ -437,7 +468,11 @@ transition_to_body (rfc822parse_t msg)
                           return -1;
                         }
                       rc = do_callback (msg, RFC822PARSE_LEVEL_DOWN);
-                      assert (!msg->current_part->down);
+                      if (msg->current_part->down)
+                        {
+                          errno = ENOENT;
+                          return -1;
+                        }
                       msg->current_part->down = part;
                       msg->current_part = part;
                       msg->in_preamble = 1;
@@ -458,8 +493,12 @@ transition_to_header (rfc822parse_t msg)
 {
   part_t part;
 
-  assert (msg->current_part);
-  assert (!msg->current_part->right);
+  if (!(msg->current_part
+        && !msg->current_part->right))
+    {
+      errno = ENOENT;
+      return -1;
+    }
 
   part = new_part ();
   if (!part)
@@ -475,8 +514,14 @@ static int
 insert_header (rfc822parse_t msg, const unsigned char *line, size_t length)
 {
   HDR_LINE hdr;
+  int new_hdr = 0;
 
-  assert (msg->current_part);
+  if (!msg->current_part)
+    {
+      errno = ENOENT;
+      return -1;
+    }
+
   if (!length)
     {
       msg->in_body = 1;
@@ -497,11 +542,19 @@ insert_header (rfc822parse_t msg, const unsigned char *line, size_t length)
 
   /* Transform a field name into canonical format. */
   if (!hdr->cont && strchr (line, ':'))
-    rfc822_capitalize_header_name (hdr->line);
+    {
+      rfc822_capitalize_header_name (hdr->line);
+      msg->current_part->last_hdr_line = hdr->line;
+      new_hdr = 1;
+    }
+  else
+    msg->current_part->last_hdr_line = NULL;
 
   *msg->current_part->hdr_lines_tail = hdr;
   msg->current_part->hdr_lines_tail = &hdr->next;
 
+  if (new_hdr)
+    do_callback (msg, RFC822PARSE_HEADER_SEEN);
   /* Lets help the caller to prevent mail loops and issue an event for
    * every Received header. */
   if (length >= 9 && !memcmp (line, "Received:", 9))
@@ -569,6 +622,18 @@ rfc822parse_finish (rfc822parse_t msg)
   return do_callback (msg, RFC822PARSE_FINISH);
 }
 
+
+/* If the last inserted line was a header and not a continuation of a
+ * header line, return a pointer to that line.  This function may be
+ * used on the RFC822PARSE_HEADER_SEEN event to get the name of the
+ * current header.  Returns NULL if no header is available.  */
+const char *
+rfc822parse_last_header_line (rfc822parse_t msg)
+{
+  if (!msg || !msg->current_part)
+    return NULL;
+  return  msg->current_part->last_hdr_line;
+}
 
 
 /****************
@@ -643,7 +708,7 @@ rfc822parse_get_field (rfc822parse_t msg, const char *name, int which,
 
 /****************
  * Enumerate all header.  Caller has to provide the address of a pointer
- * which has to be initialzed to NULL, the caller should then never change this
+ * which has to be initialized to NULL, the caller should then never change this
  * pointer until he has closed the enumeration by passing again the address
  * of the pointer but with msg set to NULL.
  * The function returns pointers to all the header lines or NULL when
@@ -679,9 +744,9 @@ rfc822parse_enum_header_lines (rfc822parse_t msg, void **context)
  *
  *  which  -1 : Retrieve the last field
  *	   >0 : Retrieve the n-th field
-
+ *
  * RPREV may be used to return the predecessor of the returned field;
- * which may be NULL for the very first one. It has to be initialzed
+ * which may be NULL for the very first one. It has to be initialized
  * to either NULL in which case the search start at the first header line,
  * or it may point to a headerline, where the search should start
  */
@@ -1078,7 +1143,7 @@ is_parameter (TOKEN t)
    parse context is valid; NULL is returned in case that attr is not
    defined in the header, a missing value is reppresented by an empty string.
 
-   With LOWER_VALUE set to true, a matching field valuebe be
+   With LOWER_VALUE set to true, a matching field value will be
    lowercased.
 
    Note, that ATTR should be lowercase.

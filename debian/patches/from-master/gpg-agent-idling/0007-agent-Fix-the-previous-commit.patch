@@ -1,0 +1,28 @@
+From: NIIBE Yutaka <gniibe@fsij.org>
+Date: Fri, 1 Sep 2023 11:00:44 +0900
+Subject: [PATCH 7/9] agent: Fix the previous commit.
+
+* agent/cache.c (remove_from_timer_list_new): Fix cut&paste error.
+TV_SEC field should not be touched.
+
+--
+
+Signed-off-by: NIIBE Yutaka <gniibe@fsij.org>
+---
+ agent/cache.c | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/agent/cache.c b/agent/cache.c
+index 9ed3cb1..16a21bd 100644
+--- a/agent/cache.c
++++ b/agent/cache.c
+@@ -296,9 +296,6 @@ remove_from_timer_list_new (ITEM entry)
+       eprev = e;
+     else
+       {
+-        if (e->t.next)
+-          e->t.next->t.tv_sec += e->t.tv_sec;
+-
+         if (eprev)
+           eprev->t.next = e->t.next;
+         else

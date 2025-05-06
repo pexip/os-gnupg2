@@ -1075,16 +1075,6 @@ gpgtar_create (char **inpattern, const char *files_from, int null_names,
   memset (scanctrl, 0, sizeof *scanctrl);
   scanctrl->flist_tail = &scanctrl->flist;
 
-  /* { unsigned int cpno, cpno2, cpno3; */
-
-  /*   cpno = GetConsoleOutputCP (); */
-  /*   cpno2 = GetACP (); */
-  /*   cpno3 = GetOEMCP (); */
-  /*   log_debug ("Codepages: Console: %u  ANSI: %u  OEM: %u\n", */
-  /*              cpno, cpno2, cpno3); */
-  /* } */
-
-
   if (!inpattern)
     {
       if (!files_from || !strcmp (files_from, "-"))
@@ -1298,13 +1288,13 @@ gpgtar_create (char **inpattern, const char *files_from, int null_names,
 
       err = gnupg_spawn_process (opt.gpg_program, argv,
                                  except[0] == -1? NULL : except,
-                                 NULL,
                                  (GNUPG_SPAWN_KEEP_STDOUT
                                   | GNUPG_SPAWN_KEEP_STDERR),
                                  &outstream, NULL, NULL, &pid);
       xfree (argv);
       if (err)
         goto leave;
+      /* Note that OUTSTREAM is our tar output which is fed to gpg.  */
       es_set_binary (outstream);
     }
   else if (opt.outfile) /* No crypto  */

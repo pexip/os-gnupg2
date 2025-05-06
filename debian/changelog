@@ -1,3 +1,374 @@
+gnupg2 (2.4.7-15) unstable; urgency=medium
+
+  [ Andreas Metzler ]
+  * Fix typo in gpg's README.Debian
+  * Skip debian-archive-trixie-stable.gpg in ci migration test
+  * Add NEWS entry for smartcard related changes in 2.4. (Closes: #1102717)
+
+  [ Daniel Kahn Gillmor ]
+  * d/tests/migration: use *.pgp instead of *.gpg
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Tue, 15 Apr 2025 23:06:01 -0400
+
+gnupg2 (2.4.7-14) unstable; urgency=medium
+
+  * gpgv: Avoid dependencies on npth and libassuan
+    (Closes: #1102621)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Fri, 11 Apr 2025 18:50:53 -0400
+
+gnupg2 (2.4.7-13) unstable; urgency=medium
+
+  * Release to unstable
+  * d/tests/verify-openpgp: allow stderr
+  * override warning about FreePG README
+  * d/changelog: merging in old entries
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Thu, 10 Apr 2025 15:12:43 -0400
+
+gnupg2 (2.4.7-12) experimental; urgency=medium
+
+  * d/tests/verify-openpgp: add test to ensure default output of
+    OpenPGP-compatible data
+  * Standards-Version: bump to 4.7.2 (no changes needed)
+  * Forward no-keyboxd.patch upstream
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Tue, 08 Apr 2025 13:20:39 -0400
+
+gnupg2 (2.4.7-11) experimental; urgency=medium
+
+  * Drop duplicate systemd-user files in gnupg/examples/
+  * Add CVE number to 2.4.7-5 changelog entry
+  * Also remove duplicate dirmngr and keyboxd systemd files
+  * Formatting fixes for migrate-pubring-from-classic-gpg.1
+    (Thanks to Bjarni Ingi Gislason) Closes: #1100793
+  * Revert FreePG patch for CSF newline cleanup. Closes: #1101011
+
+ -- Andreas Metzler <ametzler@debian.org>  Mon, 31 Mar 2025 18:04:35 +0200
+
+gnupg2 (2.4.7-10) experimental; urgency=medium
+
+  * Do not set use-keyboxd when initializing ~/.gnupg/ (Patch copied from
+    Ubuntu.)
+  * Patch from -7 (Verify text-mode signatures ...) included in FreePG,
+    rename.
+
+ -- Andreas Metzler <ametzler@debian.org>  Mon, 17 Mar 2025 18:22:04 +0100
+
+gnupg2 (2.4.7-9) experimental; urgency=medium
+
+  * avoid a double-free (pulled from STABLE-BRANCH-2-4 upstream)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Thu, 13 Mar 2025 10:12:31 -0400
+
+gnupg2 (2.4.7-8) experimental; urgency=medium
+
+  * Avoid regression on sig verification for expired or revoked keys
+    (Closes: #1099141)
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Fri, 07 Mar 2025 13:54:17 -0500
+
+gnupg2 (2.4.7-7) experimental; urgency=medium
+
+  * Merge FreePG changes
+  * Support large RSA keygen in non-batch mode (following FreePG)
+  * Verify text-mode signatures over binary literal data packets
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Wed, 05 Mar 2025 16:25:05 -0500
+
+gnupg2 (2.4.7-6) experimental; urgency=medium
+
+  * refresh patches from FreePG (adopted OpenPGP compliance)
+  * refresh non-FreePG patches
+  * lintian-override for filename of distsigkey.gpg
+  * override Lintian warning about unused FreePG gitlab CI
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Wed, 26 Feb 2025 17:21:31 -0500
+
+gnupg2 (2.4.7-5) experimental; urgency=medium
+
+  [ Andreas Metzler ]
+  * Refresh patches from FreePG
+  * Two more patches accepted by FreePG, adapt patch series.
+
+  [ Daniel Kahn Gillmor ]
+  * Align CSF generation and verification with standard
+  * Avoid DoS on signature verification. CVE-2025-30258
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Fri, 21 Feb 2025 17:24:15 -0500
+
+gnupg2 (2.4.7-4) experimental; urgency=medium
+
+  [ Daniel Kahn Gillmor ]
+  * Note relationship between tpm2daemon and gpg-agent
+  * patch 21: use git format-patch style attribution
+  * keyboxd.socket: drop FileDescriptorName, not needed
+  * override lintian tag spare-manual-page on keyboxd.1
+  * drop GSM_SKIP_SSH_AGENT_WORKAROND hack
+
+  [ Andreas Metzler ]
+  * block-ptrace-on-secret-daemons accepted into FreePG, rename.
+  * Tag patch as forwarded
+
+  [ Daniel Kahn Gillmor ]
+  * move keyboxd into the gpg package (Closes: #1095451)
+  * Emit only OpenPGP artifacts by default
+  * Modernize reasoning for KOO as default keyserver
+  * consolidate ssh-agent emulation socket changes in snyc with FreePG proposal
+  * Disallow compressed signatures and certificates: point to FreePG proposal
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Sat, 08 Feb 2025 01:26:40 -0500
+
+gnupg2 (2.4.7-3) experimental; urgency=medium
+
+  [ Jonathan McDowell ]
+  * Enable tpm2daemon for TPM backed keys (Closes: #1058571)
+
+  [ Daniel Kahn Gillmor ]
+  * Stop shipping CA certificate for SKS pool
+  * Disallow compressed signatures and certificates (thanks, Demi Marie
+    Obenour!)
+  * swtpm is only needed during build for tests
+  * tpm2daemon: tweak grammar in package description
+  * run tests serially due to TPM port collisions
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Tue, 28 Jan 2025 18:17:36 -0500
+
+gnupg2 (2.4.7-2) experimental; urgency=medium
+
+  [ Richard Hansen ]
+  * debian/control: Allow backported libgpg-error-mingw-w64-dev
+  * debian/Xsession.d/90gpg-agent: Add comment explaining GPG_AGENT_INFO
+  * gpg-agent.socket: Set GPG_AGENT_INFO in systemd for gnupg1
+
+  [ Daniel Kahn Gillmor ]
+  * use FreePG variants of relevant patches
+  * move the FreePG patches to the beginning
+  * refresh FreePG
+
+  [ Andreas Metzler ]
+  * Enable freepg patch Ship-sample-systemd-unit-files.patch
+  * Import keyboxd systemd support files into a patch
+  * Import improvements to systemd files into patches
+  * Use/install systemd files from (patched) source.
+
+ -- Andreas Metzler <ametzler@debian.org>  Sun, 26 Jan 2025 13:25:38 +0100
+
+gnupg2 (2.4.7-1) experimental; urgency=medium
+
+  * New upstream version.
+    + Drop cherry-picked patch.
+    + Fixes change of binary representation of Ed25519 OpenPGP signature
+      packets on export/import. Closes: #1087821
+
+ -- Andreas Metzler <ametzler@debian.org>  Sat, 30 Nov 2024 11:49:02 +0100
+
+gnupg2 (2.4.6-1) experimental; urgency=medium
+
+  * New upstream version.
+  * Drop superfluous patches
+    001-gpg-Minor-fix-when-building-with-disable-exec.patch and
+    restore-nl.po.patch .
+  * Ship new binary in gpg-mail-tube in gnupg-utils.
+  * Run wrap-and-sort -ast
+  * Rename debian/keyboxd.8 to .1 to match section in .TH command
+  * Add patch to avoid installing gnupg.7.html into mandir.
+  * Do not err on importing rev-cert for expired key.
+    Cherry-picked 48aa9e82657902ceb7ef081c6c55adbea5dd0217 from upstream GIT
+    master. (Closes: #1086140)
+  * Add myself to uploaders.
+  * Update copyright info for 2.4.6
+
+ -- Andreas Metzler <ametzler@debian.org>  Mon, 04 Nov 2024 07:16:37 +0100
+
+gnupg2 (2.4.5-3) experimental; urgency=medium
+
+  [ Daniel Kahn Gillmor ]
+  * autopkgtest: Add a test for #1071552
+
+  [ Richard Hansen ]
+  * d/gpg-agent.gpg-agent-ssh.user.socket: Only set the SSH_AUTH_SOCK
+    environment variable if gpg-agent's enable-ssh-support option is enabled
+    (in ~/.gnupg/gpg-agent.conf).  This prevents gpg-agent from overriding
+    ssh-agent (from the openssh-client package) unless the user explicitly
+    requests it. (Closes: #1078787)
+
+  [ Andreas Metzler ]
+  * Pull upstream fix to fix FTBFS with gcc 14. Closes: #1078870
+  * Bump libgpg-error-mingw-w64-dev b-d to get fixed 1.50 version.
+    Closes: #1081807
+
+ -- Andreas Metzler <ametzler@debian.org>  Mon, 16 Sep 2024 18:17:09 +0200
+
+gnupg2 (2.4.5-2) experimental; urgency=medium
+
+  [ Andreas Metzler ]
+  * Team upload.
+  * Demote gnupg metapackage dependency on gpg-wks-server to Suggests since it
+    pulls in an MTA. Closes: #1070879
+  * Build with --enable-maintainer-mode and re-add b-d on librsvg2-bin.
+  * Merge unstable changelog.
+  * Drop b-d on transfig, it is provided by fig2dev.
+  * Add patches to avoid setting AEAD: OCB key-preference on generated keys
+    and to avoid using OCB-mode even if AEAD: OCB key preference is set
+    on recipient key.
+  * Version imagemagick b-d to prevent installation of
+    graphicsmagick-imagemagick-compat instead.
+  * Fix blhc test with 'blhc: ignore-line-regexp'.
+  * Disable piuparts CI test, it is thrown by having to test upgrade/downgrade
+    (because some parts of gpg are installed by default) with additional
+    compilation that the package set has grown by keyboxd.
+
+  [ Daniel Kahn Gillmor ]
+  * Standards-Version: bump to 4.7.0 (no changes needed)
+  * d/copyright: Update dates, add Andreas Metzler for debian/*
+  * d/changelog: correct old misspelling of "ghostscript"
+  * Generate documentation artifacts from source, respecting nodoc
+  * Stop shipping upstream ChangeLog (/usr/share/doc/*/changelog.gz)
+  * Use debian standard UnicodeData.txt
+  * Rebuild generated header files in common/
+  * Strip Changelog-2011 files when building too
+  * Restore nl.po
+  * Enable Salsa-Ci (MR !16 by Otto Kekäläinen)
+  * Port scripts from bash to /bin/sh (MR !10 by
+    наб <nabijaczleweli@nabijaczleweli.xyz>).
+  * Move the gnupg package into the metapackages section.
+  * Move gpgv, gnupg-utils, and gpg-wks-client from Depends into Recommends
+    of gnupg.
+  * Stop pointing VCS-GIT at non-existent debian/main branch. (MR !12 by наб
+    <nabijaczleweli@nabijaczleweli.xyz>)
+
+ -- Andreas Metzler <ametzler@debian.org>  Mon, 20 May 2024 11:00:57 +0200
+
+gnupg2 (2.4.5-1) experimental; urgency=low
+
+  * Team upload.
+  * New upstream version.
+    + Drop spelling-fixes.diff, included upstream.
+  * [lintian] B-d on pkgconf instead of pkg-config.
+
+ -- Andreas Metzler <ametzler@debian.org>  Sat, 16 Mar 2024 11:16:01 +0100
+
+gnupg2 (2.4.4-4) experimental; urgency=low
+
+  * Team upload.
+  * Turn debian/gnupg-l10n.install into an executable that parses
+    $DEB_BUILD_PROFILES. This seems to be the only working solution to avoid
+    bad interaction of dh_install/dh_missing with nodoc.
+
+ -- Andreas Metzler <ametzler@debian.org>  Sat, 09 Mar 2024 14:40:53 +0100
+
+gnupg2 (2.4.4-3) experimental; urgency=low
+
+  * Team upload.
+  * gpgcompose cleanup, drop orphaned manpage and mention in package
+    description.
+  * Fix autopkgtests, mr!14. (Thanks, Julian Andres Klode)
+  * Add support for nodoc build-profile to ease bootstrapping.
+    Closes: #980768
+
+ -- Andreas Metzler <ametzler@debian.org>  Sat, 09 Mar 2024 09:13:09 +0100
+
+gnupg2 (2.4.4-2) experimental; urgency=low
+
+  * Fix binary-all FTBFS by running a regular build for arch-all builds.
+    Otherwise the test suite was run against /usr/bin/gpg for
+    binary-all builds and failed if it was missing.
+  * Drop now unused (gpgcompose was removed upstream) build with
+    --enable-maintainer-mode.
+  * Speed up indep build by only running needed dh_auto_configure instances.
+
+ -- Andreas Metzler <ametzler@debian.org>  Sun, 28 Jan 2024 09:02:36 +0100
+
+gnupg2 (2.4.4-1) experimental; urgency=low
+
+  * Team upload.
+  * Drop transitional gpgv2 package (requested in #873186) and update CI
+    test dependencies. Also remove Breaks/Replaces against ancient
+    (pre-buster) versions of gpgv2.
+  * Drop Breaks/Replaces against ancient versions of gnupg/gnupg2.
+  * Delete keyboxd's Breaks/Replaces against gnupg2 - They are not needed.
+  * Update CI test dependencies (gnupg2 --> gnupg).
+  * New upstream version.
+    + Drop from-master/keep-the-status-output.patch, unfuzz
+      Use-hkps-keys.openpgp.org-as-the-default-keyserver.patch.
+    + Update gnutls b-d version requirement.
+    + Update debian/copyright.
+    + spelling-fixes.diff: Fix errors found by lintian.
+  * Fixup recommends of architecture-any packages on architecture-all package
+    "gnupg" to use (= ${source:Version}) instead of binary:Version. (Thanks,
+    James McCoy) Closes: #1060366
+  * Set --with-mailprog=/usr/sbin/sendmail and add a dependency on
+    default-mta | mail-transport-agent to gpg-wks-server. Closes: #1025782
+  * Run wrap-and-sort -ast.
+
+ -- Andreas Metzler <ametzler@debian.org>  Sat, 27 Jan 2024 13:44:25 +0100
+
+gnupg2 (2.4.3-2) experimental; urgency=low
+
+  * Duplicate lintian override for embedded-library in gpgv-static in old
+    lintian syntax to avoid auto-reject.
+
+ -- Andreas Metzler <ametzler@debian.org>  Sun, 24 Sep 2023 19:09:42 +0200
+
+gnupg2 (2.4.3-1) experimental; urgency=low
+
+  [ Andreas Metzler ]
+  * Team upload.
+  * New upstream version.
+    + Update patch-queue.
+    + Ship /usr/lib/gnupg/gpg-auth in scdaemon package.
+    + Tighten b-d as required.
+    + gpg-zip script dropped, bugreport therefore irrelevant. Closes: #913060
+    + Also drop unused debian/gpg-zip.1.
+    + systemd user unit examples dropped upstream (2.4.1).
+  * Merge changes from stable uploads after 2.2.27-2.
+  * Drop unused b-d on libcurl4-gnutls-dev. (See #980768, the other to be
+    removed b-ds could be necessary if at some point the respective doc
+    sources were patched in the Debian package.)
+  * Drop autopkgtests explicit dependency on essential package diffutils.
+    Closes: #953570
+  * Support the noudeb build profile. (Closes: #1024921) (Thanks, Helmut
+    Grohne)
+  * Drop dirmngr dependency on lsb-base. (Empty transitional package
+    depending on essential package)
+  * Drop unused lintian overrides for gpg-wks-client.1.
+  * Run wrap-and-sort -ast.
+
+  [ Bastien Roucariès ]
+  * Improve systemd integration for gpg-agent SSH emulation.
+
+  [ NIIBE Yutaka ]
+  * Fix debian/gpg-agent.install (not including keyboxd).
+  * Update debian/patches/series for gpg-agent-idling.
+  * Add gpg-agent-idling patch set from upstream (delete old implimatation).
+  * Update debian/patches/series for three patches of the following.
+  * Recover the behavior of BEGIN_ENCRYPTION status output.
+    - from-master/keep-the-status-output.patch: New.
+  * debian/control (keyboxd): New package.
+  * Add keybox systemd support.
+    - Add debian/keyboxd.user.service.
+    - Add debian/keyboxd.user.socket.
+    - debian-packaging/keyboxd-systemd-support.patch: New.
+    - debian/keyboxd.8: New.
+    - debian/keyboxd.README.Debian: New.
+    - debian/keyboxd.install: New.
+    - debian/keyboxd.manpages: New.
+  * Recover systemd-user support.
+    - Add debian/*.user.service.
+    - Add debian/*.user.socket.
+    - debian/rules (override_dh_installsystemduser): New.
+    - debian-packaging/keep-systemd-support.patch: New.
+
+ -- Andreas Metzler <ametzler@debian.org>  Sun, 24 Sep 2023 14:44:27 +0200
+
+gnupg2 (2.3.1-1) experimental; urgency=medium
+
+  * Upload to experimental
+  * New upstream version 2.3.1
+
+ -- Christoph Biedl <debian.axhn@manchmal.in-ulm.de>  Tue, 04 May 2021 21:44:48 +0200
+
 gnupg2 (2.2.46-6+pexip25u1) pexip-trixie; urgency=medium
 
   * Initial trixie build

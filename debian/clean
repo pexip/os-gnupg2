@@ -3,7 +3,6 @@ po/stamp-po
 build-gpgv-static/
 build-gpgv-udeb/
 build-gpgv-win32/
-build-maintainer/
 doc/gnupg.info
 doc/gnupg.info-1
 doc/gnupg.info-2
@@ -18,5 +17,3 @@ common/status-codes.h
 ChangeLog-2011
 */ChangeLog-2011
 tests/*/ChangeLog-2011
-m4/libassuan.m4
-m4/libgcrypt.m4

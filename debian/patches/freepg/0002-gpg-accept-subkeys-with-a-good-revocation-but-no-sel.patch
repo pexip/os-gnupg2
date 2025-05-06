@@ -1,4 +1,4 @@
-From 1e8c6b497d813f2a358514c4c0f091e9af84728f Mon Sep 17 00:00:00 2001
+From ddf601b0b8dbc4119841f0a3d1a650966468eee2 Mon Sep 17 00:00:00 2001
 From: Vincent Breitmoser <look@my.amazin.horse>
 Date: Thu, 13 Jun 2019 21:27:43 +0200
 Subject: gpg: accept subkeys with a good revocation but no self-sig during
@@ -20,10 +20,10 @@ Signed-off-by: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
  1 file changed, 1 insertion(+)
 
 diff --git a/g10/import.c b/g10/import.c
-index 657b2deb6..1817fdd58 100644
+index dc0dc0d03..2b470ee21 100644
 --- a/g10/import.c
 +++ b/g10/import.c
-@@ -3727,6 +3727,7 @@ chk_self_sigs (ctrl_t ctrl, kbnode_t keyblock, u32 *keyid, int *non_self)
+@@ -3888,6 +3888,7 @@ chk_self_sigs (ctrl_t ctrl, kbnode_t keyblock, u32 *keyid, int *non_self)
                    /* It's valid, so is it newer? */
                    if (sig->timestamp >= rsdate)
                      {

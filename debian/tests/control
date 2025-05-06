@@ -1,7 +1,6 @@
 Tests:
  gpgv-win32,
 Depends:
- diffutils,
  gnupg,
  gpgv,
  gpgv-win32,
@@ -21,8 +20,7 @@ Restrictions:
 Tests:
  migration,
 Depends:
- debian-archive-keyring,
- diffutils,
+ debian-archive-keyring (>= 2025.1),
  gnupg-utils,
  gnupg1,
  gpg,
@@ -36,3 +34,10 @@ Depends:
  emacs-nox,
  findutils,
  gnupg,
+
+tests:
+ verify-openpgp,
+Depends:
+ gnupg,
+Restrictions:
+ allow-stderr,

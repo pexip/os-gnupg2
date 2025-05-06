@@ -32,7 +32,6 @@
 
 #include "membuf.h"
 
-
 enum tlv_tag_class {
   CLASS_UNIVERSAL = 0,
   CLASS_APPLICATION = 1,
@@ -107,10 +106,10 @@ const unsigned char *find_tlv_unchecked (const unsigned char *buffer,
 
 /* ASN.1 BER parser: Parse BUFFER of length SIZE and return the tag
    and the length part from the TLV triplet.  Update BUFFER and SIZE
-   on success. */
+   on success.  See also tlv_parse_tag.  */
 gpg_error_t parse_ber_header (unsigned char const **buffer, size_t *size,
-                               int *r_class, int *r_tag,
-                               int *r_constructed,
+                              int *r_class, int *r_tag,
+                              int *r_constructed,
                               int *r_ndef, size_t *r_length, size_t *r_nhdr);
 
 
