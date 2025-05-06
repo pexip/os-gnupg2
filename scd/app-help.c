@@ -28,9 +28,9 @@
 #include "../common/tlv.h"
 
 
-/* Count the number of bits, assuming the A represents an unsigned big
-   integer of length LEN bytes.  If A is NULL a length of 0 is
-   returned. */
+/* Count the number of bits, assuming that A represents an unsigned
+ * big integer of length LEN bytes.  If A is NULL a length of 0 is
+ * returned. */
 unsigned int
 app_help_count_bits (const unsigned char *a, size_t len)
 {
@@ -77,6 +77,7 @@ app_help_get_keygrip_string_pk (const void *pk, size_t pklen, char *hexkeygrip,
   err = gcry_sexp_sscan (&s_pkey, NULL, pk, pklen);
   if (err)
     return err; /* Can't parse that S-expression. */
+
   if (hexkeygrip && !gcry_pk_get_keygrip (s_pkey, array))
     {
       gcry_sexp_release (s_pkey);
@@ -139,7 +140,6 @@ app_help_get_keygrip_string (ksba_cert_t cert, char *hexkeygrip,
 }
 
 
-/* Get the public key from the binary encoded (CERT,CERTLEN).  */
 gpg_error_t
 app_help_pubkey_from_cert (const void *cert, size_t certlen,
                            unsigned char **r_pk, size_t *r_pklen)
@@ -191,7 +191,6 @@ app_help_pubkey_from_cert (const void *cert, size_t certlen,
   ksba_cert_release (kc);
   return err;
 }
-
 
 /* Given the SLOT and the File ID FID, return the length of the
    certificate contained in that file. Returns 0 if the file does not
@@ -251,6 +250,7 @@ app_help_read_length_of_cert (int slot, int fid, size_t *r_certoff)
          && (tag == TAG_SEQUENCE || tag == TAG_SET)))
     {
       log_info ("data at FID 0x%04X does not look like a certificate\n", fid);
+      xfree (buffer);
       return 0;
     }
 
@@ -262,6 +262,7 @@ app_help_read_length_of_cert (int slot, int fid, size_t *r_certoff)
 
       err = parse_ber_header (&p, &n, &class, &tag, &constructed,
                               &ndef, &objlen, &hdrlen);
+      xfree (buffer);
       if (err)
         return 0;
 
@@ -280,6 +281,8 @@ app_help_read_length_of_cert (int slot, int fid, size_t *r_certoff)
       else
         *r_certoff = 0;
     }
+  else
+    xfree (buffer);
 
   return resultlen;
 }

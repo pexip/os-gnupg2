@@ -1,6 +1,6 @@
 /* gpgconf.c - Configuration utility for GnuPG
  * Copyright (C) 2003, 2007, 2009, 2011 Free Software Foundation, Inc.
- * Copyright (C) 2016, 2020 g10 Code GmbH.
+ * Copyright (C) 2016 g10 Code GmbH.
  *
  * This file is part of GnuPG.
  *
@@ -20,6 +20,7 @@
  */
 
 #include <config.h>
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,7 +34,11 @@
 #include "../common/init.h"
 #include "../common/status.h"
 #include "../common/exechelp.h"
+#include "../common/dotlock.h"
 
+#ifdef HAVE_W32_SYSTEM
+#include <windows.h>
+#endif
 
 /* Constants to identify the commands and options. */
 enum cmd_and_opt_values
@@ -57,6 +62,7 @@ enum cmd_and_opt_values
     oBuilddir,
     oStatusFD,
     oShowSocket,
+    oChUid,
 
     aListComponents,
     aCheckPrograms,
@@ -70,12 +76,15 @@ enum cmd_and_opt_values
     aLaunch,
     aCreateSocketDir,
     aRemoveSocketDir,
-    aApplyProfile
+    aApplyProfile,
+    aShowCodepages,
+    aDotlockLock,
+    aDotlockUnlock
   };
 
 
 /* The list of commands and options. */
-static ARGPARSE_OPTS opts[] =
+static gpgrt_opt_t opts[] =
   {
     ARGPARSE_group (300, N_("@Commands:\n ")),
 
@@ -104,6 +113,10 @@ static ARGPARSE_OPTS opts[] =
     ARGPARSE_c (aRemoveSocketDir, "remove-socketdir", "@"),
     ARGPARSE_c (aShowVersions, "show-versions", ""),
     ARGPARSE_c (aShowConfigs,  "show-configs", ""),
+    /* hidden commands: for debugging */
+    ARGPARSE_c (aShowCodepages, "show-codepages", "@"),
+    ARGPARSE_c (aDotlockLock, "lock", "@"),
+    ARGPARSE_c (aDotlockUnlock, "unlock", "@"),
 
     ARGPARSE_header (NULL, N_("@\nOptions:\n ")),
 
@@ -115,13 +128,13 @@ static ARGPARSE_OPTS opts[] =
                   N_("activate changes at runtime, if possible")),
     ARGPARSE_s_i (oStatusFD, "status-fd",
                   N_("|FD|write status info to this FD")),
-
     /* hidden options */
     ARGPARSE_s_s (oHomedir, "homedir", "@"),
     ARGPARSE_s_s (oBuilddir, "build-prefix", "@"),
     ARGPARSE_s_n (oNull, "null", "@"),
     ARGPARSE_s_n (oNoVerbose, "no-verbose", "@"),
     ARGPARSE_s_n (oShowSocket, "show-socket", "@"),
+    ARGPARSE_s_s (oChUid, "chuid", "@"),
 
     ARGPARSE_end ()
   };
@@ -262,6 +275,7 @@ list_dirs (estream_t fp, char **names, int show_config_mode)
     { "localedir",          gnupg_localedir,  NULL },
     { "socketdir",          gnupg_socketdir,  NULL },
     { "dirmngr-socket",     dirmngr_socket_name, NULL,},
+    { "keyboxd-socket",     keyboxd_socket_name, NULL,},
     { "agent-ssh-socket",   gnupg_socketdir,  GPG_AGENT_SSH_SOCK_NAME },
     { "agent-extra-socket", gnupg_socketdir,  GPG_AGENT_EXTRA_SOCK_NAME },
     { "agent-browser-socket",gnupg_socketdir, GPG_AGENT_BROWSER_SOCK_NAME },
@@ -357,7 +371,7 @@ list_dirs (estream_t fp, char **names, int show_config_mode)
         es_fprintf (fp, "\n"
                     "Note: homedir taken from registry key %s%s\\%s:%s\n"
                     "\n",
-                    hkcu?" HKCU":"", hklm?" HKLM":"",
+                    hkcu?"HKCU":"", hklm?"HKLM":"",
                     GNUPG_REGISTRY_DIR, "HomeDir");
       else
         log_info ("Warning: homedir taken from registry key (%s:%s) in%s%s\n",
@@ -373,7 +387,7 @@ list_dirs (estream_t fp, char **names, int show_config_mode)
       es_fflush (fp);
       if (show_config_mode)
         es_fprintf (fp, "\n"
-                    "Note: registry key %s without value in HKCU or HKLM\n"
+                    "Note: registry %s without value in HKCU or HKLM\n"
                     "\n", GNUPG_REGISTRY_DIR);
       else
         log_info ("Warning: registry key (%s) without value in HKCU or HKLM\n",
@@ -420,12 +434,12 @@ valid_swdb_name_p (const char *name)
  *           'c' :: The version is Current
  *           'n' :: The current version is already Newer than the
  *                  available one.
- * urgency :: If the value is greater than zero an urgent update is required.
+ * minvers :: The minimal secure version.
  * error   :: 0 on success or an gpg_err_code_t
  *            Common codes seen:
  *            GPG_ERR_TOO_OLD :: The SWDB file is to old to be used.
  *            GPG_ERR_ENOENT  :: The SWDB file is not available.
- *            GPG_ERR_BAD_SIGNATURE :: Currupted SWDB file.
+ *            GPG_ERR_BAD_SIGNATURE :: Corrupted SWDB file.
  * filedate:: Date of the swdb file (yyyymmddThhmmss)
  * verified:: Date we checked the validity of the file (yyyyymmddThhmmss)
  * version :: The version string from the swdb.
@@ -446,11 +460,12 @@ query_swdb (estream_t out, const char *name, const char *current_version)
   size_t length_of_line = 0;
   size_t  maxlen;
   ssize_t len;
-  char *fields[2];
+  const char *fields[2];
   char *p;
   gnupg_isotime_t filedate = {0};
   gnupg_isotime_t verified = {0};
   char *value_ver = NULL;
+  char *value_minver = NULL;
   gnupg_isotime_t value_date = {0};
   char *value_size = NULL;
   char *value_sha2 = NULL;
@@ -553,6 +568,8 @@ query_swdb (estream_t out, const char *name, const char *current_version)
             value_size = xstrdup (fields[1]);
           else if (!strcmp (p, "sha2") && !value_sha2)
             value_sha2 = xstrdup (fields[1]);
+          else if (!strcmp (p, "minver") && !value_minver)
+            value_minver = xstrdup (fields[1]);
         }
     }
   if (len < 0 || es_ferror (fp))
@@ -603,10 +620,11 @@ query_swdb (estream_t out, const char *name, const char *current_version)
   else
     status = 'n';
 
-  es_fprintf (out, "%s:%s:%c::%d:%s:%s:%s:%s:%lu:%s:\n",
+  es_fprintf (out, "%s:%s:%c:%s:%d:%s:%s:%s:%s:%lu:%s:\n",
               name,
               current_version? current_version : "",
               status,
+              value_minver? value_minver : value_ver,
               err,
               filedate,
               verified,
@@ -616,6 +634,7 @@ query_swdb (estream_t out, const char *name, const char *current_version)
               value_sha2? value_sha2 : "");
 
  leave:
+  xfree (value_minver);
   xfree (value_ver);
   xfree (value_size);
   xfree (value_sha2);
@@ -626,21 +645,57 @@ query_swdb (estream_t out, const char *name, const char *current_version)
 }
 
 
+#if !defined(HAVE_W32_SYSTEM)
+/* dotlock tool to handle dotlock by command line
+   DO_LOCK: 1 for to lock, 0 for unlock
+   FILENAME: filename for the dotlock   */
+static void
+dotlock_tool (int do_lock, const char *filename)
+{
+  dotlock_t h;
+  unsigned int flags = DOTLOCK_LOCK_BY_PARENT;
+
+  if (!do_lock)
+    flags |= DOTLOCK_LOCKED;
+
+  h = dotlock_create (filename, flags);
+  if (!h)
+    {
+      if (do_lock)
+        log_error ("error creating the lock file\n");
+      else
+        log_error ("no lock file found\n");
+      return;
+    }
+
+  if (do_lock)
+    {
+      if (dotlock_take (h, 0))
+        log_error ("error taking the lock\n");
+    }
+  else
+    dotlock_release (h);
+
+  dotlock_destroy (h);
+}
+#endif
+
 /* gpgconf main. */
 int
 main (int argc, char **argv)
 {
   gpg_error_t err;
-  ARGPARSE_ARGS pargs;
+  gpgrt_argparse_t pargs;
   const char *fname;
   int no_more_options = 0;
   enum cmd_and_opt_values cmd = 0;
   estream_t outfp = NULL;
   int show_socket = 0;
+  const char *changeuser = NULL;
 
   early_system_init ();
   gnupg_reopen_std (GPGCONF_NAME);
-  set_strusage (my_strusage);
+  gpgrt_set_strusage (my_strusage);
   log_set_prefix (GPGCONF_NAME, GPGRT_LOG_WITH_PREFIX|GPGRT_LOG_NO_REGISTRY);
 
   /* Make sure that our subsystems are ready.  */
@@ -652,7 +707,7 @@ main (int argc, char **argv)
   pargs.argc  = &argc;
   pargs.argv  = &argv;
   pargs.flags = ARGPARSE_FLAG_KEEP;
-  while (!no_more_options && gnupg_argparse (NULL, &pargs, opts))
+  while (!no_more_options && gpgrt_argparse (NULL, &pargs, opts))
     {
       switch (pargs.r_opt)
         {
@@ -669,6 +724,7 @@ main (int argc, char **argv)
           set_status_fd (translate_sys2libc_fd_int (pargs.r.ret_int, 1));
           break;
         case oShowSocket: show_socket = 1; break;
+        case oChUid:      changeuser = pargs.r.ret_str; break;
 
 	case aListDirs:
         case aListComponents:
@@ -688,13 +744,17 @@ main (int argc, char **argv)
         case aRemoveSocketDir:
         case aShowVersions:
         case aShowConfigs:
+        case aShowCodepages:
+        case aDotlockLock:
+        case aDotlockUnlock:
 	  cmd = pargs.r_opt;
 	  break;
 
-        default: pargs.err = ARGPARSE_PRINT_ERROR; break;
+        default: pargs.err = 2; break;
 	}
     }
-  gnupg_argparse (NULL, &pargs, NULL);  /* Release internal state.  */
+
+  gpgrt_argparse (NULL, &pargs, NULL);  /* Release internal state.  */
 
   if (log_get_errorcount (0))
     gpgconf_failure (GPG_ERR_USER_2);
@@ -711,11 +771,15 @@ main (int argc, char **argv)
 
   fname = argc ? *argv : NULL;
 
+  /* If requested switch to the requested user or die.  */
+  if (changeuser && (err = gnupg_chuid (changeuser, 0)))
+    gpgconf_failure (err);
+
   /* Set the configuraton directories for use by gpgrt_argparser.  We
    * don't have a configuration file for this program but we have code
    * which reads the component's config files.  */
-  gnupg_set_confdir (GNUPG_CONFDIR_SYS, gnupg_sysconfdir ());
-  gnupg_set_confdir (GNUPG_CONFDIR_USER, gnupg_homedir ());
+  gpgrt_set_confdir (GPGRT_CONFDIR_SYS, gnupg_sysconfdir ());
+  gpgrt_set_confdir (GPGRT_CONFDIR_USER, gnupg_homedir ());
 
   switch (cmd)
     {
@@ -811,6 +875,8 @@ main (int argc, char **argv)
                     names[0] = "agent-socket";
                   else if (idx == GC_COMPONENT_DIRMNGR)
                     names[0] = "dirmngr-socket";
+                  else if (idx == GC_COMPONENT_KEYBOXD)
+                    names[0] = "keyboxd-socket";
                   else
                     names[0] = NULL;
                   names[1] = NULL;
@@ -962,7 +1028,7 @@ main (int argc, char **argv)
           ;
         else if (gnupg_rmdir (socketdir))
           {
-            /* If the director is not empty we first try to delet
+            /* If the director is not empty we first try to delete
              * socket files.  */
             err = gpg_error_from_syserror ();
             if (gpg_err_code (err) == GPG_ERR_ENOTEMPTY
@@ -974,7 +1040,9 @@ main (int argc, char **argv)
                   GPG_AGENT_BROWSER_SOCK_NAME,
                   GPG_AGENT_SSH_SOCK_NAME,
                   SCDAEMON_SOCK_NAME,
-                  DIRMNGR_SOCK_NAME
+                  KEYBOXD_SOCK_NAME,
+                  DIRMNGR_SOCK_NAME,
+                  TPM2DAEMON_SOCK_NAME
                 };
                 int i;
                 char *p;
@@ -987,8 +1055,11 @@ main (int argc, char **argv)
                     xfree (p);
                   }
                 if (gnupg_rmdir (socketdir))
-                  gc_error (1, 0, "error removing '%s': %s",
-                            socketdir, gpg_strerror (err));
+                  {
+                    err = gpg_error_from_syserror ();
+                    gc_error (1, 0, "error removing '%s': %s",
+                              socketdir, gpg_strerror (err));
+                  }
               }
             else if (gpg_err_code (err) == GPG_ERR_ENOENT)
               gc_error (0, 0, "warning: removing '%s' failed: %s",
@@ -1016,6 +1087,47 @@ main (int argc, char **argv)
       }
       break;
 
+    case aShowCodepages:
+#ifdef HAVE_W32_SYSTEM
+      {
+        get_outfp (&outfp);
+        if (GetConsoleCP () != GetConsoleOutputCP ())
+          es_fprintf (outfp, "Console: CP%u/CP%u\n",
+                      GetConsoleCP (), GetConsoleOutputCP ());
+        else
+          es_fprintf (outfp, "Console: CP%u\n", GetConsoleCP ());
+        es_fprintf (outfp, "ANSI: CP%u\n", GetACP ());
+        es_fprintf (outfp, "OEM: CP%u\n", GetOEMCP ());
+      }
+#endif
+      break;
+
+    case aDotlockLock:
+    case aDotlockUnlock:
+#if !defined(HAVE_W32_SYSTEM)
+      if (!fname)
+	{
+	  es_fprintf (es_stderr, "usage: %s --%slock NAME",
+                      GPGCONF_NAME, cmd==aDotlockUnlock?"un":"");
+	  es_putc ('\n', es_stderr);
+	  es_fputs ("Need name of file protected by the lock", es_stderr);
+	  es_putc ('\n', es_stderr);
+	  gpgconf_failure (GPG_ERR_SYNTAX);
+	}
+      else
+	{
+          char *filename;
+
+          /* Keybox pubring.db lock is under public-keys.d.  */
+          if (!strcmp (fname, "pubring.db"))
+            fname = "public-keys.d/pubring.db";
+
+          filename = make_absfilename (gnupg_homedir (), fname, NULL);
+          dotlock_tool (cmd == aDotlockLock, filename);
+          xfree (filename);
+        }
+#endif
+      break;
     }
 
   if (outfp != es_stdout)
@@ -1082,7 +1194,7 @@ show_version_gnupg (estream_t fp, const char *prefix)
   ssize_t length;
 
   es_fprintf (fp, "%s%sGnuPG %s (%s)\n%s%s\n", prefix, *prefix?"":"* ",
-              strusage (13), BUILD_COMMITID, prefix, strusage (17));
+              gpgrt_strusage (13), BUILD_REVISION, prefix, gpgrt_strusage (17));
 
   /* Show the GnuPG VS-Desktop version in --show-configs mode  */
   if (prefix && *prefix)
@@ -1092,7 +1204,7 @@ show_version_gnupg (estream_t fp, const char *prefix)
       if (n > 10 && (!ascii_strcasecmp (fname + n - 10, "/GnuPG/bin")
                      || !ascii_strcasecmp (fname + n - 10, "\\GnuPG\\bin")))
         {
-          /* Append VERSION to the ../../ direcory.  Note that VERSION
+          /* Append VERSION to the ../../ directory.  Note that VERSION
            * is only 7 bytes and thus fits.  */
           strcpy (fname + n - 9, "VERSION");
           verfp = es_fopen (fname, "r");
@@ -1205,7 +1317,7 @@ show_versions_via_dirmngr (estream_t fp)
   pgmname = gnupg_module_name (GNUPG_MODULE_NAME_DIRMNGR);
   argv[0] = "--gpgconf-versions";
   argv[1] = NULL;
-  err = gnupg_spawn_process (pgmname, argv, NULL, NULL, 0,
+  err = gnupg_spawn_process (pgmname, argv, NULL, 0,
                              NULL, &outfp, NULL, &pid);
   if (err)
     {
@@ -1380,10 +1492,9 @@ show_other_registry_entries (estream_t outfp)
     const char *name;
   } names[] =
   {
+    { 1, "HKLM\\Software\\Gpg4win:Install Directory" },
     { 1, "HKLM\\Software\\Gpg4win:Desktop-Version" },
     { 1, "HKLM\\Software\\Gpg4win:VS-Desktop-Version" },
-    { 1, "\\Software\\Gpg4win:Install Directory" },
-    { 1, "\\Software\\GnuPG:Install Directory" },
     { 1, "\\" GNUPG_REGISTRY_DIR ":HomeDir" },
     { 1, "\\" GNUPG_REGISTRY_DIR ":DefaultLogFile" },
     { 2, "\\Software\\Microsoft\\Office\\Outlook\\Addins\\GNU.GpgOL"
@@ -1412,8 +1523,6 @@ show_other_registry_entries (estream_t outfp)
     { 3, "splitBCCMails" },
     { 3, "combinedOpsEnabled" },
     { 3, "encryptSubject" },
-    { 3, "noSaveBeforeDecrypt" },
-    { 3, "closeOnUnknownWriteEvent" },
     { 0, NULL }
     /*  We should add the following key but also hide unset ones.:
      *   "smimeNoCertSigErr"
@@ -1462,7 +1571,7 @@ show_other_registry_entries (estream_t outfp)
         es_fprintf (outfp, "  %s=%s%s\n", names[idx].name, value,
                     from_hklm? " [hklm]":"");
       else
-        es_fprintf (outfp, "  %s\n    ->%s<-%s\n", name, value,
+        es_fprintf (outfp, "  %s\n  ->%s<-%s\n", name, value,
                     from_hklm? " [hklm]":"");
 
       xfree (value);
@@ -1521,7 +1630,7 @@ show_registry_entries_from_file (estream_t outfp)
           es_fprintf (outfp, "\nTaken from gpgconf.rnames:\n");
         }
 
-      es_fprintf (outfp, "  %s\n    ->%s<-%s\n", line, value,
+      es_fprintf (outfp, "  %s\n  ->%s<-%s\n", line, value,
                   from_hklm? " [hklm]":"");
 
     }
