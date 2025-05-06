@@ -1,3 +1,9 @@
+gnupg2 (2.4.7-15+pexip25u1) pexip-trixie; urgency=medium
+
+  * New upstream release
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Tue, 06 May 2025 14:50:19 +0000
+
 gnupg2 (2.4.7-15) unstable; urgency=medium
 
   [ Andreas Metzler ]
