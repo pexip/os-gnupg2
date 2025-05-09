@@ -33,7 +33,7 @@ Build-Depends:
  libusb-1.0-0-dev [!hurd-any],
  openssh-client <!nocheck>,
  pkgconf,
- swtpm <!nocheck>,
+# swtpm <!nocheck>,
  texinfo <!nodoc>,
  unicode-data,
  zlib1g-dev | libz-dev,
@@ -363,29 +363,29 @@ Description: GNU privacy guard - network certificate management service
  among other tools.  Unless this package is installed, the parts of
  the GnuPG suite that try to interact with the network will fail.
 
-Package: tpm2daemon
-Architecture: any
-Multi-Arch: foreign
-Depends:
- gpgconf (= ${binary:Version}),
- ${misc:Depends},
- ${shlibs:Depends},
-Recommends:
- gnupg (= ${binary:Version}),
- ${shlibs:Recommends},
-Suggests:
- dbus-user-session,
- libpam-systemd,
-Enhances:
- gpg-agent,
-Description: GNU privacy guard - TPM2 support
- GnuPG is GNU's tool for secure communication and data storage.
- It can be used to encrypt data and to create digital signatures.
- It includes an advanced key management facility and is compliant
- with the proposed OpenPGP Internet standard as described in RFC4880.
- .
- tpm2daemon is a server allowing the use of a TPM2 device to provide
- hardware backed OpenPGP keys.
+#Package: tpm2daemon
+#Architecture: any
+#Multi-Arch: foreign
+#Depends:
+# gpgconf (= ${binary:Version}),
+# ${misc:Depends},
+# ${shlibs:Depends},
+#Recommends:
+# gnupg (= ${binary:Version}),
+# ${shlibs:Recommends},
+#Suggests:
+# dbus-user-session,
+# libpam-systemd,
+#Enhances:
+# gpg-agent,
+#Description: GNU privacy guard - TPM2 support
+# GnuPG is GNU's tool for secure communication and data storage.
+# It can be used to encrypt data and to create digital signatures.
+# It includes an advanced key management facility and is compliant
+# with the proposed OpenPGP Internet standard as described in RFC4880.
+# .
+# tpm2daemon is a server allowing the use of a TPM2 device to provide
+# hardware backed OpenPGP keys.
 
 Package: gpgv-udeb
 Package-Type: udeb

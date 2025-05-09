@@ -48,6 +48,7 @@ execute_after_dh_auto_configure:
 		--libexecdir=\$${prefix}/lib/gnupg \
 		--enable-wks-tools \
 		--enable-all-tests \
+		--disable-tpm2d \
 		--with-agent-s2k-calibration=300 \
 		--enable-large-secmem --disable-gnutls \
 		--with-mailprog=/usr/sbin/sendmail \
