@@ -1,3 +1,9 @@
+gnupg2 (2.4.7-17+pexip25u1) pexip-trixie; urgency=medium
+
+  * New upstream release
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Fri, 16 May 2025 09:30:06 +0100
+
 gnupg2 (2.4.7-17) unstable; urgency=medium
 
   * re-enable piuparts in salsa-ci, keyboxd package is no more.
