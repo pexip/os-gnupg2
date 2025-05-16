@@ -39,9 +39,12 @@ endif
 %:
 	dh $@ --with=autoreconf --builddirectory=build
 
-GPGV_UDEB_UNNEEDED = gpgtar bzip2 gpgsm scdaemon dirmngr doc tofu exec ldap gnutls sqlite libdns keyboxd tpm2d npth
+GPGV_UNNEEDED = gpgtar gpgsm scdaemon dirmngr tofu exec ldap gnutls sqlite libdns keyboxd tpm2d npth
+GPGV_UDEB_UNNEEDED = $(GPGV_UNNEEDED) bzip2 doc
 
 WIN32_FLAGS=LDFLAGS="-Xlinker --no-insert-timestamp -static" CFLAGS="-g -Os" CPPFLAGS=
+
+ifeq ($(filter pkg.gnupg2.gpgvonly,$(DEB_BUILD_PROFILES)),)
 
 execute_after_dh_auto_configure:
 	dh_auto_configure --builddirectory=build --verbose -- \
@@ -112,6 +115,20 @@ override_dh_shlibdeps:
 # Make ldap a recommends rather than a hard dependency.
 	dpkg-shlibdeps -Tdebian/dirmngr.substvars -dRecommends debian/dirmngr/usr/lib/gnupg/dirmngr_ldap -dDepends debian/dirmngr/usr/bin/dirmngr*
 	dh_shlibdeps -Ndirmngr
+
+else # ifeq ($(filter pkg.gnupg2.gpgvonly,$(DEB_BUILD_PROFILES)),)
+override_dh_auto_configure:
+	dh_auto_configure --builddirectory=build --verbose -- \
+		--libexecdir=\$${prefix}/lib/gnupg \
+		--enable-maintainer-mode \
+		$(NODOC) \
+		$(foreach x, $(GPGV_UNNEEDED), --disable-$(x))
+
+override_dh_auto_test:
+	# stripped down build fails on make check
+
+endif  # ifeq ($(filter pkg.gnupg2.gpgvonly,$(DEB_BUILD_PROFILES)),
+
 
 execute_before_dh_autoreconf:
 	echo "Developer change history can be found in the source tarball. See NEWS for high-level changes." > ChangeLog
