@@ -48,3 +48,10 @@ from-upstream/gpg-Fix-regression-for-the-recent-malicious-subkey-DoS-fi.patch
 from-upstream/gpg-Fix-double-free-of-internal-data.patch
 debian-packaging/no-keyboxd.patch
 gpgv-Avoid-Assuan-and-NPth-dependencies.patch
+from-upstream/0001-gpg-Fix-key-generation-with-existing-key-from-card.patch
+from-upstream/0002-gpgconf-Fix-reload-and-kill-of-keyboxd.patch
+from-upstream/0006-keyboxd-Searching-UpperCaseAddress.patch
+from-upstream/0007-Fix-access-to-the-bintoasc-mapping-in-the-libksba-su.patch
+from-upstream/gpg-Fix-another-regression-due-to-the-T7547-fix.patch
+from-upstream/0009-common-Fix-logic-for-certain-recsel-conditions.patch
+nl.po.update.diff

@@ -1,3 +1,44 @@
+gnupg2 (2.4.7-21) unstable; urgency=medium
+
+  * update Dutch po file (Closes: #1104540)
+  * Upload to unstable.
+
+ -- Andreas Metzler <ametzler@debian.org>  Sun, 01 Jun 2025 06:45:25 +0200
+
+gnupg2 (2.4.7-20) experimental; urgency=medium
+
+  * Add Built-Using/Static-Built-Using data for gpgv-static
+    (Thanks, Aurelien Jarno) Closes: #1106800
+  * Also set Built-Using for gpgv-win32
+
+ -- Andreas Metzler <ametzler@debian.org>  Sat, 31 May 2025 12:55:36 +0200
+
+gnupg2 (2.4.7-19) unstable; urgency=medium
+
+  * Upload to unstable.
+
+ -- Andreas Metzler <ametzler@debian.org>  Wed, 14 May 2025 06:22:05 +0200
+
+gnupg2 (2.4.7-18) experimental; urgency=medium
+
+  [ Daniel Kahn Gillmor ]
+  * Handle certification-only pubkeys correctly (Closes: #1101007)
+
+  [ Andreas Metzler ]
+  * Cherry-pick fixes from upstream STABLE-BRANCH-2-4:
+    + Fix key generation with existing key from card.
+      (2.4.7 regression) https://dev.gnupg.org/T7457
+    + gpgconf: Fix reload and kill of keyboxd
+      https://dev.gnupg.org/T7569
+    + keyboxd: Convert upper-case email-address search string to lower-case
+      https://dev.gnupg.org/T7576
+    + Fix use of undefined behavior in ksba-io-support.c
+      (Use memchr since calling strchr on a non-NUL terminated string is
+      undefined behavior.)
+    + Fix --list-filter select='disabled-f'.
+
+ -- Andreas Metzler <ametzler@debian.org>  Sun, 11 May 2025 13:04:10 +0200
+
 gnupg2 (2.4.7-17) unstable; urgency=medium
 
   * re-enable piuparts in salsa-ci, keyboxd package is no more.
