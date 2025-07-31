@@ -1,3 +1,5 @@
 usr/bin/gpgscm
 usr/share/gnupg/sks-keyservers.netCA.pem
 usr/share/man/man1/symcryptrun.1
+usr/share/man/man1/dirmngr-client.1
+usr/share/man/man8/dirmngr.8

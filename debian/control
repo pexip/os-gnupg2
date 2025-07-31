@@ -161,7 +161,6 @@ Architecture: any
 Multi-Arch: foreign
 Build-Profiles: <!pkg.gnupg2.gpgvonly>
 Depends:
- dirmngr (= ${binary:Version}),
  gpg (= ${binary:Version}),
  gpg-agent (= ${binary:Version}),
  ${misc:Depends},
@@ -261,8 +260,6 @@ Section: metapackages
 Multi-Arch: foreign
 Build-Profiles: <!pkg.gnupg2.gpgvonly>
 Depends:
- dirmngr (<< ${source:Version}.1~),
- dirmngr (>= ${source:Version}),
  gnupg-l10n (= ${source:Version}),
  gpg (<< ${source:Version}.1~),
  gpg (>= ${source:Version}),
@@ -342,64 +339,64 @@ Description: GNU privacy guard - signature verification tool
  used to make the signature are valid. There are no configuration
  files and only a few options are implemented.
 
-Package: dirmngr
-Architecture: any
-Multi-Arch: foreign
-Build-Profiles: <!pkg.gnupg2.gpgvonly>
-Depends:
- adduser,
- gpgconf (= ${binary:Version}),
- ${misc:Depends},
- ${shlibs:Depends},
-Recommends:
- gnupg (= ${source:Version}),
- ${shlibs:Recommends},
-Enhances:
- gpg,
- gpgsm,
- squid,
-Suggests:
- dbus-user-session,
- libpam-systemd,
- pinentry-gnome3,
- tor,
-Description: GNU privacy guard - network certificate management service
- dirmngr is a server for managing and downloading OpenPGP and X.509
- certificates, as well as updates and status signals related to those
- certificates.  For OpenPGP, this means pulling from the public
- HKP/HKPS keyservers, or from LDAP servers.  For X.509 this includes
- Certificate Revocation Lists (CRLs) and Online Certificate Status
- Protocol updates (OCSP).  It is capable of using Tor for network
- access.
- .
- dirmngr is used for network access by gpg, gpgsm, and dirmngr-client,
- among other tools.  Unless this package is installed, the parts of
- the GnuPG suite that try to interact with the network will fail.
+# Package: dirmngr
+# Architecture: any
+# Multi-Arch: foreign
+# Build-Profiles: <!pkg.gnupg2.gpgvonly>
+# Depends:
+#  adduser,
+#  gpgconf (= ${binary:Version}),
+#  ${misc:Depends},
+#  ${shlibs:Depends},
+# Recommends:
+#  gnupg (= ${source:Version}),
+#  ${shlibs:Recommends},
+# Enhances:
+#  gpg,
+#  gpgsm,
+#  squid,
+# Suggests:
+#  dbus-user-session,
+#  libpam-systemd,
+#  pinentry-gnome3,
+#  tor,
+# Description: GNU privacy guard - network certificate management service
+#  dirmngr is a server for managing and downloading OpenPGP and X.509
+#  certificates, as well as updates and status signals related to those
+#  certificates.  For OpenPGP, this means pulling from the public
+#  HKP/HKPS keyservers, or from LDAP servers.  For X.509 this includes
+#  Certificate Revocation Lists (CRLs) and Online Certificate Status
+#  Protocol updates (OCSP).  It is capable of using Tor for network
+#  access.
+#  .
+#  dirmngr is used for network access by gpg, gpgsm, and dirmngr-client,
+#  among other tools.  Unless this package is installed, the parts of
+#  the GnuPG suite that try to interact with the network will fail.
 
-Package: tpm2daemon
-Architecture: any
-Multi-Arch: foreign
-Build-Profiles: <!pkg.gnupg2.gpgvonly>
-Depends:
- gpgconf (= ${binary:Version}),
- ${misc:Depends},
- ${shlibs:Depends},
-Recommends:
- gnupg (= ${binary:Version}),
- ${shlibs:Recommends},
-Suggests:
- dbus-user-session,
- libpam-systemd,
-Enhances:
- gpg-agent,
-Description: GNU privacy guard - TPM2 support
- GnuPG is GNU's tool for secure communication and data storage.
- It can be used to encrypt data and to create digital signatures.
- It includes an advanced key management facility and is compliant
- with the proposed OpenPGP Internet standard as described in RFC4880.
- .
- tpm2daemon is a server allowing the use of a TPM2 device to provide
- hardware backed OpenPGP keys.
+# Package: tpm2daemon
+# Architecture: any
+# Multi-Arch: foreign
+# Build-Profiles: <!pkg.gnupg2.gpgvonly>
+# Depends:
+#  gpgconf (= ${binary:Version}),
+#  ${misc:Depends},
+#  ${shlibs:Depends},
+# Recommends:
+#  gnupg (= ${binary:Version}),
+#  ${shlibs:Recommends},
+# Suggests:
+#  dbus-user-session,
+#  libpam-systemd,
+# Enhances:
+#  gpg-agent,
+# Description: GNU privacy guard - TPM2 support
+#  GnuPG is GNU's tool for secure communication and data storage.
+#  It can be used to encrypt data and to create digital signatures.
+#  It includes an advanced key management facility and is compliant
+#  with the proposed OpenPGP Internet standard as described in RFC4880.
+#  .
+#  tpm2daemon is a server allowing the use of a TPM2 device to provide
+#  hardware backed OpenPGP keys.
 
 Package: gpgv-udeb
 Package-Type: udeb
@@ -470,7 +467,6 @@ Build-Profiles: <!pkg.gnupg2.gpgvonly>
 Depends:
  ${misc:Depends},
 Enhances:
- dirmngr,
  gpg,
  gpg-agent,
 Description: GNU privacy guard - localization files

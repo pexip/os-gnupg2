@@ -111,10 +111,10 @@ execute_after_dh_installdocs:
 override_dh_auto_test:
 	dh_auto_test --builddirectory=build -- verbose=3 TESTFLAGS=$(AUTOTEST_FLAGS)
 
-override_dh_shlibdeps:
+#override_dh_shlibdeps:
 # Make ldap a recommends rather than a hard dependency.
-	dpkg-shlibdeps -Tdebian/dirmngr.substvars -dRecommends debian/dirmngr/usr/lib/gnupg/dirmngr_ldap -dDepends debian/dirmngr/usr/bin/dirmngr*
-	dh_shlibdeps -Ndirmngr
+#	dpkg-shlibdeps -Tdebian/dirmngr.substvars -dRecommends debian/dirmngr/usr/lib/gnupg/dirmngr_ldap -dDepends debian/dirmngr/usr/bin/dirmngr*
+#	dh_shlibdeps -Ndirmngr
 
 else # ifeq ($(filter pkg.gnupg2.gpgvonly,$(DEB_BUILD_PROFILES)),)
 override_dh_auto_configure:
