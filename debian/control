@@ -12,6 +12,7 @@ Standards-Version: 4.7.2
 # rmadison -s sid swtpm | sed -e 's/.* source, //' -e 's/,//g'
 Build-Depends:
  debhelper-compat (= 13),
+ dh-sequence-builtusing,
  automake,
  autopoint,
  fig2dev <!nodoc>,
@@ -425,6 +426,11 @@ Depends:
 Recommends:
  debian-archive-keyring,
  debootstrap,
+Built-Using:
+ ${dh-builtusing:libc-dev-bin},
+ ${dh-builtusing:libgcryptS-dev},
+ ${dh-builtusing:libgpg-error-dev},
+Static-Built-Using: ${dh-builtusing:zlib1g-dev}
 Description: minimal signature verification tool (static build)
  GnuPG is GNU's tool for secure communication and data storage.
  It can be used to encrypt data and to create digital signatures.
@@ -444,6 +450,14 @@ Package: gpgv-win32
 Architecture: all
 Multi-Arch: foreign
 Build-Profiles: <!pkg.gnupg2.gpgvonly>
+Built-Using:
+ ${dh-builtusing:libassuan-mingw-w64-dev},
+ ${dh-builtusing:libgcrypt-mingw-w64-dev},
+ ${dh-builtusing:libgpg-error-mingw-w64-dev},
+ ${dh-builtusing:libksba-mingw-w64-dev},
+ ${dh-builtusing:libnpth-mingw-w64-dev},
+ ${dh-builtusing:mingw-w64},
+Static-Built-Using: ${dh-builtusing:libz-mingw-w64-dev}
 Depends:
  ${misc:Depends},
 Suggests:
