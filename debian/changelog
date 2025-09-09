@@ -1,3 +1,18 @@
+gnupg2 (2.2.40-1.1+pexip24u4+deb12u1) pexip; urgency=medium
+
+  * New upstream release
+
+ -- Steve McIntyre <steve.mcintyre@pexip.com>  Tue, 09 Sep 2025 15:58:16 +0100
+
+gnupg2 (2.2.40-1.1+deb12u1) bookworm; urgency=medium
+
+  * Make recommends on gnupg binNMU-safe.
+    Fixup recommends of architecture-any packages on architecture-all package
+    "gnupg" to use (= ${source:Version}) instead of binary:Version. (Thanks,
+    James McCoy) Closes: #1060366
+
+ -- Andreas Metzler <ametzler@debian.org>  Sat, 21 Jun 2025 10:26:29 +0200
+
 gnupg2 (2.2.40-1.1+pexip24u3) pexip-bookworm; urgency=medium
 
   * New versioning scheme

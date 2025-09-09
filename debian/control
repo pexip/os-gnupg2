@@ -91,7 +91,7 @@ Depends:
  ${misc:Depends},
  ${shlibs:Depends},
 Recommends:
- gnupg (= ${binary:Version}),
+ gnupg (= ${source:Version}),
  ${shlibs:Recommends},
 Suggests:
  dbus-user-session,
@@ -126,7 +126,7 @@ Depends:
  ${misc:Depends},
  ${shlibs:Depends},
 Recommends:
- gnupg (= ${binary:Version}),
+ gnupg (= ${source:Version}),
  ${shlibs:Recommends},
 Description: GNU privacy guard - Web Key Service server
  GnuPG is GNU's tool for secure communication and data storage.
@@ -153,7 +153,7 @@ Depends:
  ${misc:Depends},
  ${shlibs:Depends},
 Recommends:
- gnupg (= ${binary:Version}),
+ gnupg (= ${source:Version}),
  ${shlibs:Recommends},
 Description: GNU privacy guard - Web Key Service client
  GnuPG is GNU's tool for secure communication and data storage.
@@ -196,7 +196,7 @@ Depends:
  ${misc:Depends},
  ${shlibs:Depends},
 Recommends:
- gnupg (= ${binary:Version}),
+ gnupg (= ${source:Version}),
  ${shlibs:Recommends},
 Breaks:
  gnupg2 (<< 2.1.10-2),
@@ -220,7 +220,7 @@ Depends:
  ${misc:Depends},
  ${shlibs:Depends},
 Recommends:
- gnupg (= ${binary:Version}),
+ gnupg (= ${source:Version}),
  ${shlibs:Recommends},
 Breaks:
  gnupg (<< 2.1.21-4),
@@ -355,7 +355,7 @@ Depends:
  ${misc:Depends},
  ${shlibs:Depends},
 Recommends:
- gnupg (= ${binary:Version}),
+ gnupg (= ${source:Version}),
  ${shlibs:Recommends},
 Enhances:
  gpg,
