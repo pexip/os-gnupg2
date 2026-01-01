@@ -1,3 +1,20 @@
+gnupg2 (2.4.7-21+deb13u1) trixie; urgency=high
+
+  * Avoid potential downgrade to SHA1 in 3rd party key signatures.
+    https://gpg.fail/sha1 #12
+    Patch from STABLE-BRANCH-2-4
+  * gpg: Error out on unverified output for non-detached signatures.
+    https://gpg.fail/detached #1
+    Patch from STABLE-BRANCH-2-4
+  * gpg: Fix possible memory corruption in the armor parser (CVE-2025-68973)
+    https://gpg.fail/memcpy #5
+    Patch from STABLE-BRANCH-2-4 (Closes: #1124221)
+  * gpg: Do not use a default when asking for another output filename.
+    https://gpg.fail/filename #2
+    Unfuzzed patch from GIT master
+
+ -- Andreas Metzler <ametzler@debian.org>  Thu, 01 Jan 2026 06:46:01 +0100
+
 gnupg2 (2.4.7-21) unstable; urgency=medium
 
   * update Dutch po file (Closes: #1104540)

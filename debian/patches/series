@@ -55,3 +55,7 @@ from-upstream/0007-Fix-access-to-the-bintoasc-mapping-in-the-libksba-su.patch
 from-upstream/gpg-Fix-another-regression-due-to-the-T7547-fix.patch
 from-upstream/0009-common-Fix-logic-for-certain-recsel-conditions.patch
 nl.po.update.diff
+gpg-Avoid-potential-downgrade-to-SHA1-in-3rd-party-k.patch
+gpg-Error-out-on-unverified-output-for-non-detached-.patch
+gpg-Fix-possible-memory-corruption-in-the-armor-pars.patch
+from-master/gpg-Do-not-use-a-default-when-asking-for-another-out.patch
