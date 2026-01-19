@@ -1,0 +1,55 @@
+From: Daniel Kahn Gillmor <dkg@fifthhorseman.net>
+Date: Tue, 30 Dec 2025 17:20:02 -0500
+Subject: gpg: Do not use a default when asking for another output filename.
+
+* g10/openfile.c (ask_outfile_name): Do not show a default.
+
+dkg modified this from upstream commit
+ad0c6c33c3d6fe7ff7cc8c2e73d02ead5788e5b3, by dropping the
+compatibility flag that would revert to the old unsafe behavior.
+
+gpg 2.2.x does not have --compatibility-flags (only gpgsm has them in
+the 2.2 branch).
+
+Instead, the safe behavior is the only behavior.
+
+GnuPG-Bug-Id: T7908
+See-Also: https://gpg.fail/filename
+---
+ g10/openfile.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/g10/openfile.c b/g10/openfile.c
+index 6f4e889..df57292 100644
+--- a/g10/openfile.c
++++ b/g10/openfile.c
+@@ -119,13 +119,14 @@ make_outfile_name (const char *iname)
+ }
+ 
+ 
+-/* Ask for an output filename; use the given one as default.  Return
++/* Ask for an output filename.  Return
+    NULL if no file has been given or if it is not possible to ask the
+    user.  NAME is the template len which might contain enbedded Nuls.
+    NAMELEN is its actual length.
++   Ignore the passed name.
+  */
+ char *
+-ask_outfile_name( const char *name, size_t namelen )
++ask_outfile_name (const char *name, size_t namelen)
+ {
+   size_t n;
+   const char *s;
+@@ -136,8 +137,10 @@ ask_outfile_name( const char *name, size_t namelen )
+   if ( opt.batch )
+     return NULL;
+ 
+-  defname = name && namelen? make_printable_string (name, namelen, 0) : NULL;
+-
++  /* To avoid tricking the user into using the embedded filename we do
++   * not anymore include that name in the prompt as default.
++   * Better to leave such a decision to a GUI.  */
++  defname = NULL;
+   s = _("Enter new filename");
+   n = strlen(s) + (defname?strlen (defname):0) + 10;
+   prompt = xmalloc (n);

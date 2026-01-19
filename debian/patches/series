@@ -24,3 +24,7 @@ from-upstream/gpg-Report-an-error-for-receiving-key-from-agent.patch
 from-upstream/gpg-Move-NETLIBS-after-GPG_ERROR_LIBS.patch
 from-upstream/dirmngr-Fix-build-with-no-LDAP-support.patch
 from-upstream/gpg-Move-NETLIBS-after-GPG_ERROR_LIBS-another.patch
+from-upstream/gpg-Avoid-potential-downgrade-to-SHA1-in-3rd-party-key-si.patch
+from-upstream/gpg-Fix-possible-memory-corruption-in-the-armor-parser.patch
+from-upstream/gpg-Error-out-on-unverified-output-for-non-detached-signa.patch
+gpg-Do-not-use-a-default-when-asking-for-another-output-f.patch

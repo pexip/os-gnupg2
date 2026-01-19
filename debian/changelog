@@ -1,3 +1,20 @@
+gnupg2 (2.2.40-1.1+pexip24u5+deb12u2) pexip; urgency=medium
+
+  * New upstream release with security fixes
+
+ -- Steve McIntyre <steve.mcintyre@pexip.com>  Mon, 19 Jan 2026 17:21:43 +0000
+
+gnupg2 (2.2.40-1.1+deb12u2) bookworm; urgency=high
+
+  * Address four issues from https://gpg.fail, including:
+    + Fix CVE-2025-68973 (Closes: #1124221)
+    + Avoid potential downgrade to SHA1 in 3rd party key signatures.
+    + Error out on unverified output for non-detached signatures.
+    + Do not use a default when asking for another output filename.
+  * d/control: Point Vcs-Git to the correct branch
+
+ -- Daniel Kahn Gillmor <dkg@fifthhorseman.net>  Thu, 01 Jan 2026 15:54:00 +0100
+
 gnupg2 (2.2.40-1.1+pexip24u4+deb12u1) pexip; urgency=medium
 
   * New upstream release

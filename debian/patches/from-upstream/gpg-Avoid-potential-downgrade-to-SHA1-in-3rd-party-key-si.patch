@@ -1,0 +1,42 @@
+From: Werner Koch <wk@gnupg.org>
+Date: Wed, 22 Oct 2025 11:19:55 +0200
+Subject: gpg: Avoid potential downgrade to SHA1 in 3rd party key signatures.
+
+* g10/sig-check.c (check_signature_over_key_or_uid): Always initialize
+IS_SELFSIG because it is later used to detect SHA1 non-selfsignatures.
+--
+
+The value of is_selfsig was also used to decide whether to reject a a
+SHA_signature if it is not a self-signature.  However, a code path
+exists where is_selfsig was set to stub_is_selfsig and not initilaized
+in this case.
+
+Fixes-commit: edc36f59fcfcb4b896a53530345d586f7e5df560
+Reported-by: 8b79fe4dd0581c1cd000e1fbecba9f39e16a396a
+(cherry picked from commit 4329e474636846e277f8ec74cd2ca40614acf353)
+---
+ g10/sig-check.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/g10/sig-check.c b/g10/sig-check.c
+index eeaf6f0..cebf332 100644
+--- a/g10/sig-check.c
++++ b/g10/sig-check.c
+@@ -832,7 +832,7 @@ check_key_signature (ctrl_t ctrl, kbnode_t root, kbnode_t node,
+  * be found.  Returns GPG_ERR_BAD_SIGNATURE if the signature is bad.
+  * Other errors codes may be returned if something else goes wrong.
+  *
+- * IF IS_SELFSIG is not NULL, sets *IS_SELFSIG to 1 if this is a
++ * If IS_SELFSIG is not NULL, sets *IS_SELFSIG to 1 if this is a
+  * self-signature (by the key's primary key) or 0 if not.
+  *
+  * If RET_PK is not NULL, returns a copy of the public key that
+@@ -852,6 +852,8 @@ check_signature_over_key_or_uid (ctrl_t ctrl, PKT_public_key *signer,
+   if (!is_selfsig)
+     is_selfsig = &stub_is_selfsig;
+ 
++  *is_selfsig = 0; /* Init early to comply with function description. */
++
+   rc = openpgp_pk_test_algo (sig->pubkey_algo);
+   if (rc)
+     return rc;
